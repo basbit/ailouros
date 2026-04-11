@@ -1,0 +1,17 @@
+# Scrape orchestrator on the host (uvicorn не в compose).
+# Linux: extra_hosts host-gateway в docker-compose для host.docker.internal.
+
+global:
+  scrape_interval: 10s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: AIlourOS
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - host.docker.internal:8000
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: orchestrator-host

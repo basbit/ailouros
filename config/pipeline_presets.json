@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "presets": {
+    "planning_loop": [
+      "pm",
+      "review_pm",
+      "human_pm",
+      "ba",
+      "review_ba",
+      "human_ba",
+      "architect",
+      "review_stack",
+      "review_arch",
+      "human_arch",
+      "spec_merge",
+      "review_spec",
+      "human_spec"
+    ],
+    "pm_only": ["pm", "review_pm", "human_pm"],
+    "spec_only": [
+      "pm",
+      "review_pm",
+      "human_pm",
+      "ba",
+      "review_ba",
+      "human_ba",
+      "architect",
+      "review_stack",
+      "review_arch",
+      "human_arch",
+      "spec_merge",
+      "review_spec",
+      "human_spec"
+    ]
+  }
+}

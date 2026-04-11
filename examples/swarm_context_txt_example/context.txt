@@ -1,0 +1,30 @@
+# .swarm/context.txt — Priority paths for workspace_context_mode=priority_paths
+#
+# Each non-comment, non-empty line is either:
+#   - a relative path to a specific file (e.g. src/main.py)
+#   - a glob pattern relative to the workspace root (e.g. src/**/*.py)
+#
+# Files listed here are included verbatim in the context sent to agents,
+# instead of a full workspace scan. Use this to focus agents on the
+# relevant subset of a large repository.
+#
+# To activate: copy or symlink this file to <workspace_root>/.swarm/context.txt
+# and set workspace_context_mode=priority_paths in the pipeline config.
+
+# Entry point
+src/main.py
+
+# Core business logic
+src/core/**/*.py
+
+# Public API surface
+src/api/routes.py
+src/api/schemas.py
+
+# Configuration
+config/settings.py
+pyproject.toml
+
+# Tests for the above
+tests/test_core.py
+tests/test_api.py

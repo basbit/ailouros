@@ -1,0 +1,43 @@
+{
+  "roles": ["pm", "dev", "qa", "critic", "planner", "onboarding"],
+  "local_keyword_preferences": {
+    "planner": ["planning", "plan", "think", "qwen", "mistral", "llama-3", "gemma"],
+    "pm": ["qwen", "mistral", "llama-3", "gemma", "phi"],
+    "dev": ["coder", "code", "deepseek", "qwen-coder", "starcoder", "codellama", "llama-3"],
+    "qa": ["qwen", "llama-3", "gemma", "mistral"],
+    "critic": ["think", "qwen", "llama-3", "deepseek", "phi"],
+    "onboarding": ["think", "olmo", "qwen", "llama-3", "gemma"]
+  },
+  "planning_roles": [
+    "PM",
+    "BA",
+    "ARCH",
+    "REVIEWER",
+    "STACK_REVIEWER",
+    "DEV_LEAD",
+    "DOC_GEN",
+    "PROBLEM_SPOTTER",
+    "REFACTOR_PLAN",
+    "CODE_DIAGRAM"
+  ],
+  "planning_model_roles_exclude": ["PM"],
+  "build_roles": ["DEV", "QA", "DEVOPS"],
+  "cloud_defaults": {
+    "anthropic": {
+      "planner": "claude-opus-4-5",
+      "pm": "claude-sonnet-4-5",
+      "dev": "claude-sonnet-4-5",
+      "qa": "claude-haiku-4-5",
+      "critic": "claude-opus-4-5",
+      "onboarding": "claude-haiku-4-5"
+    },
+    "openai": {
+      "planner": "gpt-4o",
+      "pm": "gpt-4o-mini",
+      "dev": "gpt-4o",
+      "qa": "gpt-4o-mini",
+      "critic": "gpt-4o",
+      "onboarding": "gpt-4o-mini"
+    }
+  }
+}

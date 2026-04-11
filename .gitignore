@@ -1,0 +1,34 @@
+.cursor/
+.mypy_cache/
+.pytest_cache/
+.vscode/
+.idea/
+.DS_Store
+
+.venv/
+__pycache__/
+
+.claude/
+
+# runtime swarm state — never commit
+.swarm/
+
+frontend/node_modules/
+orchestrator/static/bundle/
+
+backend/UI/Web/
+
+# var/ is runtime-only (logs, artifacts, swarm state) — never commit
+var/
+var/**
+!var/logs/
+!var/logs/.gitkeep
+!var/artifacts/
+!var/artifacts/.gitkeep
+
+.env
+
+.coverage
+coverage.json
+.import_linter_cache/
+frontend/test-results/

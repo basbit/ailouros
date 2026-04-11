@@ -1,0 +1,6 @@
+[submodule "config/prompts/upstream"]
+	path = config/prompts/upstream
+	url = https://github.com/msitarzewski/agency-agents.git
+[submodule "frontend"]
+	path = frontend
+	url = https://github.com/basbit/ailouros-frontend.git

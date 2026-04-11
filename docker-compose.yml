@@ -1,0 +1,40 @@
+services:
+  # Redis: in-memory cache and queues
+  redis:
+    image: redis:7-alpine
+    container_name: AIlourOS-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  # Prometheus: orchestrator metrics (GET /metrics on host :8000)
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: AIlourOS-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # Qdrant: vector database
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: AIlourOS-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+volumes:
+  qdrant_data:
+  prometheus_data:

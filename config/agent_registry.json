@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "defaults": {
+    "reviewer": {
+      "prompt_path": "specialized/specialized-reviewer.md"
+    }
+  },
+  "roles": {
+    "pm": {
+      "enabled": true,
+      "version": 1
+    },
+    "ba": {
+      "enabled": true,
+      "version": 1
+    },
+    "architect": {
+      "enabled": true,
+      "version": 1
+    },
+    "dev": {
+      "enabled": true,
+      "version": 1
+    },
+    "qa": {
+      "enabled": true,
+      "version": 1
+    }
+  }
+}

@@ -1,0 +1,38 @@
+[
+  {
+    "marker": "composer.json",
+    "commands": [["composer", "dump-autoload", "-o", "--no-interaction"]]
+  },
+  {
+    "marker": "pyproject.toml",
+    "commands": [["python", "-m", "py_compile"]]
+  },
+  {
+    "marker": "setup.py",
+    "commands": [["python", "-m", "py_compile"]]
+  },
+  {
+    "marker": "package.json",
+    "commands": [["npm", "run", "--if-present", "build"]]
+  },
+  {
+    "marker": "Cargo.toml",
+    "commands": [["cargo", "check"]]
+  },
+  {
+    "marker": "go.mod",
+    "commands": [["go", "vet", "./..."]]
+  },
+  {
+    "marker": "Makefile",
+    "commands": []
+  },
+  {
+    "marker": "pom.xml",
+    "commands": [["mvn", "compile", "-q"]]
+  },
+  {
+    "marker": "build.gradle",
+    "commands": [["gradle", "compileJava", "-q"]]
+  }
+]
