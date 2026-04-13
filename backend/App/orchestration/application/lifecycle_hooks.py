@@ -35,9 +35,11 @@ def build_preflight_recommendations(
         for item in servers
         if isinstance(item, dict) and item.get("enabled", True)
     }
-    brave_key = (os.getenv("SWARM_BRAVE_SEARCH_API_KEY") or "").strip()
-    if not brave_key and isinstance((mcp_config or {}).get("swarm"), dict):
-        brave_key = str(((mcp_config or {}).get("swarm") or {}).get("brave_search_api_key") or "").strip()
+    search_key_available = bool(
+        os.getenv("SWARM_TAVILY_API_KEY", "")
+        or os.getenv("SWARM_EXA_API_KEY", "")
+        or os.getenv("SWARM_SCRAPINGDOG_API_KEY", "")
+    )
     ddg_available = False
     try:
         from backend.App.integrations.infrastructure.mcp.web_search.ddg_search import ddg_search_available
@@ -62,7 +64,7 @@ def build_preflight_recommendations(
         {
             "name": "internet_search",
             "recommended": True,
-            "available": ("brave_search" in server_names) or bool(brave_key) or ddg_available,
+            "available": ("web_search" in server_names) or search_key_available or ddg_available,
             "reason": "Needed for external research, current facts and website/vendor verification.",
         },
     ]
@@ -81,9 +83,9 @@ def build_preflight_recommendations(
             "reason": "History/diff context without inflating prompts.",
         },
         {
-            "name": "brave_search",
+            "name": "web_search",
             "recommended": True,
-            "enabled": "brave_search" in server_names,
+            "enabled": "web_search" in server_names or search_key_available,
             "reason": "Recommended when tasks require internet/web search or current fact verification.",
         },
     ]

@@ -350,58 +350,67 @@ def _llm_agent_run_with_optional_mcp(
             raise
         except Exception as exc:
             _exc_str = str(exc).lower()
-            _is_ctx_overflow = (
-                "tokens to keep" in _exc_str
-                or ("context" in _exc_str and "length" in _exc_str)
-                or "channel error" in _exc_str
-                or "model has crashed" in _exc_str
-            )
-            # Auto-retry with remote profile if local model failed on context
-            if _is_ctx_overflow and agent.remote_provider and agent.remote_api_key:
-                logger.warning(
-                    "MCP: local model failed (role=%s model=%s) — retrying with remote "
-                    "profile (provider=%s). Error: %s",
-                    agent.role, agent.model, agent.remote_provider, exc,
+            # Anthropic SDK doesn't support OpenAI-compat tool loop — expected,
+            # fall through silently to plain agent.run (no env var needed).
+            if "anthropic sdk is not supported" in _exc_str:
+                logger.info(
+                    "MCP: Anthropic SDK detected for role=%s — skipping MCP tool loop, "
+                    "using plain agent.run instead.",
+                    agent.role,
                 )
-                try:
-                    return run_with_mcp_tools_openai_compat(
-                        system_prompt=agent.effective_system_prompt(),
-                        user_content=prompt,
-                        model=agent.model,
-                        environment="cloud",
-                        remote_provider=agent.remote_provider,
-                        remote_api_key=agent.remote_api_key,
-                        remote_base_url=agent.remote_base_url,
-                        mcp_cfg=mcp,
-                        cancel_event=cancel_ev,
-                        readonly_tools=readonly_tools,
-                        **({"max_rounds": max_tool_rounds} if max_tool_rounds is not None else {}),
+            else:
+                _is_ctx_overflow = (
+                    "tokens to keep" in _exc_str
+                    or ("context" in _exc_str and "length" in _exc_str)
+                    or "channel error" in _exc_str
+                    or "model has crashed" in _exc_str
+                )
+                # Auto-retry with remote profile if local model failed on context
+                if _is_ctx_overflow and agent.remote_provider and agent.remote_api_key:
+                    logger.warning(
+                        "MCP: local model failed (role=%s model=%s) — retrying with remote "
+                        "profile (provider=%s). Error: %s",
+                        agent.role, agent.model, agent.remote_provider, exc,
                     )
-                except Exception as remote_exc:
-                    logger.error(
-                        "MCP: remote retry also failed (role=%s provider=%s): %s",
-                        agent.role, agent.remote_provider, remote_exc,
-                    )
-                    raise remote_exc from exc
+                    try:
+                        return run_with_mcp_tools_openai_compat(
+                            system_prompt=agent.effective_system_prompt(),
+                            user_content=prompt,
+                            model=agent.model,
+                            environment="cloud",
+                            remote_provider=agent.remote_provider,
+                            remote_api_key=agent.remote_api_key,
+                            remote_base_url=agent.remote_base_url,
+                            mcp_cfg=mcp,
+                            cancel_event=cancel_ev,
+                            readonly_tools=readonly_tools,
+                            **({"max_rounds": max_tool_rounds} if max_tool_rounds is not None else {}),
+                        )
+                    except Exception as remote_exc:
+                        logger.error(
+                            "MCP: remote retry also failed (role=%s provider=%s): %s",
+                            agent.role, agent.remote_provider, remote_exc,
+                        )
+                        raise remote_exc from exc
 
-            from backend.App.integrations.infrastructure.mcp.openai_loop.loop import _mcp_fallback_allow
-            if not _mcp_fallback_allow():
-                logger.error(
-                    "MCP tool-call loop failed for role=%s. "
-                    "Set SWARM_MCP_FALLBACK_ALLOW=1 to allow plain agent.run fallback. "
+                from backend.App.integrations.infrastructure.mcp.openai_loop.loop import _mcp_fallback_allow
+                if not _mcp_fallback_allow():
+                    logger.error(
+                        "MCP tool-call loop failed for role=%s. "
+                        "Set SWARM_MCP_FALLBACK_ALLOW=1 to allow plain agent.run fallback. "
+                        "Error: %s",
+                        agent.role,
+                        exc,
+                        exc_info=True,
+                    )
+                    raise
+                logger.warning(
+                    "MCP tool-call loop failed for role=%s; "
+                    "SWARM_MCP_FALLBACK_ALLOW=1 — продолжаем без инструментов. "
                     "Error: %s",
                     agent.role,
                     exc,
                     exc_info=True,
-                )
-                raise
-            logger.warning(
-                "MCP tool-call loop failed for role=%s; "
-                "SWARM_MCP_FALLBACK_ALLOW=1 — продолжаем без инструментов. "
-                "Error: %s",
-                agent.role,
-                exc,
-                exc_info=True,
             )
     output = _canonical_run_agent_with_boundary(state, agent, prompt)
     if not output or not output.strip():
@@ -590,7 +599,11 @@ def build_phase_pipeline_user_context(state: PipelineState) -> str:
 
 def planning_pipeline_user_context(state: PipelineState) -> str:
     """Контекст для clarify/PM/BA/Arch/спека — как собрал оркестратор (см. prepare_workspace)."""
-    return state.get("input") or ""
+    user_input = state.get("input") or ""
+    wiki_ctx = (state.get("wiki_context") or "").strip()
+    if not wiki_ctx:
+        return user_input
+    return f"[Project wiki memory]\n{wiki_ctx}\n\n{user_input}"
 
 
 def _should_compact_for_reviewer(log_node: str, state: PipelineState) -> bool:
@@ -842,6 +855,14 @@ def _pipeline_context_block(state: PipelineState, current_step_id: str) -> str:
     if summaries:
         lines.append("Previous agents summary:")
         lines.extend(summaries)
+
+    wiki_ctx = (state.get("wiki_context") or "").strip()
+    if wiki_ctx:
+        lines.append("\n[Project wiki memory]")
+        # Cap at 3000 chars to avoid bloating every agent prompt
+        if len(wiki_ctx) > 3000:
+            wiki_ctx = wiki_ctx[:3000] + "\n…[wiki truncated]"
+        lines.append(wiki_ctx)
 
     return "\n".join(lines) + "\n\n"
 

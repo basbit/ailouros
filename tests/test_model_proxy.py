@@ -9,6 +9,7 @@ from backend.App.integrations.infrastructure.model_proxy import (
     _fmt_ctx,
     _format_capabilities_display,
     _openai_model_row,
+    normalize_gemini_native_models_payload,
     normalize_ollama_tags_payload,
     normalize_openai_v1_models_payload,
     remote_openai_compatible_models_dict,
@@ -222,6 +223,24 @@ def test_normalize_openai_v1_models_multiple():
     assert len(result) == 2
 
 
+def test_normalize_gemini_native_models_payload_basic():
+    payload = {
+        "models": [
+            {
+                "name": "models/gemini-2.5-pro",
+                "baseModelId": "gemini-2.5-pro",
+                "inputTokenLimit": 1_048_576,
+                "supportedGenerationMethods": ["generateContent", "countTokens"],
+            }
+        ]
+    }
+    result = normalize_gemini_native_models_payload(payload)
+    assert len(result) == 1
+    assert result[0]["id"] == "gemini-2.5-pro"
+    assert "generateContent" in result[0]["label"]
+    assert result[0]["context_window"] == 1_048_576
+
+
 # ---------------------------------------------------------------------------
 # normalize_ollama_tags_payload
 # ---------------------------------------------------------------------------
@@ -331,6 +350,84 @@ def test_remote_models_dict_openai_compat_success():
         )
     assert result["ok"] is True
     assert len(result["models"]) == 1
+
+
+def test_remote_models_dict_openai_filters_specialized_models_on_first_party_api():
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "data": [
+            {"id": "gpt-5"},
+            {"id": "gpt-image-1"},
+            {"id": "gpt-realtime"},
+            {"id": "text-embedding-3-large"},
+            {"id": "chatgpt-4o-latest"},
+        ]
+    }
+    mock_response.raise_for_status.return_value = None
+
+    mock_client = MagicMock()
+    mock_client.__enter__ = MagicMock(return_value=mock_client)
+    mock_client.__exit__ = MagicMock(return_value=False)
+    mock_client.get.return_value = mock_response
+
+    with patch("backend.App.integrations.infrastructure.model_proxy.httpx.Client", return_value=mock_client):
+        result = remote_openai_compatible_models_dict(
+            provider="openai_compatible",
+            base_url="https://api.openai.com/v1",
+            api_key="sk-test",
+        )
+
+    assert result["ok"] is True
+    assert [row["id"] for row in result["models"]] == ["gpt-5"]
+
+
+def test_remote_models_dict_gemini_filters_non_generate_content_and_media_models():
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "models": [
+            {
+                "name": "models/gemini-2.5-pro",
+                "baseModelId": "gemini-2.5-pro",
+                "inputTokenLimit": 1_048_576,
+                "supportedGenerationMethods": ["generateContent", "countTokens"],
+            },
+            {
+                "name": "models/veo-3.1-generate-preview",
+                "baseModelId": "veo-3.1-generate-preview",
+                "supportedGenerationMethods": ["predictLongRunning"],
+            },
+            {
+                "name": "models/gemini-3.1-flash-image-preview",
+                "baseModelId": "gemini-3.1-flash-image-preview",
+                "supportedGenerationMethods": ["generateContent"],
+            },
+            {
+                "name": "models/text-embedding-004",
+                "baseModelId": "text-embedding-004",
+                "supportedGenerationMethods": ["embedContent"],
+            },
+        ]
+    }
+    mock_response.raise_for_status.return_value = None
+
+    mock_client = MagicMock()
+    mock_client.__enter__ = MagicMock(return_value=mock_client)
+    mock_client.__exit__ = MagicMock(return_value=False)
+    mock_client.get.return_value = mock_response
+
+    with patch("backend.App.integrations.infrastructure.model_proxy.httpx.Client", return_value=mock_client):
+        result = remote_openai_compatible_models_dict(
+            provider="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            api_key="gemini-key",
+        )
+
+    assert result["ok"] is True
+    assert result["source"] == "https://generativelanguage.googleapis.com/v1beta/models"
+    assert [row["id"] for row in result["models"]] == ["gemini-2.5-pro"]
+    _, call_kwargs = mock_client.get.call_args
+    assert call_kwargs["params"]["pageSize"] == 1000
+    assert call_kwargs["params"]["key"] == "gemini-key"
 
 
 def test_remote_models_dict_openai_compat_http_error():

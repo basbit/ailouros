@@ -84,89 +84,43 @@ async def observability_metrics() -> Any:
 @router.get("/v1/defaults")
 async def get_defaults() -> JSONResponse:
     """Return frontend-consumable defaults and fallback policy metadata."""
+    import json as _json
+    from pathlib import Path as _Path
     from backend.App.integrations.infrastructure.llm.config import SWARM_MODEL_CLOUD_DEFAULT
 
-    roles = [
-        "pm", "ba", "architect", "reviewer", "stack_reviewer",
-        "dev", "qa", "problem_spotter", "refactor_plan",
-        "code_diagram", "doc_generate", "devops", "dev_lead",
-    ]
+    # --- Single source of truth: config/roles.json ---
+    _roles_cfg_path = _Path(__file__).resolve().parents[4] / "config" / "roles.json"
+    _roles_cfg = _json.loads(_roles_cfg_path.read_text(encoding="utf-8"))
+
+    roles: list[str] = _roles_cfg["roles_order"]
+    prompt_defaults: dict[str, str] = _roles_cfg["prompt_defaults"]
+    prompt_choices: dict[str, list] = _roles_cfg["prompt_choices"]
+    model_tier_overrides: dict[str, str] = _roles_cfg.get("model_tier_overrides", {})
 
     cloud_default = SWARM_MODEL_CLOUD_DEFAULT
     _swarm_model = os.getenv("SWARM_MODEL", "")
-    ollama_default_pm = os.getenv("SWARM_MODEL_PM") or os.getenv("SWARM_MODEL_PLANNING") or _swarm_model
-    ollama_default_dev_lead = os.getenv("SWARM_MODEL_DEV_LEAD") or os.getenv("SWARM_MODEL_PLANNING") or _swarm_model
-    ollama_default_generic = os.getenv("SWARM_MODEL_BUILD") or _swarm_model
-    lmstudio_default_pm = os.getenv("SWARM_LMSTUDIO_MODEL_PM") or ollama_default_pm
-    lmstudio_default_dev_lead = os.getenv("SWARM_LMSTUDIO_MODEL_DEV_LEAD") or ollama_default_dev_lead
-    lmstudio_default_generic = os.getenv("SWARM_LMSTUDIO_MODEL_BUILD") or ollama_default_generic
+    ollama_planning = os.getenv("SWARM_MODEL_PLANNING") or _swarm_model
+    ollama_generic = os.getenv("SWARM_MODEL_BUILD") or _swarm_model
+    lmstudio_planning = os.getenv("SWARM_LMSTUDIO_MODEL_PLANNING") or ollama_planning
+    lmstudio_generic = os.getenv("SWARM_LMSTUDIO_MODEL_BUILD") or ollama_generic
 
     model_defaults: dict[str, dict[str, str]] = {}
     for role in roles:
-        if role in ("pm", "dev_lead"):
-            model_defaults[role] = {
-                "ollama": ollama_default_pm if role == "pm" else ollama_default_dev_lead,
-                "lmstudio": lmstudio_default_pm if role == "pm" else lmstudio_default_dev_lead,
-                "cloud": cloud_default,
-            }
+        tier = model_tier_overrides.get(role, "generic")
+        role_upper = role.upper()
+        ollama_specific = os.getenv(f"SWARM_MODEL_{role_upper}")
+        lmstudio_specific = os.getenv(f"SWARM_LMSTUDIO_MODEL_{role_upper}")
+        if tier == "planning":
+            ollama_val = ollama_specific or os.getenv("SWARM_MODEL_PLANNING") or _swarm_model
+            lmstudio_val = lmstudio_specific or lmstudio_planning
         else:
-            model_defaults[role] = {
-                "ollama": ollama_default_generic,
-                "lmstudio": lmstudio_default_generic,
-                "cloud": cloud_default,
-            }
-
-    prompt_defaults = {
-        "pm": "project-management/project-manager-senior.md",
-        "ba": "product/product-requirements-analyst.md",
-        "architect": "engineering/engineering-software-architect.md",
-        "reviewer": "specialized/specialized-reviewer.md",
-        "stack_reviewer": "specialized/specialized-reviewer.md",
-        "dev": "engineering/engineering-senior-developer.md",
-        "qa": "specialized/software-qa-engineer.md",
-        "problem_spotter": "specialized/code-problem-spotter.md",
-        "refactor_plan": "specialized/code-refactor-planner.md",
-        "code_diagram": "specialized/code-structure-diagram.md",
-        "doc_generate": "specialized/code-doc-generator.md",
-        "devops": "engineering/devops-setup.md",
-        "dev_lead": "project-management/dev-lead.md",
-    }
-    prompt_choices = {
-        "pm": [
-            ["project-management/project-manager-senior.md", "PM senior"],
-            ["project-management/project-management-project-shepherd.md", "Shepherd"],
-            ["__custom__", "Custom…"],
-        ],
-        "ba": [
-            ["product/product-requirements-analyst.md", "BA requirements"],
-            ["product/product-manager.md", "Product manager"],
-            ["__custom__", "Custom…"],
-        ],
-        "architect": [["engineering/engineering-software-architect.md", "Architect"], ["__custom__", "Custom…"]],
-        "reviewer": [["specialized/specialized-reviewer.md", "Reviewer prompt"], ["__custom__", "Custom…"]],
-        "stack_reviewer": [["specialized/specialized-reviewer.md", "Reviewer prompt"], ["__custom__", "Custom…"]],
-        "dev": [["engineering/engineering-senior-developer.md", "Senior dev"], ["__custom__", "Custom…"]],
-        "qa": [
-            ["specialized/software-qa-engineer.md", "Software QA"],
-            ["specialized/specialized-model-qa.md", "Model QA (ML)"],
-            ["specialized/specialized-reviewer.md", "Reviewer prompt"],
-            ["__custom__", "Custom…"],
-        ],
-        "problem_spotter": [["specialized/code-problem-spotter.md", "Problem spotter"], ["__custom__", "Custom…"]],
-        "refactor_plan": [["specialized/code-refactor-planner.md", "Refactor planner"], ["__custom__", "Custom…"]],
-        "code_diagram": [["specialized/code-structure-diagram.md", "Structure diagram"], ["__custom__", "Custom…"]],
-        "doc_generate": [
-            ["specialized/code-doc-generator.md", "Code doc generator"],
-            ["specialized/specialized-document-generator.md", "Doc generator (alt)"],
-            ["__custom__", "Custom…"],
-        ],
-        "devops": [
-            ["engineering/devops-setup.md", "DevOps setup"],
-            ["engineering/engineering-devops-automator.md", "DevOps automator"],
-            ["__custom__", "Custom…"],
-        ],
-        "dev_lead": [["project-management/dev-lead.md", "Dev lead"], ["__custom__", "Custom…"]],
-    }
+            ollama_val = ollama_specific or ollama_generic
+            lmstudio_val = lmstudio_specific or lmstudio_generic
+        model_defaults[role] = {
+            "ollama": ollama_val,
+            "lmstudio": lmstudio_val,
+            "cloud": cloud_default,
+        }
     remote_api_base_presets = {
         "anthropic": "",
         "openai_compatible": "https://api.openai.com/v1",
@@ -191,10 +145,16 @@ async def get_defaults() -> JSONResponse:
         "clarify_input", "human_clarify_input", "pm", "review_pm", "human_pm",
         "ba", "review_ba", "human_ba", "architect", "review_stack", "review_arch",
         "human_arch", "ba_arch_debate", "spec_merge", "review_spec", "human_spec",
+        "ux_researcher", "review_ux_researcher", "human_ux_researcher",
+        "ux_architect", "review_ux_architect", "human_ux_architect",
+        "ui_designer", "review_ui_designer", "human_ui_designer",
         "analyze_code", "generate_documentation", "problem_spotter", "refactor_plan",
         "human_code_review", "devops", "review_devops", "human_devops", "dev_lead",
         "review_dev_lead", "human_dev_lead", "dev", "review_dev", "human_dev", "qa",
         "review_qa", "human_qa",
+        "seo_specialist", "review_seo_specialist", "human_seo_specialist",
+        "ai_citation_strategist", "review_ai_citation_strategist", "human_ai_citation_strategist",
+        "app_store_optimizer", "review_app_store_optimizer", "human_app_store_optimizer",
     ]
 
     return JSONResponse(content={

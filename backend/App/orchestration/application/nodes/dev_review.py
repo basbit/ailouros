@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any
 
 from backend.App.orchestration.application.review_moa import run_reviewer_or_moa
@@ -81,6 +82,21 @@ def review_dev_node(state: PipelineState) -> dict[str, Any]:
     else:
         dev_output = dev_output_full
 
+    # FIX 10.3: Check for unwrapped code blocks (≥20 lines) vs <swarm_file> tags.
+    # If dev produced large code fences without wrapping them in <swarm_file> tags,
+    # inform the reviewer so it can flag the issue as a P1 defect.
+    _long_fences = re.findall(r"```\w*\n((?:.*\n){20,}?)```", dev_output_full)
+    _swarm_file_count = len(re.findall(r"<swarm_file", dev_output_full))
+    _fence_count = len(_long_fences)
+    _swarm_file_warning = ""
+    if _fence_count > _swarm_file_count:
+        _swarm_file_warning = (
+            f"\nWARNING: Dev output contains {_fence_count} code block(s) with ≥20 lines "
+            f"but only {_swarm_file_count} <swarm_file> wrapper(s). "
+            "The reviewer MUST flag this as a P1 defect if files lack proper "
+            '<swarm_file path="..."> wrapping.\n'
+        )
+
     user_block = embedded_pipeline_input_for_review(state, log_node="review_dev_node")
     prompt = (
         "Step: dev (development).\n"
@@ -97,13 +113,14 @@ def review_dev_node(state: PipelineState) -> dict[str, Any]:
         "[ ] Naming conventions match the existing codebase (class names, function names, file names follow detected patterns)\n\n"
         "Output contract:\n"
         "1. Human-readable review summary.\n"
-        "2. A final line `VERDICT: OK` or `VERDICT: NEEDS_WORK`.\n"
-        "3. A machine-readable block `<defect_report>...</defect_report>` containing JSON object:\n"
+        "2. A machine-readable block `<defect_report>...</defect_report>` containing JSON object:\n"
         '{"defects":[{"id":"optional","title":"...","severity":"P0|P1|P2","file_paths":["..."],"expected":"...","actual":"...","repro_steps":["..."],"acceptance":["..."],"category":"...","fixed":false}],"test_scenarios":["..."],"edge_cases":["..."],"regression_checks":["..."]}\n'
+        "3. Final line `VERDICT: OK` or `VERDICT: NEEDS_WORK`.\n"
         "If verdict is OK, defects may be empty but the block must still be present.\n\n"
         f"User task:\n{user_block}\n\n"
         f"Specification:\n{spec}\n\n"
         f"Dev artifact:\n{dev_output}"
+        + _swarm_file_warning
     )
     result = run_reviewer_or_moa(
         state,
@@ -113,6 +130,7 @@ def review_dev_node(state: PipelineState) -> dict[str, Any]:
         model_key="dev_review_model",
         provider_key="dev_review_provider",
         agent_factory=lambda: _make_reviewer_agent(state),
+        require_json_defect_report=True,
     )
     result["dev_defect_report"] = parse_defect_report(str(result.get("dev_review_output") or "")).to_dict()
     return result

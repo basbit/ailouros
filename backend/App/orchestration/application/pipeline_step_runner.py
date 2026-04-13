@@ -24,16 +24,12 @@ from backend.App.orchestration.infrastructure.step_stream_executor import (
     _format_elapsed_wall,
 )
 
-# Re-export helpers that tests patch at this module level.
-# These come from _shared and step_stream_executor; having them as module-level
-# names here means patching ``pipeline_step_runner._pipeline_should_cancel`` or
-# ``pipeline_step_runner._stream_progress_heartbeat_seconds`` intercepts the calls
-# inside _run_step_with_stream_progress below.
+# Re-export helper that tests patch at this module level.
+# This comes from _shared; having it as a module-level name here means patching
+# ``pipeline_step_runner._pipeline_should_cancel`` intercepts the calls inside
+# _run_step_with_stream_progress below.
 from backend.App.orchestration.application.nodes._shared import (
     _pipeline_should_cancel,
-)
-from backend.App.orchestration.infrastructure.step_stream_executor import (
-    _stream_progress_heartbeat_seconds,
 )
 
 __all__ = [
@@ -46,22 +42,42 @@ __all__ = [
     "StepStreamExecutor",
     "_format_elapsed_wall",
     "_pipeline_should_cancel",
-    "_stream_progress_heartbeat_seconds",
     "_emit_completed",
     "_run_step_with_stream_progress",
+    "_stream_progress_heartbeat_seconds",
 ]
 
 # ---------------------------------------------------------------------------
 # Legacy module-level functions kept for callers that import them directly.
 # ---------------------------------------------------------------------------
+import os as _os
 import queue as _queue
-import time as _time
 from collections.abc import Callable, Generator
 from concurrent.futures import ThreadPoolExecutor as _TPE, wait as _fut_wait
 from typing import Any, Optional, cast
 
 from backend.App.orchestration.application.pipeline_state import PipelineState
 from backend.App.orchestration.domain.exceptions import PipelineCancelled
+
+
+def _stream_progress_heartbeat_seconds() -> float:
+    """Return the configured heartbeat interval for pipeline progress events.
+
+    Reads ``SWARM_PIPELINE_PROGRESS_HEARTBEAT_SEC`` from the environment.
+    Defaults to 8.0 seconds, clamped to [2.0, 120.0].
+    """
+    _default = 8.0
+    _min = 2.0
+    _max = 120.0
+    raw = _os.environ.get("SWARM_PIPELINE_PROGRESS_HEARTBEAT_SEC", "")
+    if not raw:
+        return _default
+    try:
+        value = float(raw)
+    except ValueError:
+        return _default
+    return max(_min, min(_max, value))
+
 
 _default_executor = StepStreamExecutor()
 
@@ -83,11 +99,10 @@ def _run_step_with_stream_progress(
     step_func: Callable[[PipelineState], dict[str, Any]],
     state: PipelineState,
 ) -> Generator[dict[str, Any], None, None]:
-    """Run a pipeline step in a worker thread and yield SSE progress + heartbeat events.
+    """Run a pipeline step in a worker thread and yield SSE progress events.
 
-    Uses module-level references to ``_pipeline_should_cancel`` and
-    ``_stream_progress_heartbeat_seconds`` so that tests can patch them at
-    this module level.
+    Uses the module-level reference to ``_pipeline_should_cancel`` so tests can
+    patch it at this module level.
 
     .. deprecated::
         Use :class:`StepStreamExecutor`.run() directly.
@@ -97,8 +112,6 @@ def _run_step_with_stream_progress(
     pq: _queue.Queue[str] = _queue.Queue()
     cast(dict, state)["_stream_progress_queue"] = pq
     holder: dict[str, Any] = {}
-    hb_every = _self._stream_progress_heartbeat_seconds()
-    step_started = _time.monotonic()
     pool: Optional[_TPE] = None
     try:
 
@@ -110,7 +123,6 @@ def _run_step_with_stream_progress(
 
         pool = _TPE(max_workers=1)
         fut = pool.submit(work)
-        last_hb = _time.monotonic()
         while True:
             while True:
                 try:
@@ -127,35 +139,6 @@ def _run_step_with_stream_progress(
             if fut.done():
                 break
             _fut_wait((fut,), timeout=0.12)
-            now = _time.monotonic()
-            if now - last_hb >= hb_every:
-                last_hb = now
-                elapsed = now - step_started
-                # SLA warning: emit a distinct event if step exceeds the configured threshold.
-                # SWARM_STEP_SLA_SEC_PLANNING (default 90) for planning steps,
-                # SWARM_STEP_SLA_SEC_BUILD (default 300) for build steps.
-                import os as _os
-                _is_planning = step_id in (
-                    "clarify_input", "pm", "review_pm", "ba", "review_ba",
-                    "architect", "review_arch", "spec_merge", "review_spec",
-                )
-                _sla_env = "SWARM_STEP_SLA_SEC_PLANNING" if _is_planning else "SWARM_STEP_SLA_SEC_BUILD"
-                _sla_default = "90" if _is_planning else "300"
-                try:
-                    _sla_sec = float(_os.getenv(_sla_env, _sla_default) or _sla_default)
-                except ValueError:
-                    _sla_sec = 90.0 if _is_planning else 300.0
-                _sla_exceeded = _sla_sec > 0 and elapsed > _sla_sec
-                _status = "warning" if _sla_exceeded else "progress"
-                _sla_note = f" [SLA EXCEEDED: {_sla_env}={int(_sla_sec)}s]" if _sla_exceeded else ""
-                yield {
-                    "agent": step_id,
-                    "status": _status,
-                    "message": (
-                        f"{step_id}: worker busy — building prompt or waiting for HTTP/LLM generation "
-                        f"(elapsed {_format_elapsed_wall(elapsed)}; heartbeat every {int(hb_every)}s){_sla_note}…"
-                    ),
-                }
         if pool is not None:
             pool.shutdown(wait=True)
             pool = None

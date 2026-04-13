@@ -72,12 +72,27 @@ def _stream_finalise(
             workspace_path,
             run_shell=run_sh,
         )
-        # BUG-F11: include MCP write count in workspace_writes for accurate stats
+        # Capture diff so workspace-diff endpoint can serve it from pipeline.json
+        from backend.App.workspace.infrastructure.workspace_diff import capture_workspace_diff
+        _ws = pipeline_snapshot["workspace_writes"]
+        _written = list(_ws.get("written") or [])
+        _patched = list(_ws.get("patched") or [])
+        _udiff_applied = list(_ws.get("udiff_applied") or [])
+        _all_changed = sorted(set(_written + _patched + _udiff_applied))
+        pipeline_snapshot["dev_workspace_diff"] = capture_workspace_diff(workspace_path, _all_changed)
+        # Include MCP write count in workspace_writes for accurate stats
         _mcp_wc = pipeline_snapshot.get("dev_mcp_write_count", 0)
         if _mcp_wc and isinstance(pipeline_snapshot.get("workspace_writes"), dict):
             pipeline_snapshot["workspace_writes"]["mcp_tool_writes"] = _mcp_wc
 
-    # Fix C: warn when workspace writes were requested but nothing was written
+    if workspace_path and pipeline_snapshot.get("workspace_apply_writes"):
+        from backend.App.orchestration.application.wiki_auto_updater import update_wiki_from_pipeline
+        try:
+            update_wiki_from_pipeline(pipeline_snapshot, Path(workspace_path))
+        except Exception as _wiki_exc:
+            logger.debug("wiki auto-update failed: %s", _wiki_exc)
+
+    # Warn when workspace writes were requested but nothing was written
     if workspace_path and workspace_apply_writes and not pipeline_snapshot.get("partial_state"):
         ws_writes = pipeline_snapshot.get("workspace_writes") or {}
         files_written = len(ws_writes.get("written") or []) + len(ws_writes.get("patched") or [])
@@ -90,7 +105,7 @@ def _stream_finalise(
         _mcp_writes = ws_writes.get("mcp_tool_writes", 0) or pipeline_snapshot.get("dev_mcp_write_count", 0)
         stop_early = bool(pipeline_snapshot.get("_pipeline_stop_early"))
         if files_written == 0 and not any_incremental and not stop_early and _mcp_writes == 0:
-            # EC-1: Log error (not just warning) for 0 writes
+            # Log error (not just warning) when SWARM_REQUIRE_DEV_WRITES=1
             _require = os.getenv("SWARM_REQUIRE_DEV_WRITES", "1").strip() in ("1", "true", "yes")
             _level = "ERROR" if _require else "WARNING"
             warn = (
@@ -109,6 +124,18 @@ def _stream_finalise(
     ):
         append_task_run_log(task_dir, wl.strip())
         yield _sse_delta_line(now, request_model, wl)
+
+    # Emit SSE audit events for any auto-approvals recorded during the pipeline run.
+    for _aa in (pipeline_snapshot.get("auto_approvals") or []):
+        if not isinstance(_aa, dict):
+            continue
+        _aa_event = {
+            "agent": "system",
+            "status": "auto_approved",
+            "step": _aa.get("step"),
+            "audit": _aa.get("audit"),
+        }
+        yield _sse_delta_line(now, request_model, json.dumps(_aa_event) + "\n")
 
     _final_status = "completed_no_writes" if pipeline_snapshot.get("_ec1_zero_writes") else "completed"
     task_store.update_task(task_id, status=_final_status)

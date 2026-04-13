@@ -192,7 +192,10 @@ def test_wrap_human_gate_auto_approved():
         wrapped = _with_approval_gate("human_pm", inner_fn)
         result = wrapped({"task_id": "t1"})
 
-    assert result == {}  # Auto-approved → skips human wait
+    # Auto-approved → skips human wait; audit trail stored in auto_approvals
+    assert "auto_approvals" in result
+    assert len(result["auto_approvals"]) == 1
+    assert result["auto_approvals"][0]["step"] == "human_pm"
     inner_fn.assert_not_called()
 
 

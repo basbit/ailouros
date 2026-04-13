@@ -266,7 +266,11 @@ class PipelineSSEHandler:
             )
             _write_agents_error_txt(task_dir, agents_dir, err_text)
             pipeline_snapshot["error"] = err_text
-            append_task_run_log(task_dir, f"ERROR {st}: {err_text}")
+            _log_prefix = {
+                "awaiting_human": "WAIT",
+                "cancelled": "CANCELLED",
+            }.get(st, "ERROR")
+            append_task_run_log(task_dir, f"{_log_prefix} {st}: {err_text}")
             try:
                 _ensure_task_dirs(task_dir, agents_dir)
                 (task_dir / "pipeline.json").write_text(

@@ -22,7 +22,18 @@ class ReviewerAgent(BaseAgent):
     ) -> None:
         fallback = (
             "You are a reviewer. Assess the artifact for task fit, completeness, and risks. "
-            "End with a single line: VERDICT: OK or VERDICT: NEEDS_WORK."
+            "End with a single line: VERDICT: OK or VERDICT: NEEDS_WORK.\n\n"
+            "When issuing VERDICT: NEEDS_WORK you MUST include a structured defect block "
+            "immediately after the verdict line:\n"
+            "VERDICT: NEEDS_WORK\n"
+            "<defect_report>\n"
+            "  <defect id=\"D1\" severity=\"P0|P1|P2\">\n"
+            "    <description>what is wrong</description>\n"
+            "    <remediation>what to fix</remediation>\n"
+            "  </defect>\n"
+            "</defect_report>\n"
+            "Use severity P0 for blocking issues, P1 for major issues, P2 for minor issues. "
+            "Include one <defect> element per distinct issue found."
         )
         prompt_path = system_prompt_path_override or "specialized/specialized-reviewer.md"
         super().__init__(

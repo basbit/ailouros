@@ -135,19 +135,21 @@ def _make_fetch_spec() -> MCPServerSpec:
     )
 
 
-def _make_brave_search_spec(api_key: str) -> MCPServerSpec:
+def _make_web_search_spec(has_any_key: bool) -> MCPServerSpec:
+    """Web search via Tavily/Exa/ScrapingDog router (builtin, no MCP process needed)."""
     return MCPServerSpec(
-        name="brave-search",
-        package="@modelcontextprotocol/server-brave-search",
-        transport="stdio",
-        command="npx",
-        args=["-y", "@modelcontextprotocol/server-brave-search"],
+        name="web_search",
+        package="",
+        transport="builtin",
+        command="",
+        args=[],
         scope_dirs=[],
         reason=(
             "Recommended when tasks require internet/web search — "
-            "web and news search via Brave Search API"
+            "automatically rotates between Tavily, Exa, and ScrapingDog "
+            "to stay within the 1000 req/month free tier of each provider"
         ),
-        enabled=bool(api_key),
+        enabled=has_any_key,
     )
 
 
@@ -188,23 +190,22 @@ def recommend_mcp_servers(
     workspace_root: str,
     detected_stack: list[str],
     *,
-    brave_api_key: str = "",
+    brave_api_key: str = "",  # kept for backward compat, ignored
 ) -> list[MCPServerSpec]:
     """Return recommended MCP server specs for the given workspace and stack.
 
     Always includes filesystem + git + fetch as a minimum baseline.
-    Brave Search is added when ``brave_api_key`` is provided (or the
-    ``SWARM_BRAVE_SEARCH_API_KEY`` / ``BRAVE_API_KEY`` env vars are set).
+    web_search (Tavily/Exa/ScrapingDog router) is added when any of
+    SWARM_TAVILY_API_KEY / SWARM_EXA_API_KEY / SWARM_SCRAPINGDOG_API_KEY are set.
     """
     import os
 
     root = workspace_root or ""
 
-    # Resolve brave API key from caller or environment
-    resolved_brave_key = (
-        brave_api_key
-        or os.getenv("SWARM_BRAVE_SEARCH_API_KEY", "")
-        or os.getenv("BRAVE_API_KEY", "")
+    has_search_key = bool(
+        os.getenv("SWARM_TAVILY_API_KEY", "")
+        or os.getenv("SWARM_EXA_API_KEY", "")
+        or os.getenv("SWARM_SCRAPINGDOG_API_KEY", "")
     )
 
     specs: dict[str, MCPServerSpec] = {
@@ -213,8 +214,8 @@ def recommend_mcp_servers(
         "fetch": _make_fetch_spec(),
     }
 
-    if resolved_brave_key:
-        specs["brave-search"] = _make_brave_search_spec(resolved_brave_key)
+    if has_search_key:
+        specs["web_search"] = _make_web_search_spec(has_search_key)
 
     # Add stack-specific extras
     for stack in detected_stack:

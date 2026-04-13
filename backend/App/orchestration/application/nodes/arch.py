@@ -15,6 +15,7 @@ from backend.App.orchestration.application.repo_evidence import (
 )
 
 from backend.App.orchestration.application.nodes._shared import (
+    _cfg_model,
     _llm_planning_agent_run,
     _make_human_agent,
     _make_reviewer_agent,
@@ -133,7 +134,7 @@ def arch_node(state: PipelineState) -> dict[str, Any]:
     architect_cfg = (state.get("agent_config") or {}).get("architect") or {}
     agent = ArchitectAgent(
         system_prompt_path_override=architect_cfg.get("prompt_path") or architect_cfg.get("prompt"),
-        model_override=architect_cfg.get("model"),
+        model_override=_cfg_model(architect_cfg),
         environment_override=architect_cfg.get("environment"),
         system_prompt_extra=_skills_extra_for_role_cfg(state, architect_cfg),
         **_remote_api_client_kwargs_for_role(state, architect_cfg),
@@ -161,8 +162,8 @@ def arch_node(state: PipelineState) -> dict[str, Any]:
             f"Original output:\n{(arch_output or '').strip()}"
         )
     if (arch_output or "").strip():
-        from backend.App.workspace.application.doc_workspace import write_pipeline_step_to_workspace
-        write_pipeline_step_to_workspace(state, "architect", arch_output)
+        from backend.App.workspace.application.doc_workspace import write_step_wiki
+        write_step_wiki(state, "architect", arch_output)
     return {
         "arch_output": arch_output,
         "arch_model": agent.used_model,
@@ -294,9 +295,18 @@ def ba_arch_debate_node(state: PipelineState) -> dict[str, Any]:
     """
     ba = (state.get("ba_output") or "").strip()
     arch = (state.get("arch_output") or "").strip()
-    if not ba and not arch:
+    if not ba or not arch:
+        # Both BA and Architect outputs must be present for a meaningful debate.
+        # This can happen when ba_arch_debate runs before BA/Architect in graph
+        # execution, or when one upstream agent failed silently.
+        import logging as _lg
+        _lg.getLogger(__name__).info(
+            "ba_arch_debate: skipped (ba=%d chars, arch=%d chars) — "
+            "both outputs required for debate",
+            len(ba), len(arch),
+        )
         return {
-            "ba_arch_debate_output": "Debate skipped: no BA/Architect artifacts.",
+            "ba_arch_debate_output": "",
             "ba_arch_debate_model": "",
             "ba_arch_debate_provider": "",
         }
@@ -319,6 +329,9 @@ def ba_arch_debate_node(state: PipelineState) -> dict[str, Any]:
     )
     agent = _make_reviewer_agent(state)
     debate_output = _run_agent_with_boundary(state, agent, prompt)
+    if (debate_output or "").strip():
+        from backend.App.workspace.application.doc_workspace import write_step_wiki
+        write_step_wiki(state, "ba_arch_debate", debate_output)
     return {
         "ba_arch_debate_output": debate_output,
         "ba_arch_debate_model": agent.used_model,
@@ -327,6 +340,17 @@ def ba_arch_debate_node(state: PipelineState) -> dict[str, Any]:
 
 
 _MERGE_SPEC_MIN_INPUT_CHARS = int(os.environ.get("SWARM_MERGE_SPEC_MIN_INPUT_CHARS", "200"))
+
+
+def _concat_spec_parts(ba_out: str, arch_out: str, debate: str) -> str:
+    """Simple concatenation fallback for spec merge."""
+    parts = [
+        "BA specification section:\n" + ba_out,
+        "Architect specification section:\n" + arch_out,
+    ]
+    if debate:
+        parts.append("BA\u2194Architect debate outcome (DebateWithJudge):\n" + debate)
+    return "# Approved Specification\n\n" + "\n\n".join(parts)
 
 
 def merge_spec_node(state: PipelineState) -> dict[str, Any]:
@@ -354,16 +378,46 @@ def merge_spec_node(state: PipelineState) -> dict[str, Any]:
         }
 
     debate = (state.get("ba_arch_debate_output") or "").strip()
-    parts = [
-        "BA specification section:\n" + ba_out,
-        "Architect specification section:\n" + arch_out,
-    ]
-    if debate and debate != "Debate skipped: no BA/Architect artifacts.":
-        parts.append("BA↔Architect debate outcome (DebateWithJudge):\n" + debate)
-    spec_output = "# Approved Specification\n\n" + "\n\n".join(parts)
+
+    # LLM-based merge for substantial specs to remove duplication between BA and
+    # Architect outputs; lightweight concatenation for smaller ones.
+    combined_size = len(ba_out) + len(arch_out) + len(debate)
+    _llm_merge_threshold = int(os.environ.get("SWARM_SPEC_MERGE_LLM_THRESHOLD", "8000"))
+    if combined_size > _llm_merge_threshold:
+        merge_prompt = (
+            "Merge the following two specification sections into ONE coherent, "
+            "non-redundant specification document.\n"
+            "Remove duplicates. Preserve ALL unique requirements and architectural decisions.\n"
+            "Keep structured sections (tables, ADRs, code blocks) intact.\n\n"
+            f"=== BA Requirements ===\n{ba_out}\n\n"
+            f"=== Architecture Decisions ===\n{arch_out}\n\n"
+        )
+        if debate:
+            merge_prompt += f"=== Debate Outcome ===\n{debate}\n\n"
+        merge_prompt += "Output the merged specification. Do NOT add commentary."
+        try:
+            agent = _make_reviewer_agent(state)
+            merged = _run_agent_with_boundary(state, agent, merge_prompt)
+            if merged and len(merged.strip()) > _MERGE_SPEC_MIN_INPUT_CHARS:
+                spec_output = "# Approved Specification\n\n" + merged
+            else:
+                import logging as _merge_log
+                _merge_log.getLogger(__name__).warning(
+                    "spec_merge: LLM merge returned short output (%d chars), "
+                    "falling back to concatenation", len(merged or ""),
+                )
+                spec_output = _concat_spec_parts(ba_out, arch_out, debate)
+        except Exception as exc:
+            import logging as _merge_log
+            _merge_log.getLogger(__name__).warning(
+                "spec_merge: LLM merge failed (%s), falling back to concatenation", exc,
+            )
+            spec_output = _concat_spec_parts(ba_out, arch_out, debate)
+    else:
+        spec_output = _concat_spec_parts(ba_out, arch_out, debate)
     if spec_output.strip():
-        from backend.App.workspace.application.doc_workspace import write_pipeline_step_to_workspace
-        write_pipeline_step_to_workspace(state, "spec", spec_output)
+        from backend.App.workspace.application.doc_workspace import write_step_wiki
+        write_step_wiki(state, "spec_merge", spec_output)
     return {
         "spec_output": spec_output,
         "spec_memory_artifact": _spec_memory_artifact(state, spec_output),

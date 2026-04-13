@@ -30,6 +30,7 @@ from backend.App.orchestration.application.nodes._shared import (
     _remote_api_client_kwargs_for_role,
     _reviewer_cfg,
     _skills_extra_for_role_cfg,
+    _stream_progress_emit,
     _swarm_prompt_prefix,
     embedded_pipeline_input_for_review,
     embedded_review_artifact,
@@ -106,9 +107,9 @@ def _clarify_requires_fresh_research(state: PipelineState, task_text: str) -> bo
             continue
         name = str(server.get("name") or "").strip().lower()
         command = str(server.get("command") or "").strip().lower()
-        if "brave" in name or "search" in name or "browser" in name:
+        if "search" in name or "browser" in name:
             return True
-        if "brave" in command or "browser" in command:
+        if "browser" in command:
             return True
     return False
 
@@ -259,14 +260,23 @@ def clarify_input_node(state: PipelineState) -> dict[str, Any]:
             }
         # P0-1a: Cached NEEDS_CLARIFICATION must also pause the pipeline,
         # not silently continue to PM without user answers.
+        # But only if the cached output actually contains real questions.
         if cached_output.strip().startswith(CLARIFY_NEEDS_CLARIFICATION):
-            from backend.App.orchestration.domain.exceptions import HumanApprovalRequired
-            raise HumanApprovalRequired(
-                step="clarify_input",
-                detail=clarify_output,
-                resume_pipeline_step="human_clarify_input",
-                partial_state={"clarify_input_output": clarify_output},
+            _cached_body = cached_output.strip()[len(CLARIFY_NEEDS_CLARIFICATION):].strip()
+            if len(_cached_body) >= 50 and "?" in _cached_body:
+                from backend.App.orchestration.domain.exceptions import HumanApprovalRequired
+                raise HumanApprovalRequired(
+                    step="clarify_input",
+                    detail=clarify_output,
+                    resume_pipeline_step="human_clarify_input",
+                    partial_state={"clarify_input_output": clarify_output},
+                )
+            _log.warning(
+                "clarify_input: cached NEEDS_CLARIFICATION has no real questions — "
+                "invalidating cache and proceeding as READY."
             )
+            clarify_output = CLARIFY_READY + "\n" + cached_output
+            state["clarify_input_output"] = clarify_output
         return {
             "clarify_input_output": clarify_output,
             "clarify_input_model": "cache",
@@ -294,7 +304,7 @@ def clarify_input_node(state: PipelineState) -> dict[str, Any]:
     # Allows routing clarify_input to a cheaper/faster model without changing the full reviewer model.
     agent = ReviewerAgent(
         system_prompt_path_override=_CLARIFY_INPUT_PROMPT_PATH,
-        model_override=_env_model_override("SWARM_CLARIFY_MODEL", reviewer_cfg.get("model")),
+        model_override=_env_model_override("SWARM_CLARIFY_MODEL", reviewer_cfg.get("model"), reviewer_cfg.get("_planner_capability")),
         environment_override=reviewer_cfg.get("environment"),
         max_output_tokens=_clarify_max_tokens,
         **_remote_api_client_kwargs_for_role(state, reviewer_cfg),
@@ -337,26 +347,65 @@ def clarify_input_node(state: PipelineState) -> dict[str, Any]:
     state["clarify_input_provider"] = agent.used_provider
 
     if clarify_output.strip().startswith(CLARIFY_SIMPLE_ANSWER):
-        if cache_key is not None:
-            _save_clarify_cache(cache_key, cache_identity, clarify_output)
-        return {
-            "clarify_input_output": clarify_output,
-            "clarify_input_model": agent.used_model,
-            "clarify_input_provider": agent.used_provider,
-            "clarify_input_cache": state["clarify_input_cache"],
-            "_pipeline_stop_early": True,
-        }
+        # Guard: if the "simple answer" is actually a long plan (>500 chars),
+        # the model misrouted — treat as READY so the full pipeline runs.
+        _simple_body = clarify_output.strip()[len(CLARIFY_SIMPLE_ANSWER):].strip()
+        if len(_simple_body) > 500:
+            _log.warning(
+                "clarify_input: SIMPLE_ANSWER returned but content is %d chars "
+                "(>500) — likely a misrouted plan. Treating as READY.",
+                len(_simple_body),
+            )
+            clarify_output = CLARIFY_READY + "\n" + _simple_body
+            state["clarify_input_output"] = clarify_output
+        else:
+            if cache_key is not None:
+                _save_clarify_cache(cache_key, cache_identity, clarify_output)
+            return {
+                "clarify_input_output": clarify_output,
+                "clarify_input_model": agent.used_model,
+                "clarify_input_provider": agent.used_provider,
+                "clarify_input_cache": state["clarify_input_cache"],
+                "_pipeline_stop_early": True,
+            }
 
     if clarify_output.strip().startswith(CLARIFY_NEEDS_CLARIFICATION):
-        if cache_key is not None:
-            _save_clarify_cache(cache_key, cache_identity, clarify_output)
-        from backend.App.orchestration.domain.exceptions import HumanApprovalRequired
-        raise HumanApprovalRequired(
-            step="clarify_input",
-            detail=clarify_output,
-            resume_pipeline_step="human_clarify_input",
-            partial_state={"clarify_input_output": clarify_output},
-        )
+        # Validate that the model actually produced questions, not just the prefix.
+        # Weak models sometimes return "NEEDS_CLARIFICATION" with no questions.
+        _clarify_body = clarify_output.strip()[len(CLARIFY_NEEDS_CLARIFICATION):].strip()
+        if len(_clarify_body) < 50 or "?" not in _clarify_body:
+            _log.warning(
+                "clarify_input: NEEDS_CLARIFICATION returned but content has no real questions "
+                "(%d chars, '?' present: %s). Retrying with explicit instruction.",
+                len(_clarify_body), "?" in _clarify_body,
+            )
+            _retry_q_prompt = (
+                prompt
+                + "\n\n[CRITICAL] You returned NEEDS_CLARIFICATION but did not include any actual questions. "
+                "Either list specific numbered questions the user must answer (each ending with '?'), "
+                "or if the task is actually clear enough, respond with READY instead."
+            )
+            clarify_output, _, _ = _llm_planning_agent_run(agent, _retry_q_prompt, state)
+            state["clarify_input_output"] = clarify_output
+            # After retry: re-check — if still no questions, treat as READY
+            if clarify_output.strip().startswith(CLARIFY_NEEDS_CLARIFICATION):
+                _retry_body = clarify_output.strip()[len(CLARIFY_NEEDS_CLARIFICATION):].strip()
+                if len(_retry_body) < 50 or "?" not in _retry_body:
+                    _log.warning(
+                        "clarify_input: retry still has no questions — forcing READY to avoid blocking."
+                    )
+                    clarify_output = CLARIFY_READY + "\n" + clarify_output
+                    state["clarify_input_output"] = clarify_output
+        if clarify_output.strip().startswith(CLARIFY_NEEDS_CLARIFICATION):
+            if cache_key is not None:
+                _save_clarify_cache(cache_key, cache_identity, clarify_output)
+            from backend.App.orchestration.domain.exceptions import HumanApprovalRequired
+            raise HumanApprovalRequired(
+                step="clarify_input",
+                detail=clarify_output,
+                resume_pipeline_step="human_clarify_input",
+                partial_state={"clarify_input_output": clarify_output},
+            )
 
     if cache_key is not None:
         _save_clarify_cache(cache_key, cache_identity, clarify_output)
@@ -636,12 +685,47 @@ def pm_node(state: PipelineState) -> dict[str, Any]:
         + planning_retry_block
         + raw_input
     )
+    # Deep planning: run 5-stage analysis before PM if SWARM_DEEP_PLANNING=1
+    if os.getenv("SWARM_DEEP_PLANNING", "0") == "1":
+        try:
+            from backend.App.orchestration.application.deep_planning import DeepPlanner
+            task_id = os.getenv("SWARM_CURRENT_TASK_ID", "unknown")
+            workspace_root = str(state.get("workspace_root") or os.getenv("SWARM_WORKSPACE_ROOT", ""))
+            _stream_progress_emit(state, "Deep planning: scanning workspace…")
+            plan = DeepPlanner().analyze(
+                task_id=task_id,
+                task_spec=user_input,
+                workspace_root=workspace_root,
+            )
+            if not plan.error:
+                _stream_progress_emit(
+                    state,
+                    f"Deep planning complete — {len(plan.risks)} risks, {len(plan.alternatives)} alternatives, "
+                    f"{len(plan.milestones)} milestones. Recommended: {plan.recommended_alternative or 'n/a'}",
+                )
+                summary = (
+                    f"## Deep Planning Analysis\n\n"
+                    f"Scan: {plan.scan_summary[:400]}\n"
+                    f"Risks: {len(plan.risks)} identified\n"
+                    f"Alternatives: {len(plan.alternatives)}\n"
+                    f"Milestones: {len(plan.milestones)}\n"
+                    f"Recommended: {plan.recommended_alternative}\n\n"
+                )
+                user_input = summary + user_input
+                _log.info("pm_node: deep planning prepended (task=%s)", task_id)  # INV-1
+            else:
+                _stream_progress_emit(state, f"Deep planning failed: {plan.error} — proceeding without it")
+                _log.warning("pm_node: deep planning failed (%s)", plan.error)  # INV-1
+        except Exception as exc:
+            _stream_progress_emit(state, f"Deep planning exception ({exc}) — proceeding without it")
+            _log.warning("pm_node: deep planning exception (%s)", exc)  # INV-1
+
     cfg = (state.get("agent_config") or {}).get("pm") or {}
     # SWARM_PM_MODEL: model override for pm step (env var fallback when not set in config).
     # Useful for routing PM to a tool-free or cheaper model after deterministic evidence prefetch.
     agent = PMAgent(
         system_prompt_path_override=cfg.get("prompt_path") or cfg.get("prompt"),
-        model_override=_env_model_override("SWARM_PM_MODEL", cfg.get("model")),
+        model_override=_env_model_override("SWARM_PM_MODEL", cfg.get("model"), cfg.get("_planner_capability")),
         environment_override=cfg.get("environment"),
         system_prompt_extra=_skills_extra_for_role_cfg(state, cfg),
         **_remote_api_client_kwargs_for_role(state, cfg),
@@ -665,7 +749,7 @@ def pm_node(state: PipelineState) -> dict[str, Any]:
             "Do NOT emit tool call syntax. Produce a structured human-readable task list directly."
         )
         pm_output, _, _ = _llm_planning_agent_run(agent, _retry_input, state)
-    # BUG-F12: retry PM if output is too short (intent-only, no real tasks)
+    # Retry PM if output is too short (intent-only, no real tasks)
     _pm_min_chars = 300
     if pm_output and len(pm_output.strip()) < _pm_min_chars:
         _log.warning(
@@ -680,8 +764,8 @@ def pm_node(state: PipelineState) -> dict[str, Any]:
         )
         pm_output, _, _ = _llm_planning_agent_run(agent, _retry_input, state)
     if (pm_output or "").strip():
-        from backend.App.workspace.application.doc_workspace import write_pipeline_step_to_workspace
-        write_pipeline_step_to_workspace(state, "pm", pm_output)
+        from backend.App.workspace.application.doc_workspace import write_step_wiki
+        write_step_wiki(state, "pm", pm_output)
     memory_artifact = _pm_memory_artifact(plan_ctx, pm_output)
     return {
         "pm_output": pm_output,

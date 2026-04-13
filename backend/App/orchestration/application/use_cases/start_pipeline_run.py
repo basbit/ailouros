@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Optional, Protocol, runtime_checkable
 
 from backend.App.orchestration.domain.ports import TaskId, TaskStatus, TaskStorePort
@@ -36,6 +37,73 @@ class PipelineRunnerProtocol(Protocol):
 
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Post-run wiki generation
+# ---------------------------------------------------------------------------
+
+def _generate_workspace_wiki(
+    workspace_root: Path,
+    pipeline_state: dict[str, Any],
+    task_id: str,
+) -> None:
+    """Update wiki index and rebuild ``graph.json`` after pipeline completion.
+
+    Individual articles are already written incrementally by each pipeline node
+    (pm, ba, arch, dev, qa, devops) via ``write_step_wiki()``.  This function
+    only needs to:
+      1. Write/update the ``index.md`` run-section so the graph has a root node.
+      2. Rebuild ``graph.json`` so the frontend picks up all new articles.
+    """
+    wiki_root = workspace_root / ".swarm" / "wiki"
+    wiki_root.mkdir(parents=True, exist_ok=True)
+
+    _prompt = str(pipeline_state.get("input") or "").strip()[:300]
+
+    # Discover articles written during this run by scanning the wiki directory.
+    index_links: list[str] = []
+    for md_file in sorted(wiki_root.rglob("*.md")):
+        if md_file.name == "index.md":
+            continue
+        try:
+            rel = md_file.relative_to(wiki_root).with_suffix("").as_posix()
+            title = md_file.stem.replace("-", " ").title()
+            # Try to read frontmatter title
+            first_line = md_file.read_text(encoding="utf-8").split("\n")
+            for line in first_line:
+                if line.startswith("title:"):
+                    title = line[len("title:"):].strip()
+                    break
+            index_links.append(f"- [[{rel}]] — {title}")
+        except (OSError, ValueError):
+            continue
+
+    # Write / update index
+    index_path = wiki_root / "index.md"
+    existing_index = index_path.read_text(encoding="utf-8") if index_path.exists() else ""
+    run_section = (
+        f"## Run {task_id[:8]}\n\nTask: {_prompt}\n\n"
+        + ("\n".join(index_links) if index_links else "_No articles yet._")
+        + "\n\n"
+    )
+    index_path.write_text(
+        "---\ntitle: Project Index\ntags: [index]\n---\n\n# Project Wiki\n\n"
+        + run_section
+        + (existing_index.split("## Run", 1)[1] if "## Run" in existing_index else ""),
+        encoding="utf-8",
+    )
+
+    # Rebuild graph.json
+    from backend.App.workspace.application.wiki_service import build_wiki_graph
+    import json as _json
+    graph = build_wiki_graph(wiki_root)
+    graph_file = wiki_root / "graph.json"
+    graph_file.write_text(_json.dumps(graph, ensure_ascii=False, indent=2), encoding="utf-8")
+    logger.info(
+        "wiki_gen: index updated + graph rebuilt (%d nodes) for task=%s ws=%s",
+        len(graph["nodes"]), task_id, workspace_root,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -127,13 +195,21 @@ class StartPipelineRunUseCase:
                     logger.warning("Auto-planner returned empty steps, using DEFAULT_PIPELINE_STEP_IDS")
                 # Apply recommended models if planner returned them
                 recommended_models = plan_result.get("recommended_models")
-                if isinstance(recommended_models, dict):
+                if isinstance(recommended_models, dict) and recommended_models:
+                    agent_cfg: dict = dict(command.agent_config or {})
                     for role, capability in recommended_models.items():
-                        if role in (command.agent_config or {}) and capability == "needs_tool_calling":
-                            logger.info(
-                                "Auto-planner recommends tool_calling model for role '%s'", role
-                            )
-                        # The recommendation is logged; UI handles actual selection
+                        role_cfg: dict = dict(agent_cfg.get(role) or {})
+                        # Only inject if no model is already explicitly configured
+                        if not role_cfg.get("model"):
+                            role_cfg["_planner_capability"] = capability
+                            agent_cfg[role] = role_cfg
+                        logger.info(
+                            "Auto-planner recommends capability '%s' for role '%s'",
+                            capability,
+                            role,
+                        )
+                    # Write back so the pipeline runner sees the updated agent_config
+                    command.agent_config = agent_cfg
             except Exception as plan_exc:
                 logger.error("Auto-planner failed: %s — using default steps", plan_exc)
 
@@ -198,6 +274,18 @@ class StartPipelineRunUseCase:
                     break
             if not final_text:
                 final_text = result.get("input", "")
+
+            # Generate wiki docs for the workspace from pipeline outputs
+            _ws = str(result.get("workspace_root") or command.workspace_root_str or "").strip()
+            if _ws:
+                try:
+                    _generate_workspace_wiki(
+                        workspace_root=Path(_ws),
+                        pipeline_state=result,
+                        task_id=tid.value,
+                    )
+                except Exception as wiki_exc:
+                    logger.warning("Wiki generation failed (non-fatal): %s", wiki_exc)
 
         self._task_store.update_task(
             tid,

@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from backend.App.orchestration.domain.defect import parse_defect_report
 from backend.App.orchestration.application.review_moa import (
     _moa_cfg,
     _panel_size,
@@ -207,6 +208,78 @@ def test_run_reviewer_or_moa_single():
     assert result["dev_review_output"].startswith("VERDICT: OK")
     assert result["dev_review_model"] == "claude"
     assert result["dev_review_provider"] == "anthropic"
+
+
+def test_run_reviewer_or_moa_repairs_missing_json_defect_report():
+    agents = []
+    for _ in range(2):
+        mock_agent = MagicMock()
+        mock_agent.used_model = "claude"
+        mock_agent.used_provider = "anthropic"
+        agents.append(mock_agent)
+
+    repaired_output = (
+        "Summary of issues.\n\n"
+        "<defect_report>"
+        "{\"defects\":[{\"id\":\"D1\",\"title\":\"Missing implementation\",\"severity\":\"P1\","
+        "\"file_paths\":[\"backend/src/App/Post/Infrastructure/Parser/EventorEventParser.php\"],"
+        "\"expected\":\"Parser implementation exists\",\"actual\":\"Only planning text was generated\","
+        "\"repro_steps\":[\"Run dev step\"],\"acceptance\":[\"Create the parser file\"],"
+        "\"category\":\"missing_implementation\",\"fixed\":false}],"
+        "\"test_scenarios\":[],\"edge_cases\":[],\"regression_checks\":[]}"
+        "</defect_report>\n"
+        "VERDICT: NEEDS_WORK"
+    )
+
+    with patch(
+        "backend.App.orchestration.application.review_moa.run_agent_with_boundary",
+        side_effect=["Summary only.\n\nVERDICT: NEEDS_WORK", repaired_output],
+    ):
+        result = run_reviewer_or_moa(
+            {},
+            pipeline_step="review_dev",
+            prompt="review this",
+            output_key="dev_review_output",
+            model_key="dev_review_model",
+            provider_key="dev_review_provider",
+            agent_factory=lambda: agents.pop(0),
+            require_json_defect_report=True,
+        )
+
+    report = parse_defect_report(result["dev_review_output"])
+    assert report.has_blockers is True
+    assert report.defects[0].title == "Missing implementation"
+
+
+def test_run_reviewer_or_moa_synthesizes_blocker_when_repair_still_invalid():
+    agents = []
+    for _ in range(2):
+        mock_agent = MagicMock()
+        mock_agent.used_model = "claude"
+        mock_agent.used_provider = "anthropic"
+        agents.append(mock_agent)
+
+    with patch(
+        "backend.App.orchestration.application.review_moa.run_agent_with_boundary",
+        side_effect=[
+            "No structured block.\n\nVERDICT: NEEDS_WORK",
+            "Still no machine-readable block.\n\nVERDICT: NEEDS_WORK",
+        ],
+    ):
+        result = run_reviewer_or_moa(
+            {},
+            pipeline_step="review_dev",
+            prompt="review this",
+            output_key="dev_review_output",
+            model_key="dev_review_model",
+            provider_key="dev_review_provider",
+            agent_factory=lambda: agents.pop(0),
+            require_json_defect_report=True,
+        )
+
+    report = parse_defect_report(result["dev_review_output"])
+    assert report.has_blockers is True
+    assert report.defects[0].category == "review_contract"
 
 
 def test_run_reviewer_or_moa_moa_enabled():

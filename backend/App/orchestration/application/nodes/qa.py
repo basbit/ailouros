@@ -11,6 +11,7 @@ from backend.App.orchestration.application.pipeline_state import PipelineState
 from backend.App.orchestration.domain.defect import DefectReport, parse_defect_report
 
 from backend.App.orchestration.application.nodes._shared import (
+    _cfg_model,
     _code_analysis_is_weak,
     _compact_code_analysis_for_prompt,
     _llm_build_agent_run,
@@ -52,6 +53,7 @@ def qa_node(state: PipelineState) -> dict[str, Any]:
     tasks: list[dict[str, Any]] = list(state.get("dev_qa_tasks") or [])
     dev_task_outputs: list[str] = list(state.get("dev_task_outputs") or [])
     qa_cfg = (state.get("agent_config") or {}).get("qa") or {}
+    _qa_compact_limit = int(os.getenv("SWARM_QA_COMPACT_PROMPT_CHARS", "4000").strip())
     if not isinstance(qa_cfg, dict):
         qa_cfg = {}
     langs = _swarm_languages_line(state)
@@ -67,7 +69,7 @@ def qa_node(state: PipelineState) -> dict[str, Any]:
         _stream_progress_emit(state, "QA: один прогон — сборка промпта и агента…")
         agent = QAAgent(
             system_prompt_path_override=qa_cfg.get("prompt_path") or qa_cfg.get("prompt"),
-            model_override=qa_cfg.get("model"),
+            model_override=_cfg_model(qa_cfg),
             environment_override=qa_cfg.get("environment"),
             system_prompt_extra=_skills_extra_for_role_cfg(state, qa_cfg),
             **_remote_api_client_kwargs_for_role(state, qa_cfg),
@@ -98,8 +100,8 @@ def qa_node(state: PipelineState) -> dict[str, Any]:
             f"{dev_out_for_prompt}"
             "\n\nOutput contract:\n"
             "1. Human-readable QA report with evidence.\n"
-            "2. A final line `VERDICT: OK` or `VERDICT: NEEDS_WORK`.\n"
-            "3. A machine-readable `<defect_report>...</defect_report>` JSON block with defects, test_scenarios, edge_cases, regression_checks.\n"
+            "2. A machine-readable `<defect_report>...</defect_report>` JSON block with defects, test_scenarios, edge_cases, regression_checks.\n"
+            "3. A final line `VERDICT: OK` or `VERDICT: NEEDS_WORK`.\n"
         )
         _stream_progress_emit(
             state,
@@ -107,7 +109,23 @@ def qa_node(state: PipelineState) -> dict[str, Any]:
             f"(model={getattr(agent, 'model', '') or '?'})…",
         )
         qa_output, qa_model_out, qa_provider_out = _llm_build_agent_run(agent, prompt, state)
-        # EC-6: retry if QA output is too short (likely no real verification)
+        # Retry on empty/trivial output — model returned nothing or near-nothing
+        if not (qa_output or "").strip():
+            logger.warning(
+                "qa_node: model returned empty output — retrying with compact prompt. task_id=%s",
+                (state.get("task_id") or "")[:36],
+            )
+            _stream_progress_emit(state, "QA: empty response — retrying with compact prompt…")
+            _compact_prompt = (
+                "Review the dev output below and report defects.\n\n"
+                f"Dev output (first {_qa_compact_limit} chars):\n{dev_out_for_prompt[:_qa_compact_limit]}\n\n"
+                "Respond with:\n"
+                "1. A brief QA report.\n"
+                "2. A `<defect_report>` JSON block.\n"
+                "3. Final line: VERDICT: OK or VERDICT: NEEDS_WORK\n"
+            )
+            qa_output, qa_model_out, qa_provider_out = _llm_build_agent_run(agent, _compact_prompt, state)
+        # Retry if QA output is too short (likely no real verification)
         if qa_output and len(qa_output) < 500:
             logger.warning(
                 "QA output too short (%d chars) — retrying with tool-use instruction",
@@ -127,6 +145,9 @@ def qa_node(state: PipelineState) -> dict[str, Any]:
             state, f"QA: готово ({len(qa_output or '')} симв.)"
         )
         report = parse_defect_report(qa_output)
+        if (qa_output or "").strip():
+            from backend.App.workspace.application.doc_workspace import write_step_wiki
+            write_step_wiki(state, "qa", qa_output)
         return {
             "qa_output": qa_output,
             "qa_task_outputs": [qa_output],
@@ -147,7 +168,7 @@ def qa_node(state: PipelineState) -> dict[str, Any]:
         )
         agent = QAAgent(
             system_prompt_path_override=qa_cfg.get("prompt_path") or qa_cfg.get("prompt"),
-            model_override=qa_cfg.get("model"),
+            model_override=_cfg_model(qa_cfg),
             environment_override=qa_cfg.get("environment"),
             system_prompt_extra=_skills_extra_for_role_cfg(state, qa_cfg),
             **_remote_api_client_kwargs_for_role(state, qa_cfg),
@@ -194,8 +215,8 @@ def qa_node(state: PipelineState) -> dict[str, Any]:
             f"{dev_slice}"
             "\n\nOutput contract:\n"
             "1. Human-readable QA report with evidence.\n"
-            "2. A final line `VERDICT: OK` or `VERDICT: NEEDS_WORK`.\n"
-            "3. A machine-readable `<defect_report>...</defect_report>` JSON block.\n"
+            "2. A machine-readable `<defect_report>...</defect_report>` JSON block.\n"
+            "3. A final line `VERDICT: OK` or `VERDICT: NEEDS_WORK`.\n"
         )
         _stream_progress_emit(
             state,
@@ -203,7 +224,26 @@ def qa_node(state: PipelineState) -> dict[str, Any]:
             f"(model={getattr(agent, 'model', '') or '?'})…",
         )
         output, used_model, used_provider = _llm_build_agent_run(agent, prompt, state)
-        # EC-6: retry if QA subtask output is too short
+        # Retry on empty output — model returned nothing
+        if not (output or "").strip():
+            logger.warning(
+                "qa_node subtask %d/%d: empty output — retrying with compact prompt. task_id=%s",
+                i + 1, task_count, (state.get("task_id") or "")[:36],
+            )
+            _stream_progress_emit(
+                state,
+                f"QA {i + 1}/{task_count}: empty response — retrying with compact prompt…",
+            )
+            _compact = (
+                f"Review the dev output for subtask '{title}' and report defects.\n\n"
+                f"Dev output (first {_qa_compact_limit} chars):\n{dev_slice[:_qa_compact_limit]}\n\n"
+                "Respond with:\n"
+                "1. A brief QA report.\n"
+                "2. A `<defect_report>` JSON block.\n"
+                "3. Final line: VERDICT: OK or VERDICT: NEEDS_WORK\n"
+            )
+            output, used_model, used_provider = _llm_build_agent_run(agent, _compact, state)
+        # Retry if QA subtask output is too short
         if output and len(output) < 500:
             logger.warning(
                 "QA subtask %d/%d output too short (%d chars) — retrying with tool-use instruction",
@@ -256,6 +296,9 @@ def qa_node(state: PipelineState) -> dict[str, Any]:
     report = DefectReport()
     for qa_text in qa_task_outputs:
         report.merge(parse_defect_report(qa_text))
+    if (merged or "").strip():
+        from backend.App.workspace.application.doc_workspace import write_step_wiki
+        write_step_wiki(state, "qa", merged)
     return {
         "qa_output": merged,
         "qa_task_outputs": qa_task_outputs,
@@ -332,8 +375,8 @@ def review_qa_node(state: PipelineState) -> dict[str, Any]:
         "[ ] No web E2E tests for native-mobile stack without explicit requirement\n\n"
         "Output contract:\n"
         "1. Human-readable QA review summary.\n"
-        "2. Final line `VERDICT: OK` or `VERDICT: NEEDS_WORK`.\n"
-        "3. A machine-readable `<defect_report>...</defect_report>` JSON block.\n\n"
+        "2. A machine-readable `<defect_report>...</defect_report>` JSON block.\n"
+        "3. Final line `VERDICT: OK` or `VERDICT: NEEDS_WORK`.\n\n"
         f"User task:\n{user_block}\n\n"
         f"Dev artifact:\n{dev_output}\n\n"
         f"QA artifact:\n{qa_output}"
@@ -346,6 +389,7 @@ def review_qa_node(state: PipelineState) -> dict[str, Any]:
         model_key="qa_review_model",
         provider_key="qa_review_provider",
         agent_factory=lambda: _make_reviewer_agent(state),
+        require_json_defect_report=True,
     )
     result["qa_review_defect_report"] = parse_defect_report(str(result.get("qa_review_output") or "")).to_dict()
     return result

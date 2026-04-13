@@ -120,6 +120,7 @@ def run_with_mcp_tools_openai_compat(
     )
 
     # Builtin tools: check env flags set by auto.py
+    _web_search_enabled = bool(os.getenv("_WEB_SEARCH_ENABLED", ""))
     _ddg_enabled = bool(os.getenv("_DDG_SEARCH_ENABLED", ""))
     _fetch_page_enabled = bool(os.getenv("_FETCH_PAGE_ENABLED", ""))
     _workspace_root = os.getenv("SWARM_WORKSPACE_ROOT", "").strip()
@@ -141,7 +142,21 @@ def run_with_mcp_tools_openai_compat(
             if _removed:
                 logger.info("MCP: filtered %d deprecated tool(s) from tool list", _removed)
 
-        # Inject DDG web_search tool if enabled and no Brave MCP server provides it
+        # Inject web_search tool for Tavily/Exa/ScrapingDog router
+        if _web_search_enabled:
+            from backend.App.integrations.infrastructure.mcp.web_search.web_search_router import (
+                web_search_mcp_tool_definition,
+                web_search_available,
+            )
+            if web_search_available():
+                existing_tool_names = {
+                    t.get("function", {}).get("name", "") for t in tools
+                }
+                if "web_search" not in existing_tool_names:
+                    tools.append(web_search_mcp_tool_definition())
+                    logger.info("MCP: web_search tool injected (provider router)")
+
+        # Inject DDG web_search tool as fallback (no provider keys configured)
         if _ddg_enabled:
             from backend.App.integrations.infrastructure.mcp.web_search.ddg_search import (
                 ddg_search_mcp_tool_definition,
@@ -153,7 +168,7 @@ def run_with_mcp_tools_openai_compat(
                 }
                 if "web_search" not in existing_tool_names:
                     tools.append(ddg_search_mcp_tool_definition())
-                    logger.info("MCP: DDG web_search tool injected (no Brave key, DDG available)")
+                    logger.info("MCP: DDG web_search tool injected (no provider keys, DDG available)")
             else:
                 logger.warning(
                     "MCP: DDG search enabled but duckduckgo-search package not installed. "
@@ -267,6 +282,7 @@ def run_with_mcp_tools_openai_compat(
             model=model,
             prov_label=prov_label,
             cancel_event=cancel_event,
+            web_search_enabled=_web_search_enabled,
             ddg_enabled=_ddg_enabled,
             fetch_page_enabled=_fetch_page_enabled,
         )

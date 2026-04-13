@@ -1,15 +1,13 @@
-"""StepStreamExecutor: run a pipeline step with heartbeat progress events.
+"""StepStreamExecutor: run a pipeline step with queued progress events.
 
-Extracted from pipeline_step_runner.py to separate the threading/heartbeat
+Extracted from pipeline_step_runner.py to separate the threading/progress-stream
 infrastructure concern from output-key knowledge (which lives in
 StepOutputExtractor).
 """
 from __future__ import annotations
 
 import logging
-import os
 import queue
-import time
 from collections.abc import Callable, Generator
 from concurrent.futures import ThreadPoolExecutor, wait
 from typing import Any, Optional, cast
@@ -21,29 +19,24 @@ from backend.App.orchestration.domain.exceptions import PipelineCancelled
 logger = logging.getLogger(__name__)
 
 
-def _stream_progress_heartbeat_seconds() -> float:
-    """Keepalive interval for SSE.
-
-    Without periodic yields the client appears to hang while waiting for
-    the LLM.  Controlled by ``SWARM_PIPELINE_PROGRESS_HEARTBEAT_SEC``.
-    """
-    env_value = os.getenv("SWARM_PIPELINE_PROGRESS_HEARTBEAT_SEC", "8").strip()
-    try:
-        v = float(env_value)
-    except ValueError:
-        return 8.0
-    return max(2.0, min(v, 120.0))
-
-
 def _format_elapsed_wall(seconds: float) -> str:
-    total_seconds = int(max(0.0, seconds))
-    minutes, remaining_secs = divmod(total_seconds, 60)
-    if minutes >= 60:
-        hours, minutes = divmod(minutes, 60)
-        return f"{hours}h {minutes}m {remaining_secs}s"
-    if minutes:
-        return f"{minutes}m {remaining_secs}s"
-    return f"{remaining_secs}s"
+    """Format elapsed wall-clock seconds into a human-readable string.
+
+    Examples:
+        45    → "45s"
+        90    → "1m 30s"
+        3661  → "1h 1m 1s"
+        0     → "0s"
+        -5    → "0s"
+    """
+    total = max(0, int(seconds))
+    h, remainder = divmod(total, 3600)
+    m, s = divmod(remainder, 60)
+    if h:
+        return f"{h}h {m}m {s}s"
+    if m:
+        return f"{m}m {s}s"
+    return f"{s}s"
 
 
 class StepStreamExecutor:
@@ -65,12 +58,11 @@ class StepStreamExecutor:
         step_func: Callable[[PipelineState], dict[str, Any]],
         state: PipelineState,
     ) -> Generator[dict[str, Any], None, None]:
-        """Run *step_func* in a thread and yield progress/heartbeat events.
+        """Run *step_func* in a thread and yield queued progress events.
 
         The step function is executed in a ``ThreadPoolExecutor``.  Progress
         events written to the internal queue by ``_stream_progress_emit`` are
-        yielded as they arrive; a heartbeat event is yielded every
-        ``SWARM_PIPELINE_PROGRESS_HEARTBEAT_SEC`` seconds while waiting.
+        yielded as they arrive.
 
         Args:
             step_id: The agent/step identifier used in yielded events.
@@ -85,8 +77,6 @@ class StepStreamExecutor:
         pq: queue.Queue[str] = queue.Queue()
         cast(dict, state)["_stream_progress_queue"] = pq
         holder: dict[str, Any] = {}
-        hb_every = _stream_progress_heartbeat_seconds()
-        step_started = time.monotonic()
         pool: Optional[ThreadPoolExecutor] = None
         try:
 
@@ -98,7 +88,6 @@ class StepStreamExecutor:
 
             pool = ThreadPoolExecutor(max_workers=1)
             fut = pool.submit(work)
-            last_hb = time.monotonic()
             while True:
                 while True:
                     try:
@@ -115,18 +104,6 @@ class StepStreamExecutor:
                 if fut.done():
                     break
                 wait((fut,), timeout=0.12)
-                now = time.monotonic()
-                if now - last_hb >= hb_every:
-                    last_hb = now
-                    elapsed = now - step_started
-                    yield {
-                        "agent": step_id,
-                        "status": "progress",
-                        "message": (
-                            f"{step_id}: worker busy — building prompt or waiting for HTTP/LLM generation "
-                            f"(elapsed {_format_elapsed_wall(elapsed)}; heartbeat every {int(hb_every)}s)…"
-                        ),
-                    }
             if pool is not None:
                 pool.shutdown(wait=True)
                 pool = None

@@ -91,7 +91,7 @@ def _enforce_workspace_identity(
 
 
 def _legacy_workspace_parts_from_input(user_input: str) -> dict[str, str]:
-    """Если ``input`` собран ``build_input_with_workspace``, выделяем user_task."""
+    """Extract user_task from a pre-assembled input string built by build_input_with_workspace."""
     if _ASSEMBLED_USER_TASK_MARKER not in user_input:
         return {
             "user_task": user_input.strip(),
@@ -246,9 +246,10 @@ def _initial_pipeline_state(
     initial_state["dev_subtask_contracts"] = []
     initial_state["ba_repo_evidence"] = []
     initial_state["ba_unverified_claims"] = []
+    initial_state["wiki_context"] = ""
     if cancel_event is not None:
         initial_state["_pipeline_cancel_event"] = cancel_event
-    # K-1 / K-11: propagate UI-driven feature flags to env vars so that
+    # Propagate UI-driven feature flags to env vars so that
     # self_verify.py and deep_planning.py (which read env at module level) can be
     # re-read after each pipeline initialisation via their own accessors.
     swarm_cfg = effective_agent_config.get("swarm") or {}
@@ -256,13 +257,14 @@ def _initial_pipeline_state(
     _set_feature_env(swarm_cfg, "self_verify_model", "SWARM_SELF_VERIFY_MODEL", is_str=True)
     _set_feature_env(swarm_cfg, "deep_planning", "SWARM_DEEP_PLANNING")
     _set_feature_env(swarm_cfg, "deep_planning_model", "SWARM_DEEP_PLANNING_MODEL", is_str=True)
-    # EC-3b: wire UI toggles to env (auto_approve, auto_retry, dream)
+    # Wire UI toggles to env (auto_approve, auto_retry, dream)
     _set_feature_env(swarm_cfg, "auto_approve", "SWARM_AUTO_APPROVE")
     _set_feature_env(swarm_cfg, "auto_approve_timeout", "SWARM_AUTO_APPROVE_TIMEOUT_SECONDS", is_str=True)
     _set_feature_env(swarm_cfg, "auto_retry", "SWARM_AUTO_RETRY_ON_NEEDS_WORK")
     _set_feature_env(swarm_cfg, "max_step_retries", "SWARM_MAX_STEP_RETRIES", is_str=True)
     _set_feature_env(swarm_cfg, "dream_enabled", "SWARM_DREAM_ENABLED")
     _set_feature_env(swarm_cfg, "background_agent", "SWARM_BACKGROUND_AGENT")
+    _set_feature_env(swarm_cfg, "background_watch_paths", "SWARM_BACKGROUND_AGENT_WATCH_PATHS", is_str=True)
 
     # Propagate runtime context to env for agents that read env directly (e.g. PMAgent)
     if workspace_root:
@@ -280,7 +282,7 @@ HUMAN_PIPELINE_STEP_TO_STATE_KEY: dict[str, str] = {
     for step_id, output_key in ARTIFACT_AGENT_OUTPUT_KEYS
     if step_id.startswith("human_")
 }
-# Старые UI / pipeline_steps: human_pm_tasks → те же поля, что и dev_lead
+# Legacy alias: human_pm_tasks maps to the same fields as dev_lead
 HUMAN_PIPELINE_STEP_TO_STATE_KEY["human_pm_tasks"] = "dev_lead_human_output"
 
 # Runtime-only keys that must not be serialised or deep-copied.
@@ -294,7 +296,7 @@ def _state_snapshot(state: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# C-1: State size compaction
+# State size compaction
 # ---------------------------------------------------------------------------
 
 def _state_max_chars() -> int:
@@ -433,7 +435,7 @@ def _compact_state_if_needed(
 
 
 def _migrate_legacy_pm_tasks_state(state: dict[str, Any]) -> None:
-    """Снимки до переименования pm_tasks → dev_lead."""
+    """Copy legacy pm_tasks_* fields into dev_lead_* if the new fields are absent (rename migration)."""
     pairs: tuple[tuple[str, str], ...] = (
         ("pm_tasks_output", "dev_lead_output"),
         ("pm_tasks_model", "dev_lead_model"),

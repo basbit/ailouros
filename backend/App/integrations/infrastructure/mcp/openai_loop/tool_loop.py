@@ -50,6 +50,15 @@ def _strip_think_tags(text: str) -> str:
     return _THINK_TAG_RE.sub("", text).strip()
 
 
+def _detect_truncated_xml(text: str) -> list[str]:
+    """Return list of tag names that appear to be unclosed in text."""
+    from collections import Counter
+    opened: list[str] = re.findall(r"<(swarm_file|swarm_patch|swarm_shell)\b[^>]*>", text)
+    closed: list[str] = re.findall(r"</(swarm_file|swarm_patch|swarm_shell)>", text)
+    diff = Counter(opened) - Counter(closed)
+    return [tag for tag, count in diff.items() if count > 0]
+
+
 _TEXT_TOOL_CALL_RE = re.compile(
     r"<tool_call>\s*<function=(\w+)>(.*?)</function>\s*</tool_call>",
     re.DOTALL,
@@ -84,6 +93,36 @@ _TOOL_LEAK_RE = re.compile(
     r"\bfunction_call\s*\(",              # function_call(...)
     re.IGNORECASE | re.MULTILINE,
 )
+
+# Control tokens that local models (gpt-oss, LM Studio) may leak into text output.
+_CONTROL_TOKEN_RE = re.compile(
+    r"<\|(?:start|end|channel|constrain|message|im_start|im_end)\|>",
+)
+
+
+def sanitize_control_tokens(text: str) -> str:
+    """Strip model control tokens that leaked into plain-text output.
+
+    Local models (gpt-oss-20b via LM Studio) sometimes emit internal scaffolding
+    tokens like ``<|start|>``, ``<|channel|>``, ``<|constrain|>`` in their text
+    response.  This function removes them so downstream consumers get clean text.
+    """
+    if not text or not _CONTROL_TOKEN_RE.search(text):
+        return text
+    logger.warning(
+        "sanitize_control_tokens: stripping leaked control tokens from output (%d chars). "
+        "Preview: %r",
+        len(text), text[:120],
+    )
+    cleaned = _CONTROL_TOKEN_RE.sub("", text)
+    # Also strip leftover fragments like "assistant", "commentary to=functions.xxx",
+    # "json" that follow control tokens.
+    cleaned = re.sub(
+        r"(?:^|\n)(?:assistant|commentary\s+to=functions\.\w+|json)\s*(?:\n|$)",
+        "\n",
+        cleaned,
+    )
+    return cleaned.strip()
 
 
 def _mcp_write_action_from_tool_call(
@@ -258,6 +297,7 @@ class MCPToolLoop:
         model: str,
         prov_label: str,
         cancel_event: Optional[threading.Event] = None,
+        web_search_enabled: bool = False,
         ddg_enabled: bool = False,
         fetch_page_enabled: bool = False,
     ) -> None:
@@ -266,8 +306,34 @@ class MCPToolLoop:
         self._model = model
         self._prov_label = prov_label
         self._cancel_event = cancel_event
+        self._web_search_enabled = web_search_enabled
         self._ddg_enabled = ddg_enabled
         self._fetch_page_enabled = fetch_page_enabled
+
+    @staticmethod
+    def _handle_web_search(args: dict[str, Any]) -> str:
+        """Execute web search via the Tavily/Exa/ScrapingDog router."""
+        from backend.App.integrations.infrastructure.mcp.web_search.web_search_router import (
+            web_search,
+        )
+        query = args.get("query", "")
+        if not query:
+            return "ERROR: 'query' parameter is required for web_search"
+        try:
+            results = web_search(query, max_results=5)
+        except RuntimeError as exc:
+            return f"ERROR: {exc}"
+        except Exception as exc:
+            return f"ERROR: web search failed — {exc}"
+        if not results:
+            return f"No results found for: {query}"
+        lines = []
+        for r in results:
+            lines.append(f"**{r.get('title', '')}**")
+            lines.append(f"URL: {r.get('href', '')}")
+            lines.append(r.get("body", ""))
+            lines.append("")
+        return "\n".join(lines)
 
     @staticmethod
     def _handle_ddg_search(args: dict[str, Any]) -> str:
@@ -280,7 +346,8 @@ class MCPToolLoop:
             return (
                 "ERROR: DuckDuckGo search unavailable — "
                 "package 'duckduckgo-search' is not installed. "
-                "Install it or set SWARM_BRAVE_SEARCH_API_KEY for Brave Search."
+                "Set SWARM_TAVILY_API_KEY, SWARM_EXA_API_KEY, or SWARM_SCRAPINGDOG_API_KEY "
+                "to use the multi-provider web search router instead."
             )
         query = args.get("query", "")
         if not query:
@@ -372,6 +439,7 @@ class MCPToolLoop:
         _mcp_write_actions: list[dict[str, str]] = []
         _tool_parser_failures = 0
         _files_read_count = 0  # track read_file / read_text_file / read_multiple_files calls
+        _file_read_cache: dict[str, str] = {}  # FIX 10.4: per-invocation read cache (not shared across calls)
         _time_to_first_tool: float | None = None
         _time_last_tool: float | None = None
         _loop_start_time = time.monotonic()
@@ -565,6 +633,41 @@ class MCPToolLoop:
                     model, len(raw_content),
                 )
 
+            # FIX 10.2: Detect truncated XML output (unclosed swarm_file/patch/shell tags)
+            if content_text:
+                _truncated_tags = _detect_truncated_xml(content_text)
+                if _truncated_tags:
+                    # Check if the loop will continue (rounds remaining)
+                    _rounds_used = sum(
+                        1 for m in messages if m.get("role") == "assistant"
+                    )
+                    _rounds_remaining = max_rounds - _rounds_used - 1
+                    if _rounds_remaining > 0 and _retry_count < _max_retries:
+                        logger.warning(
+                            "[TRUNCATION] Unclosed tags detected: %s — injecting continuation prompt",
+                            _truncated_tags,
+                        )
+                        messages.append({
+                            "role": "assistant",
+                            "content": content_text,
+                        })
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                f"Your previous response was truncated. "
+                                f"The following tags were left unclosed: {_truncated_tags}. "
+                                "Please continue from where you left off and close all open tags."
+                            ),
+                        })
+                        final_text = ""
+                        continue
+                    else:
+                        logger.warning(
+                            "[TRUNCATION_DETECTED_AT_END] Unclosed tags %s detected but no retries remaining — "
+                            "continuing with partial output.",
+                            _truncated_tags,
+                        )
+
             tool_calls = getattr(msg, "tool_calls", None) or []
             # Parse text-based tool calls from content (models that write
             # <tool_call><function=name><parameter=key>val... as text)
@@ -722,6 +825,19 @@ class MCPToolLoop:
                         args = {}
                 except json.JSONDecodeError:
                     args = {}
+                # FIX: Local LLMs (Qwen/DeepSeek) often stringify JSON
+                # arrays/objects inside tool-call arguments, e.g.
+                #   {"paths": "[\"a.txt\",\"b.txt\"]"}  instead of
+                #   {"paths": ["a.txt","b.txt"]}
+                # Auto-parse such values so MCP tools receive correct types.
+                for _ak, _av in list(args.items()):
+                    if isinstance(_av, str) and _av and _av[0] in ("[", "{"):
+                        try:
+                            _parsed = json.loads(_av)
+                            if isinstance(_parsed, (list, dict)):
+                                args[_ak] = _parsed
+                        except (json.JSONDecodeError, ValueError):
+                            pass
                 # Track MCP write/edit/create calls and read-file calls
                 _name_lower = (name.split("__", 1)[-1] if "__" in name else name).lower()
                 if any(w in _name_lower for w in ("write", "edit", "create", "move")):
@@ -731,19 +847,35 @@ class MCPToolLoop:
                         _mcp_write_actions.append(action)
                 if any(r in _name_lower for r in _READ_TOOL_FRAGMENTS):
                     _files_read_count += 1
-                # Builtin tools: handle locally without MCP dispatch
-                if name == "web_search" and self._ddg_enabled:
-                    result = self._handle_ddg_search(args)
-                elif name == "fetch_page" and self._fetch_page_enabled:
-                    result = self._handle_fetch_page(args)
-                elif name in {"grep_context", "find_class_definition", "find_symbol_usages"}:
-                    result = self._handle_local_evidence_tool(name, args)
+                # FIX 10.4: Check per-invocation read cache for deterministic read tools.
+                # Only cache tools whose names suggest deterministic reads (not writes/searches).
+                _is_cacheable_read = any(
+                    kw in _name_lower
+                    for kw in ("read_file", "get_file", "fetch_file", "read_text_file", "read_multiple")
+                )
+                _cache_key = f"{name}:{json.dumps(args, sort_keys=True)}" if _is_cacheable_read else ""
+                if _is_cacheable_read and _cache_key in _file_read_cache:
+                    result = _file_read_cache[_cache_key]
+                    logger.debug("[CACHE HIT] tool=%r key_len=%d result_len=%d", name, len(_cache_key), len(result))
                 else:
-                    with _mcp_global_lock_acquire():
-                        try:
-                            result = self._pool.dispatch_tool(name, args, cancel_event=cancel_event)
-                        except Exception as e:
-                            result = f"tool error: {e}"
+                    # Builtin tools: handle locally without MCP dispatch
+                    if name == "web_search" and self._web_search_enabled:
+                        result = self._handle_web_search(args)
+                    elif name == "web_search" and self._ddg_enabled:
+                        result = self._handle_ddg_search(args)
+                    elif name == "fetch_page" and self._fetch_page_enabled:
+                        result = self._handle_fetch_page(args)
+                    elif name in {"grep_context", "find_class_definition", "find_symbol_usages"}:
+                        result = self._handle_local_evidence_tool(name, args)
+                    else:
+                        with _mcp_global_lock_acquire():
+                            try:
+                                result = self._pool.dispatch_tool(name, args, cancel_event=cancel_event)
+                            except Exception as e:
+                                result = f"tool error: {e}"
+                    # Store in cache only for cacheable read tools (and only successful results)
+                    if _is_cacheable_read and not result.startswith("tool error:"):
+                        _file_read_cache[_cache_key] = result
                 # EC-2: Inject recovery hint for path errors
                 if "access denied" in result.lower() or "outside allowed" in result.lower():
                     _ws_root = getattr(self._pool, '_workspace_root', None) or ""
@@ -802,6 +934,39 @@ class MCPToolLoop:
                 "or set workspace_context_mode=inline to pre-load files.",
                 len(final_text), model, final_text[:120],
             )
+        # If model returned completely empty on the FIRST call (round 0, no text,
+        # no tools) — most likely the tools schema overflowed the context window.
+        # Retry once without tools to give the model a chance to produce text.
+        if not final_text and _tool_call_rounds == 0:
+            logger.warning(
+                "MCP: model %r returned empty on first call (0 tool rounds, 0 text). "
+                "Likely context overflow from tools schema. "
+                "Retrying WITHOUT tools (text-only mode).",
+                model,
+            )
+            # Keep only system + user messages, strip any tool-related content
+            _text_only_msgs = [m for m in messages if m.get("role") in ("system", "user")]
+            try:
+                _no_tool_kw: dict[str, Any] = {
+                    "model": model,
+                    "messages": _text_only_msgs,
+                    "temperature": temperature,
+                }
+                _no_tool_kw = merge_openai_compat_max_tokens(
+                    _no_tool_kw, base_url=str(getattr(client, "base_url", "") or ""),
+                )
+                _no_tool_resp = client.chat.completions.create(**_no_tool_kw)
+                if _no_tool_resp.choices:
+                    _no_tool_text = (_no_tool_resp.choices[0].message.content or "").strip()
+                    if _no_tool_text:
+                        final_text = _strip_think_tags(_no_tool_text) or _no_tool_text
+                        logger.info(
+                            "MCP: text-only retry succeeded for model %r (%d chars).",
+                            model, len(final_text),
+                        )
+            except Exception as _nt_exc:
+                logger.warning("MCP: text-only retry also failed: %s", _nt_exc)
+
         # If model used tools but never wrote text, give it one last chance
         # with tools disabled — force a text response.
         if not final_text and _tool_call_rounds > 0:

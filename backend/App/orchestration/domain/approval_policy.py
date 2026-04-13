@@ -6,10 +6,12 @@ Default: SWARM_AUTO_APPROVE=policy (rule-based evaluation).
 """
 from __future__ import annotations
 
+import hashlib
 import logging
+import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TypedDict
+from typing import Optional, TypedDict
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +43,7 @@ class ApprovalDecision:
     approved: bool
     rule_matched: str | None
     reason: str
+    audit: Optional[dict[str, object]] = None
 
 
 @dataclass(frozen=True)
@@ -87,14 +90,34 @@ class ApprovalPolicy:
         self._config = config or ApprovalPolicyConfig()
         self._artifact = self._config.artifact or ApprovalPolicyArtifact()
 
-    def evaluate(self, step: ApprovalStep, state: ApprovalState) -> ApprovalDecision:
+    def evaluate(
+        self,
+        step: ApprovalStep,
+        state: ApprovalState,
+        content: str = "",
+    ) -> ApprovalDecision:
         decision = self._evaluate_internal(step, state)
+        if decision.approved:
+            audit: Optional[dict[str, object]] = {
+                "approved_at": time.time(),
+                "content_hash": hashlib.sha256(
+                    content[:2048].encode()
+                ).hexdigest()[:16],
+                "rule_matched": str(decision.rule_matched) if decision.rule_matched else None,
+            }
+            decision = ApprovalDecision(
+                approved=decision.approved,
+                rule_matched=decision.rule_matched,
+                reason=decision.reason,
+                audit=audit,
+            )
         logger.info(  # INV-1, INV-6
-            "AutoApproval: step=%s approved=%s rule=%s reason=%s",
+            "AutoApproval: step=%s approved=%s rule=%s reason=%s audit=%s",
             step.get("step_id", "unknown"),
             decision.approved,
             decision.rule_matched,
             decision.reason,
+            decision.audit,
         )
         return decision
 

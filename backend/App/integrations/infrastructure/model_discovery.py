@@ -41,10 +41,11 @@ class DiscoveredModel:
 
 @dataclass
 class ModelAssignment:
-    role: str  # pm | dev | qa | critic | planner | onboarding
+    role: str
     model_id: str
     provider: str
     reason: str
+    remote_profile: str = ""
 
 
 def _cached(provider: str, fetcher) -> list[DiscoveredModel]:
@@ -177,55 +178,135 @@ def _cloud_default(provider: str, role: str) -> tuple[str, str]:
     return model_id, provider
 
 
+_SIZE_MARKERS: list[tuple[str, int]] = [
+    ("405b", 405), ("236b", 236), ("110b", 110), ("72b", 72), ("70b", 70),
+    ("34b", 34), ("32b", 32), ("27b", 27), ("22b", 22), ("20b", 20),
+    ("14b", 14), ("13b", 13), ("9b", 9), ("8b", 8), ("7b", 7),
+    ("4b", 4), ("3b", 3), ("2b", 2), ("1b", 1), ("0.5b", 0),
+]
+
+
+def _extract_model_size(model_id: str) -> int:
+    """Heuristic: extract approximate parameter count from model name."""
+    mid = model_id.lower().replace("-", "").replace("_", "")
+    for marker, size in _SIZE_MARKERS:
+        if marker.replace("-", "").replace("_", "") in mid:
+            return size
+    return 0
+
+
+def _role_tier(role: str) -> str:
+    """Return 'heavy', 'medium', or 'light' for a role from policy."""
+    tiers = load_role_model_policy().get("role_tiers") or {}
+    for tier_name, roles_list in tiers.items():
+        if role in (roles_list or []):
+            return tier_name
+    return "medium"
+
+
+def _provider_remote_profile(provider: str) -> str:
+    """Return the remote_profile name for a cloud provider from policy."""
+    mapping = load_role_model_policy().get("provider_remote_profiles") or {}
+    return str(mapping.get(provider, "")).strip()
+
+
+def _score_model_for_role(
+    model: DiscoveredModel,
+    keywords: list[str],
+    tier: str,
+    assignment_counts: dict[str, int],
+) -> tuple[float, str]:
+    """Score a model for a role. Returns (score, reason)."""
+    score = 0.0
+    reason_parts: list[str] = []
+    mid = model.model_id.lower()
+
+    # 1. Keyword match bonus (earlier keywords in list = higher priority)
+    for i, kw in enumerate(keywords):
+        if kw in mid:
+            score += 10.0 - i * 0.5
+            reason_parts.append(f"keyword '{kw}'")
+            break
+
+    # 2. Model size heuristic — score according to tier needs
+    model_size = _extract_model_size(model.model_id)
+    if tier == "heavy" and model_size > 0:
+        score += min(model_size, 70) * 0.1
+        reason_parts.append(f"size {model_size}B (heavy tier)")
+    elif tier == "light" and model_size > 0:
+        score += max(0, 30 - model_size) * 0.1
+        reason_parts.append(f"size {model_size}B (light tier)")
+    elif model_size > 0:
+        score += 1.0
+        reason_parts.append(f"size {model_size}B")
+
+    # 3. Local preference: local providers get a bonus over cloud
+    if model.provider in ("ollama", "lm_studio"):
+        score += 2.0
+        reason_parts.append(f"local ({model.provider})")
+    else:
+        reason_parts.append(f"cloud ({model.provider})")
+
+    # 4. Diversity penalty: slight penalty if this model is already heavily assigned
+    usage = assignment_counts.get(model.model_id, 0)
+    if usage > 0:
+        score -= usage * 0.3
+        reason_parts.append(f"diversity penalty ({usage} prior)")
+
+    reason = ", ".join(reason_parts) if reason_parts else "default"
+    return score, reason
+
+
 def assign_models_to_roles(models: list[DiscoveredModel]) -> list[ModelAssignment]:
-    """Assign best available model to each agent role."""
+    """Assign best available model to each agent role using scored ranking."""
     assignments: list[ModelAssignment] = []
     role_keywords = _policy_keywords()
+    assignment_counts: dict[str, int] = {}
 
     local_models = [m for m in models if m.provider in ("ollama", "lm_studio")]
+    cloud_models = [m for m in models if m.provider not in ("ollama", "lm_studio")]
     has_anthropic = any(m.provider == "anthropic" for m in models)
     has_openai = any(m.provider == "openai" for m in models)
 
     for role in _policy_roles():
-        assigned: Optional[ModelAssignment] = None
+        tier = _role_tier(role)
         keywords = role_keywords.get(role, [])
+        best: Optional[tuple[float, DiscoveredModel, str]] = None
 
-        # 1. Try local models matching keywords
-        for kw in keywords:
-            match = next((m for m in local_models if kw in m.model_id.lower()), None)
-            if match:
-                assigned = ModelAssignment(
-                    role=role,
-                    model_id=match.model_id,
-                    provider=match.provider,
-                    reason=f"local model matching '{kw}' keyword",
-                )
-                break
+        # Score all local models
+        for m in local_models:
+            sc, reason = _score_model_for_role(m, keywords, tier, assignment_counts)
+            if best is None or sc > best[0]:
+                best = (sc, m, reason)
 
-        # 2. Fallback: any local model
-        if not assigned and local_models:
-            m = local_models[0]
-            assigned = ModelAssignment(
+        # Score cloud models too (but with lower base priority)
+        for m in cloud_models:
+            sc, reason = _score_model_for_role(m, keywords, tier, assignment_counts)
+            if best is None or sc > best[0]:
+                best = (sc, m, reason)
+
+        # If no scored candidate found, try cloud defaults directly
+        if best is None:
+            if has_anthropic:
+                mid, prov = _cloud_default("anthropic", role)
+                if mid:
+                    best = (0.0, DiscoveredModel(model_id=mid, provider=prov), "cloud default (Anthropic)")
+            if best is None and has_openai:
+                mid, prov = _cloud_default("openai", role)
+                if mid:
+                    best = (0.0, DiscoveredModel(model_id=mid, provider=prov), "cloud default (OpenAI)")
+
+        if best:
+            _, chosen_model, reason = best
+            remote_profile = _provider_remote_profile(chosen_model.provider)
+            assignments.append(ModelAssignment(
                 role=role,
-                model_id=m.model_id,
-                provider=m.provider,
-                reason="first available local model",
-            )
-
-        # 3. Cloud fallback (Anthropic > OpenAI)
-        if not assigned and has_anthropic:
-            mid, prov = _cloud_default("anthropic", role)
-            assigned = ModelAssignment(
-                role=role, model_id=mid, provider=prov, reason="cloud fallback (Anthropic)"
-            )
-        if not assigned and has_openai:
-            mid, prov = _cloud_default("openai", role)
-            assigned = ModelAssignment(
-                role=role, model_id=mid, provider=prov, reason="cloud fallback (OpenAI)"
-            )
-
-        if assigned:
-            assignments.append(assigned)
+                model_id=chosen_model.model_id,
+                provider=chosen_model.provider,
+                reason=reason,
+                remote_profile=remote_profile,
+            ))
+            assignment_counts[chosen_model.model_id] = assignment_counts.get(chosen_model.model_id, 0) + 1
         else:
             logger.warning("model_discovery: no model found for role %s", role)
 

@@ -60,8 +60,21 @@ __all__ = (
     "_record_open_defects",
 )
 
-# Fix B: track NEEDS_WORK verdicts from critical review steps
+# Track consecutive NEEDS_WORK verdicts from critical review steps
 _NEEDS_WORK_WARNING_THRESHOLD = 2
+
+# Required sections in dev_lead output for deliverables validation
+_DEV_LEAD_REQUIRED_SECTIONS: tuple[str, ...] = (
+    "must_exist_files",
+    "spec_symbols",
+    "verification_commands",
+)
+
+
+def _validate_dev_lead_output(output: str) -> list[str]:
+    """Return list of missing required section names in dev_lead output."""
+    return [s for s in _DEV_LEAD_REQUIRED_SECTIONS if s not in output]
+
 
 # ---------------------------------------------------------------------------
 # Task-class router: detect research/plan vs implementation tasks
@@ -238,6 +251,16 @@ def _run_pipeline_stream_graph(
         pipeline_workspace_parts=pipeline_workspace_parts,
         pipeline_step_ids=pipeline_step_ids,
     )
+
+    # Load wiki context for the workspace (reduces token usage in prompts)
+    if workspace_root:
+        try:
+            from backend.App.orchestration.application.wiki_context_loader import load_wiki_context
+            wiki_ctx = load_wiki_context(workspace_root)
+            if wiki_ctx:
+                init["wiki_context"] = wiki_ctx  # type: ignore[index]
+        except Exception as _wc_exc:
+            _logger.debug("wiki context load skipped: %s", _wc_exc)
 
     final_state: PipelineState = cast(PipelineState, dict(init))
     prev_keys: set[str] = set(init.keys())
@@ -418,7 +441,7 @@ def run_pipeline_stream(
                     "pipeline cancelled (client disconnect or server shutdown)"
                 )
             _prepare_pipeline_machine_for_step(state, machine, step_id)
-            # C-1: compact state before each step if it exceeds SWARM_STATE_MAX_CHARS
+            # Compact state before each step if it exceeds SWARM_STATE_MAX_CHARS
             compaction_event = _compact_state_if_needed(state, step_id)
             if compaction_event is not None:
                 yield compaction_event
@@ -567,6 +590,24 @@ def run_pipeline_stream(
                         ),
                     }
 
+            # Validate dev_lead output for required sections (observability only)
+            if step_id == "dev_lead":
+                _dev_lead_out = str(state.get("dev_lead_output") or "")
+                _missing_sections = _validate_dev_lead_output(_dev_lead_out)
+                if _missing_sections:
+                    cast(dict, state)["dev_lead_validation_warnings"] = _missing_sections
+                    _logger.warning("[DEV_LEAD_VALIDATION] Missing sections: %s", _missing_sections)
+                    yield {
+                        "agent": "orchestrator",
+                        "status": "dev_lead_incomplete",
+                        "message": (
+                            f"⚠ [dev_lead] output is missing required sections: {_missing_sections}. "
+                            "Dev step may produce incomplete code. "
+                            "Consider: 1) a more capable model for dev_lead, "
+                            "2) remote_profile for this role."
+                        ),
+                    }
+
             # CTX-2: cleanup intermediate outputs after they are no longer needed
             _STEP_CLEANUP: dict[str, list[str]] = {
                 "spec_merge": [
@@ -640,7 +681,36 @@ def run_pipeline_stream(
                     # Step 1.4: signal inline fallback for next planning step
                     state["mcp_tool_call_suspected_failure"] = True
 
-            # Fix B: warn when multiple critical reviewers return NEEDS_WORK
+            # Compute research advisory after planning steps so Dev Lead
+            # is aware of external URLs / unknown APIs before it creates subtasks.
+            _RESEARCH_SIGNAL_STEPS: dict[str, str] = {
+                "spec_merge": "spec_output",
+                "pm": "pm_output",
+                "ba": "ba_output",
+            }
+            if step_id in _RESEARCH_SIGNAL_STEPS:
+                try:
+                    from backend.App.orchestration.domain.research_signals import (
+                        build_research_advisory as _build_research_advisory,
+                        extract_research_signals as _extract_research_signals,
+                    )
+                    _rs_text = str(state.get(_RESEARCH_SIGNAL_STEPS[step_id]) or "")
+                    _rs_signals = _extract_research_signals(_rs_text)
+                    _rs_advisory = _build_research_advisory(_rs_text)
+                    if _rs_advisory:
+                        cast(dict, state)["research_advisory"] = _rs_advisory
+                        cast(dict, state)["research_signals"] = _rs_signals
+                        _logger.info(
+                            "[RESEARCH_SIGNALS] Research advisory generated after %s: "
+                            "%d URLs, %d phrases",
+                            step_id,
+                            len(_rs_signals.get("urls") or []),
+                            len(_rs_signals.get("phrases") or []),
+                        )
+                except Exception as _rs_exc:
+                    _logger.debug("Research signals computation failed after %s: %s", step_id, _rs_exc)
+
+            # Warn when multiple critical reviewers return NEEDS_WORK
             if step_id in _CRITICAL_REVIEW_STEP_TO_OUTPUT_KEY:
                 from backend.App.orchestration.application.pipeline_graph import (
                     _extract_verdict,
@@ -728,16 +798,26 @@ def run_pipeline_stream_resume(
     try:
         idx = pipeline_steps.index(resume_from_step)
     except ValueError as exc:
-        # clarify_input auto-pause: human_clarify_input may not be in the configured
-        # step list (user may not have added it). Inject it after clarify_input.
-        if resume_from_step == "human_clarify_input":
+        # The human gate step isn't in the user's pipeline config (common when a
+        # reviewer blocks with NEEDS_WORK and the human_* step was never added).
+        # Inject it dynamically so the pipeline can resume correctly.
+        if resume_from_step.startswith("human_"):
             pipeline_steps = list(pipeline_steps)
-            try:
-                insert_idx = pipeline_steps.index("clarify_input") + 1
-            except ValueError:
-                insert_idx = 0
+            # Try to find the best insertion point: after the corresponding
+            # review step or the base agent step.
+            base = resume_from_step[len("human_"):]  # e.g. "dev_lead"
+            anchor_candidates = [f"review_{base}", base, f"clarify_{base}"]
+            insert_idx = 0
+            for anchor in anchor_candidates:
+                if anchor in pipeline_steps:
+                    insert_idx = pipeline_steps.index(anchor) + 1
+                    break
             pipeline_steps.insert(insert_idx, resume_from_step)
             idx = pipeline_steps.index(resume_from_step)
+            _logger.info(
+                "Injected missing human gate %r at position %d in pipeline_steps",
+                resume_from_step, idx,
+            )
         else:
             raise ValueError(
                 f"Шаг {resume_from_step!r} не найден в pipeline_steps"

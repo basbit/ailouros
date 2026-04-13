@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+from urllib.parse import urlparse
 from typing import Any, Optional
 
 import httpx
@@ -34,6 +35,50 @@ REMOTE_OPENAI_COMPAT_MODEL_PROVIDERS = frozenset(
         "deepseek",
         "ollama_cloud",
     }
+)
+
+_OPENAI_TEXT_MODEL_ALLOW_PREFIXES = (
+    "gpt-",
+    "gpt_",
+    "gpt-oss",
+    "codex",
+    "o1",
+    "o3",
+    "o4",
+    "ft:gpt-",
+    "ft:gpt_",
+    "ft:gpt-oss",
+    "ft:codex",
+    "ft:o1",
+    "ft:o3",
+    "ft:o4",
+)
+_OPENAI_TEXT_MODEL_BLOCK_SUBSTRINGS = (
+    "audio",
+    "realtime",
+    "transcribe",
+    "tts",
+    "embedding",
+    "moderation",
+    "image",
+    "whisper",
+    "dall",
+    "sora",
+    "chatgpt",
+    "search-preview",
+    "computer-use",
+    "deep-research",
+)
+_GEMINI_TEXT_MODEL_ALLOW_PREFIXES = (
+    "gemini-",
+    "learnlm-",
+)
+_GEMINI_TEXT_MODEL_BLOCK_SUBSTRINGS = (
+    "image",
+    "audio",
+    "native-audio",
+    "tts",
+    "live",
 )
 
 
@@ -106,6 +151,163 @@ def normalize_openai_v1_models_payload(payload: dict[str, Any]) -> list[dict[str
         if row:
             out.append(row)
     return out
+
+
+def _is_openai_first_party_base_url(base_url: str) -> bool:
+    host = (urlparse((base_url or "").strip()).hostname or "").lower()
+    if not host:
+        return False
+    return (
+        host == "api.openai.com"
+        or host.endswith(".api.openai.com")
+        or "openai.azure.com" in host
+    )
+
+
+def _is_openai_text_generation_model(model_id: str) -> bool:
+    mid = (model_id or "").strip().lower()
+    if not mid:
+        return False
+    if not mid.startswith(_OPENAI_TEXT_MODEL_ALLOW_PREFIXES):
+        return False
+    if any(part in mid for part in _OPENAI_TEXT_MODEL_BLOCK_SUBSTRINGS):
+        return False
+    return True
+
+
+def _filter_openai_models_for_orchestrator(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    filtered = [
+        row for row in models
+        if _is_openai_text_generation_model(str(row.get("id") or ""))
+    ]
+    return filtered or models
+
+
+def _is_gemini_first_party_base_url(base_url: str) -> bool:
+    host = (urlparse((base_url or "").strip()).hostname or "").lower()
+    if not host:
+        return False
+    return (
+        host == "generativelanguage.googleapis.com"
+        or host.endswith(".generativelanguage.googleapis.com")
+    )
+
+
+def _gemini_native_models_url(base_url: str) -> str:
+    parsed = urlparse((base_url or "").strip())
+    if parsed.scheme and parsed.netloc and _is_gemini_first_party_base_url(base_url):
+        return f"{parsed.scheme}://{parsed.netloc}/v1beta/models"
+    return "https://generativelanguage.googleapis.com/v1beta/models"
+
+
+def _gemini_supported_generation_methods(item: dict[str, Any]) -> list[str]:
+    raw_methods = item.get("supportedGenerationMethods") or item.get("supported_actions") or []
+    if not isinstance(raw_methods, list):
+        return []
+    return [str(method).strip() for method in raw_methods if str(method).strip()]
+
+
+def _gemini_model_id(item: dict[str, Any]) -> str:
+    mid = str(item.get("baseModelId") or "").strip()
+    if mid:
+        return mid
+    name = str(item.get("name") or "").strip()
+    if name.startswith("models/"):
+        return name.split("/", 1)[1].strip()
+    return name
+
+
+def _gemini_model_row(item: dict[str, Any]) -> Optional[dict[str, Any]]:
+    mid = _gemini_model_id(item)
+    if not mid:
+        return None
+    methods = _gemini_supported_generation_methods(item)
+    ctx = item.get("inputTokenLimit") or item.get("input_token_limit")
+    ctx_str = _fmt_ctx(ctx)
+    cap_str = _format_capabilities_display(methods)
+    hint = " · ".join(x for x in [ctx_str, cap_str] if x)
+    label = f"{mid} ({hint})" if hint else mid
+    return {
+        "id": mid,
+        "label": label,
+        "context_window": ctx,
+        "supported_generation_methods": methods,
+    }
+
+
+def normalize_gemini_native_models_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Parse native Gemini GET /v1beta/models payload."""
+    out: list[dict[str, Any]] = []
+    for raw in payload.get("models") or []:
+        if not isinstance(raw, dict):
+            continue
+        row = _gemini_model_row(raw)
+        if row:
+            out.append(row)
+    return out
+
+
+def _is_gemini_text_generation_model(model_id: str) -> bool:
+    mid = (model_id or "").strip().lower()
+    if not mid:
+        return False
+    if not mid.startswith(_GEMINI_TEXT_MODEL_ALLOW_PREFIXES):
+        return False
+    if any(part in mid for part in _GEMINI_TEXT_MODEL_BLOCK_SUBSTRINGS):
+        return False
+    return True
+
+
+def _filter_gemini_models_for_orchestrator(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    generation_capable = [
+        row for row in models
+        if "generateContent" in (row.get("supported_generation_methods") or [])
+    ]
+    filtered = [
+        row for row in generation_capable
+        if _is_gemini_text_generation_model(str(row.get("id") or ""))
+    ]
+    keep = filtered or generation_capable or models
+    return [
+        {
+            "id": str(row.get("id") or ""),
+            "label": str(row.get("label") or row.get("id") or ""),
+            "context_window": row.get("context_window"),
+        }
+        for row in keep
+        if str(row.get("id") or "").strip()
+    ]
+
+
+def _gemini_native_models_dict(
+    *,
+    base_url: str,
+    api_key: Optional[str] = None,
+) -> dict[str, Any]:
+    url = _gemini_native_models_url(base_url)
+    params: dict[str, Any] = {"pageSize": 1000}
+    if api_key:
+        params["key"] = api_key
+    try:
+        with httpx.Client(timeout=12.0) as client:
+            r = client.get(url, params=params)
+            r.raise_for_status()
+            models = _filter_gemini_models_for_orchestrator(
+                normalize_gemini_native_models_payload(r.json())
+            )
+    except Exception as exc:
+        err = f"{exc.__class__.__name__}: {exc}"
+        return {
+            "ok": False,
+            "error": err,
+            "models": [],
+            "source": url,
+        }
+    return {
+        "ok": True,
+        "models": models,
+        "source": url,
+    }
 
 
 def normalize_ollama_tags_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -237,6 +439,8 @@ def remote_openai_compatible_models_dict(
             "models": [],
             "source": "",
         }
+    if prov == "gemini" and _is_gemini_first_party_base_url(resolved):
+        return _gemini_native_models_dict(base_url=resolved, api_key=key)
     url = f"{resolved.rstrip('/')}/models"
     headers: dict[str, str] = {}
     if key:
@@ -246,6 +450,8 @@ def remote_openai_compatible_models_dict(
             r = client.get(url, headers=headers)
             r.raise_for_status()
             models = normalize_openai_v1_models_payload(r.json())
+            if prov == "openai_compatible" and _is_openai_first_party_base_url(resolved):
+                models = _filter_openai_models_for_orchestrator(models)
     except Exception as exc:
         err = f"{exc.__class__.__name__}: {exc}"
         return {

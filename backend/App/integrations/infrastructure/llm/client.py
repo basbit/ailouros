@@ -360,3 +360,13 @@ def ask_model(
     if key is not None:
         _self.set_cached(key, text, usage)
     return (text, usage)
+
+
+def chat_completion_text(
+    messages: list[dict[str, str]],
+    model: str = "",
+    **kwargs: Any,
+) -> str:
+    """Convenience wrapper: call ``ask_model`` and return only the text."""
+    text, _ = ask_model(messages=messages, model=model, **kwargs)
+    return text

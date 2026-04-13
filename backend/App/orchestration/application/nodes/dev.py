@@ -17,6 +17,7 @@ from backend.App.orchestration.application.pipeline_state import PipelineState
 
 from backend.App.orchestration.application.nodes._shared import (
     _bare_repo_scaffold_instruction,
+    _cfg_model,
     _code_analysis_is_weak,
     _compact_code_analysis_for_prompt,
     _dev_sibling_tasks_block,
@@ -243,9 +244,13 @@ def dev_lead_node(state: PipelineState) -> dict[str, Any]:
     )
     langs = _swarm_languages_line(state)
     code_hint = ""
-    code_analysis_output = (state.get("analyze_code_output") or "").strip()
-    if code_analysis_output:
-        code_hint = f"\n\nRepository static analysis (summary):\n{code_analysis_output}\n"
+    ca = state.get("code_analysis") if isinstance(state.get("code_analysis"), dict) else {}
+    if ca and not _code_analysis_is_weak(ca):
+        code_hint = (
+            "\n\n## Existing code analysis (use this to place files correctly)\n"
+            + _compact_code_analysis_for_prompt(ca, max_chars=8000)
+            + "\n"
+        )
     refactor_plan_text = (state.get("refactor_plan_output") or "").strip()
     if refactor_plan_text and len(refactor_plan_text) < 4000:
         code_hint += f"\nCode improvement plan (if any):\n{refactor_plan_text[:3500]}\n"
@@ -274,6 +279,14 @@ def dev_lead_node(state: PipelineState) -> dict[str, Any]:
             len(open_blockers), len(unresolved),
         )
 
+    # Prepend research advisory if BA/PM/spec detected external sources
+    research_advisory = (state.get("research_advisory") or "").strip()
+    research_advisory_block = (
+        f"\n{research_advisory}\n"
+        if research_advisory
+        else ""
+    )
+
     prompt = (
         _swarm_prompt_prefix(state)
         + "[Pipeline rule] You have the **approved specification** (BA + Architect). "
@@ -293,6 +306,7 @@ def dev_lead_node(state: PipelineState) -> dict[str, Any]:
         f"{pipeline_user_task(state)}\n\n"
         "Approved specification (BA + Architect):\n"
         f"{_spec_for_build_mcp_safe(state)}\n"
+        f"{research_advisory_block}"
         "Planning review status artifact (required context; derive subtasks only from approved artifacts):\n"
         f"{json.dumps(planning_reviews_artifact, ensure_ascii=False, indent=2)}\n"
         f"{devops_block}"
@@ -325,7 +339,7 @@ def dev_lead_node(state: PipelineState) -> dict[str, Any]:
     # Use to route dev_lead to a more powerful reasoning model than the default planning model.
     agent = DevLeadAgent(
         system_prompt_path_override=dev_lead_cfg.get("prompt_path") or dev_lead_cfg.get("prompt"),
-        model_override=_env_model_override("SWARM_DEV_LEAD_MODEL", dev_lead_cfg.get("model")),
+        model_override=_env_model_override("SWARM_DEV_LEAD_MODEL", dev_lead_cfg.get("model"), dev_lead_cfg.get("_planner_capability")),
         environment_override=dev_lead_cfg.get("environment"),
         system_prompt_extra=_skills_extra_for_role_cfg(state, dev_lead_cfg),
         **_remote_api_client_kwargs_for_role(state, dev_lead_cfg),
@@ -348,7 +362,7 @@ def dev_lead_node(state: PipelineState) -> dict[str, Any]:
     if target_n is not None:
         tasks = normalize_dev_qa_tasks_to_count(tasks, target_n)
 
-    # EC-9: workspace boundary guard — reject expected_paths with absolute paths outside workspace_root
+    # Workspace boundary guard — reject expected_paths with absolute paths outside workspace_root
     workspace_root_str = str(state.get("workspace_root") or "").strip()
     if workspace_root_str and tasks:
         _abs_violations: list[str] = []
@@ -377,7 +391,7 @@ def dev_lead_node(state: PipelineState) -> dict[str, Any]:
             if target_n is not None:
                 tasks = normalize_dev_qa_tasks_to_count(tasks, target_n)
 
-    # EC-4: validate dev_lead tasks overlap with PM output
+    # Validate dev_lead tasks overlap with PM output
     pm_output = (state.get("pm_output") or "").strip()
     if pm_output and tasks:
         # Extract keywords from PM task lines (### [...] CORE/OPTIONAL — Title)
@@ -419,10 +433,24 @@ def dev_lead_node(state: PipelineState) -> dict[str, Any]:
                     tasks = normalize_dev_qa_tasks_to_count(tasks, target_n)
 
     if not tasks:
-        raise RuntimeError(
-            "dev_lead_node: failed to parse canonical Dev Lead plan "
-            f"(expected JSON object with tasks+deliverables, got {len(dev_lead_output or '')} chars)"
+        # Fallback: when the LLM returns a text plan without parseable JSON,
+        # wrap the entire output as a single task so the pipeline can continue.
+        logger.warning(
+            "dev_lead_node: no canonical JSON tasks parsed from Dev Lead plan "
+            "(%d chars) — wrapping full output as a single task",
+            len(dev_lead_output or ""),
         )
+        tasks = [
+            {
+                "id": "1",
+                "title": "Implementation (auto-wrapped from Dev Lead plan)",
+                "description": (dev_lead_output or "").strip()[:8000],
+                "expected_paths": [],
+            }
+        ]
+    if (dev_lead_output or "").strip():
+        from backend.App.workspace.application.doc_workspace import write_step_wiki
+        write_step_wiki(state, "dev_lead", dev_lead_output)
     return {
         "dev_lead_output": dev_lead_output,
         "dev_lead_model": agent.used_model,
@@ -551,7 +579,7 @@ def dev_node(state: PipelineState) -> dict[str, Any]:
     swarm_file_guidance = ""
     if ws_block.strip():
         if apply_writes and use_mcp:
-            # EC-7: MCP tools available — prioritize function calling over text tags
+            # MCP tools available — prioritize function calling over text tags
             swarm_file_guidance = (
                 "\n\n[FILE WRITE INSTRUCTIONS — priority order]\n"
                 "1. **PREFERRED for existing files:** Use `workspace__edit_file(path, edits)` with targeted edits. "
@@ -626,7 +654,7 @@ def dev_node(state: PipelineState) -> dict[str, Any]:
                 mt_override = token_limit
         agent = DevAgent(
             system_prompt_path_override=dev_cfg.get("prompt_path") or dev_cfg.get("prompt"),
-            model_override=dev_cfg.get("model"),
+            model_override=_cfg_model(dev_cfg),
             environment_override=dev_cfg.get("environment"),
             max_output_tokens=mt_override,
             system_prompt_extra=_skills_extra_for_role_cfg(state, dev_cfg),
@@ -653,6 +681,10 @@ def dev_node(state: PipelineState) -> dict[str, Any]:
             prior_feedback_block = (
                 "\n\n## Prior review feedback (NEEDS_WORK — address all issues below)\n"
                 f"{prior_review[:2000]}\n"
+                "\n## CRITICAL OUTPUT FORMAT REQUIREMENT\n"
+                "You MUST write ALL code inside <swarm_file path=\"...\">...</swarm_file> tags "
+                "or <swarm_patch path=\"...\">SEARCH/REPLACE blocks</swarm_patch>.\n"
+                "Text descriptions WITHOUT code tags will be REJECTED.\n"
             )
         subtask_spec = spec
         # Cap subtask spec to avoid sending full spec to every subtask LLM call.
@@ -728,7 +760,7 @@ def dev_node(state: PipelineState) -> dict[str, Any]:
             f"Dev {i + 1}/{task_count}: промпт {len(prompt):,} симв. → HTTP-вызов LLM "
             f"(model={getattr(agent, 'model', '') or '?'})…",
         )
-        # K-1: run through self-verify loop if SWARM_SELF_VERIFY=1
+        # Run through self-verify loop if SWARM_SELF_VERIFY=1
         _used_model_ref: list[str] = []
         _used_provider_ref: list[str] = []
         accumulated_mcp_actions: list[dict[str, Any]] = []
@@ -746,7 +778,49 @@ def dev_node(state: PipelineState) -> dict[str, Any]:
         started_at = time.monotonic()
         output = run_with_self_verify(_agent_run_for_verify, task_spec_for_verify, prompt)
 
-        # EC-3: enforce write format — retry once if no swarm tags and no MCP writes
+        # Sanitize control tokens leaked by gpt-oss / LM Studio models
+        from backend.App.integrations.infrastructure.mcp.openai_loop.tool_loop import sanitize_control_tokens
+        if output:
+            output = sanitize_control_tokens(output)
+
+        # Model refusal detection — retry with directive prompt if model refused.
+        # Markers are configurable via SWARM_REFUSAL_MARKERS (comma-separated).
+        _refusal_env = os.getenv("SWARM_REFUSAL_MARKERS", "").strip()
+        _REFUSAL_MARKERS: tuple[str, ...] = (
+            tuple(m.strip().lower() for m in _refusal_env.split(",") if m.strip())
+            if _refusal_env
+            else (
+                "i'm sorry, but i can't",
+                "i cannot continue",
+                "i'm unable to",
+                "i apologize, but i",
+                "as an ai language model",
+                "i can't assist with",
+            )
+        )
+        if output and any(m in output.lower() for m in _REFUSAL_MARKERS):
+            logger.warning(
+                "pipeline dev subtask %d/%d: model refusal detected — retrying with "
+                "directive prompt. task_id=%s preview=%r",
+                i + 1, task_count,
+                (state.get("task_id") or "")[:36],
+                output[:120],
+            )
+            _stream_progress_emit(
+                state,
+                f"Dev {i + 1}/{task_count}: model refusal detected — retrying with directive prompt…",
+            )
+            _refusal_retry_prompt = (
+                f"[CRITICAL] You MUST write code for this task. Do NOT refuse or apologize.\n"
+                f"Task: {title}\n{scope}\n\n"
+                f"Write ONLY code using <swarm_file> or <swarm_patch> tags. No explanations.\n"
+                + swarm_file_guidance
+            )
+            output = _agent_run_for_verify(_refusal_retry_prompt)
+            if output:
+                output = sanitize_control_tokens(output)
+
+        # Enforce write format — retry once if no swarm tags and no MCP writes
         _enforce = os.getenv("SWARM_ENFORCE_WRITE_FORMAT", "1").strip() in ("1", "true", "yes")
         _has_swarm_tags = bool(re.search(r"<swarm_file|<swarm_patch|<swarm_udiff", output or "", re.IGNORECASE))
         # Check actual MCP write count (not text heuristic) to avoid false retry
@@ -1013,7 +1087,7 @@ def dev_node(state: PipelineState) -> dict[str, Any]:
                 f"→ HTTP-вызов LLM (model={getattr(agent, 'model', '') or '?'})…",
             )
             output, used_model, used_provider = _llm_build_agent_run(agent, role_prompt, state)
-            # EC-3: enforce write format for dev_roles (parity with _one subtask path)
+            # Enforce write format for dev_roles (parity with _one subtask path)
             _enforce_role = os.getenv("SWARM_ENFORCE_WRITE_FORMAT", "1").strip() in ("1", "true", "yes")
             _has_tags_role = bool(re.search(r"<swarm_file|<swarm_patch|<swarm_udiff", output or "", re.IGNORECASE))
             _mcp_w_role = 0
@@ -1059,6 +1133,9 @@ def dev_node(state: PipelineState) -> dict[str, Any]:
         merged = "\n\n---\n\n".join(sections)
         dev_model = " | ".join(f"[{r.get('name', j + 1)}]{m or '—'}" for j, (r, m) in enumerate(zip(dev_roles, role_models)))
         dev_provider = " | ".join(f"[{r.get('name', j + 1)}]{p or '—'}" for j, (r, p) in enumerate(zip(dev_roles, role_providers)))
+        if (merged or "").strip():
+            from backend.App.workspace.application.doc_workspace import write_step_wiki
+            write_step_wiki(state, "dev", merged)
         return {
             "dev_output": merged,
             "dev_task_outputs": role_outputs,
@@ -1109,6 +1186,9 @@ def dev_node(state: PipelineState) -> dict[str, Any]:
     merged = "\n\n---\n\n".join(sections)
     if _total_mcp_writes > 0:
         logger.info("pipeline dev: total MCP write tool calls across subtasks: %d", _total_mcp_writes)
+    if (merged or "").strip():
+        from backend.App.workspace.application.doc_workspace import write_step_wiki
+        write_step_wiki(state, "dev", merged)
     return {
         "dev_output": merged,
         "dev_task_outputs": dev_task_outputs,

@@ -119,9 +119,13 @@ __all__ = [
     "VerifyResult",
     "run_with_self_verify",
     # Own public API
+    "_capability_model",
+    "_cfg_model",
+    "_env_model_override",
     "_pipeline_should_cancel",
     "_remote_api_client_kwargs",
     "_remote_api_client_kwargs_for_role",
+    "_stream_progress_emit",
     "make_agent",
 ]
 
@@ -266,11 +270,68 @@ def _skills_extra_for_role_cfg(
     )
 
 
-def _env_model_override(env_var: str, cfg_model: Optional[str]) -> Optional[str]:
+def _capability_model(capability: str) -> Optional[str]:
+    """Map a planner capability string to a concrete model ID.
+
+    Resolution order:
+    1. Env var ``SWARM_MODEL_CAPABILITY_<CAPABILITY>`` (user override for any env).
+    2. Built-in cloud defaults when route is cloud.
+    3. None — let normal model resolution handle it.
+
+    Cloud defaults:
+      needs_tool_calling → claude-sonnet-4-6
+      needs_code         → claude-sonnet-4-6
+      needs_reasoning    → claude-opus-4-6
+      needs_fast         → claude-haiku-4-5-20251001
+
+    For local (ollama/lmstudio) set e.g.
+      SWARM_MODEL_CAPABILITY_NEEDS_TOOL_CALLING=qwen3:latest
+    """
+    if not capability:
+        return None
+    cap_key = capability.upper().replace("-", "_")
+    # User-configured override (works for any env)
+    env_override = os.getenv(f"SWARM_MODEL_CAPABILITY_{cap_key}", "").strip()
+    if env_override:
+        return env_override
+    # Built-in cloud defaults
+    route = os.getenv("SWARM_ROUTE_DEFAULT", "local").lower()
+    if route == "cloud":
+        _CLOUD_MAP: dict[str, str] = {
+            "NEEDS_TOOL_CALLING": "claude-sonnet-4-6",
+            "NEEDS_CODE": "claude-sonnet-4-6",
+            "NEEDS_REASONING": "claude-opus-4-6",
+            "NEEDS_FAST": "claude-haiku-4-5-20251001",
+        }
+        return _CLOUD_MAP.get(cap_key)
+    return None
+
+
+def _cfg_model(cfg: dict) -> Optional[str]:
+    """Return the effective model from a role config dict.
+
+    Checks explicit ``model`` key first, then falls back to resolving a
+    ``_planner_capability`` recommendation left by the auto-planner.
+    """
+    explicit = str(cfg.get("model") or "").strip()
+    if explicit:
+        return explicit
+    capability = str(cfg.get("_planner_capability") or "").strip()
+    return _capability_model(capability) if capability else None
+
+
+def _env_model_override(
+    env_var: str,
+    cfg_model: Optional[str],
+    planner_capability: Optional[str] = None,
+) -> Optional[str]:
     """Return model override: config value takes priority, env var is the fallback.
 
     Allows operators to set per-role model routing without touching the agent_config
     JSON. Config file always wins when non-empty.
+
+    If *cfg_model* is empty and *planner_capability* is provided, falls back to
+    :func:`_capability_model` before checking the env var.
 
     Example env vars (see docs/improve-plan.md §P1 model routing):
     - SWARM_REVIEWER_MODEL  — model for all reviewer / clarify_input steps
@@ -279,6 +340,10 @@ def _env_model_override(env_var: str, cfg_model: Optional[str]) -> Optional[str]
     """
     if cfg_model and cfg_model.strip():
         return cfg_model.strip()
+    if planner_capability:
+        cap_model = _capability_model(planner_capability)
+        if cap_model:
+            return cap_model
     env_val = os.getenv(env_var, "").strip()
     return env_val or None
 
@@ -291,7 +356,7 @@ def _make_reviewer_agent(state: PipelineState) -> ReviewerAgent:
     _reviewer_max_tokens = int(os.getenv("SWARM_REVIEWER_MAX_OUTPUT_TOKENS", "0").strip() or "0")
     return ReviewerAgent(
         system_prompt_path_override=rcfg.get("prompt_path") or rcfg.get("prompt"),
-        model_override=_env_model_override("SWARM_REVIEWER_MODEL", rcfg.get("model")),
+        model_override=_env_model_override("SWARM_REVIEWER_MODEL", rcfg.get("model"), rcfg.get("_planner_capability")),
         environment_override=rcfg.get("environment"),
         system_prompt_extra=_skills_extra_for_role_cfg(state, rcfg),
         max_output_tokens=_reviewer_max_tokens,
@@ -415,7 +480,7 @@ def _warn_workspace_context_vs_custom_pipeline(
         logger.warning("%s", msg)
 
 
-# K-1: Self-verification helpers re-exported for node modules
+# Self-verification helpers re-exported for node modules
 # L-2: AgentFactory — use factory for new code; direct imports kept for existing node callsites
 # (Both imported at module top to avoid late-import lint warnings)
 

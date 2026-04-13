@@ -91,7 +91,9 @@ def _with_approval_gate(step_id: str, node_fn: Callable) -> Callable:
                 "AutoApproval: step=%s skipping human gate (rule=%s)",
                 step_id, decision.rule_matched,
             )
-            return {}
+            auto_approvals: list[dict[str, Any]] = list(state.get("auto_approvals") or [])
+            auto_approvals.append({"step": step_id, "audit": decision.audit})
+            return {"auto_approvals": auto_approvals}
         return node_fn(state)
     return _wrapped
 

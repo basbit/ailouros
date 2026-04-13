@@ -45,6 +45,28 @@ from backend.App.orchestration.application.nodes.dev import (
     human_dev_node,
 )
 from backend.App.orchestration.application.nodes.qa import qa_node, review_qa_node, human_qa_node
+from backend.App.orchestration.application.nodes.design import (
+    ux_researcher_node,
+    review_ux_researcher_node,
+    human_ux_researcher_node,
+    ux_architect_node,
+    review_ux_architect_node,
+    human_ux_architect_node,
+    ui_designer_node,
+    review_ui_designer_node,
+    human_ui_designer_node,
+)
+from backend.App.orchestration.application.nodes.marketing import (
+    seo_specialist_node,
+    review_seo_specialist_node,
+    human_seo_specialist_node,
+    ai_citation_strategist_node,
+    review_ai_citation_strategist_node,
+    human_ai_citation_strategist_node,
+    app_store_optimizer_node,
+    review_app_store_optimizer_node,
+    human_app_store_optimizer_node,
+)
 from backend.App.orchestration.application.nodes.e2e import e2e_node
 
 
@@ -65,6 +87,15 @@ PIPELINE_STEP_SEQUENCE: tuple[tuple[str, str, Callable[[PipelineState], dict[str
     ("spec_merge", "Merge specification", merge_spec_node),
     ("review_spec", "Reviewer checks spec merge", review_spec_node),
     ("human_spec", "Human approve before Dev", human_spec_node),
+    ("ux_researcher", "UX Researcher: user personas, journeys, insights", ux_researcher_node),
+    ("review_ux_researcher", "Reviewer checks UX Research", review_ux_researcher_node),
+    ("human_ux_researcher", "Human approve after UX Research", human_ux_researcher_node),
+    ("ux_architect", "UX Architect: CSS systems, layout, UX structure", ux_architect_node),
+    ("review_ux_architect", "Reviewer checks UX Architecture", review_ux_architect_node),
+    ("human_ux_architect", "Human approve after UX Architecture", human_ux_architect_node),
+    ("ui_designer", "UI Designer: visual design, components, tokens", ui_designer_node),
+    ("review_ui_designer", "Reviewer checks UI Design", review_ui_designer_node),
+    ("human_ui_designer", "Human approve after UI Design", human_ui_designer_node),
     ("analyze_code", "Repository code analysis", analyze_code_node),
     ("generate_documentation", "Documentation and Mermaid from analysis", generate_documentation_node),
     ("problem_spotter", "Identify common code issues", problem_spotter_node),
@@ -82,6 +113,15 @@ PIPELINE_STEP_SEQUENCE: tuple[tuple[str, str, Callable[[PipelineState], dict[str
     ("qa", "QA runs verification", qa_node),
     ("review_qa", "Reviewer checks QA", review_qa_node),
     ("human_qa", "Final human approve", human_qa_node),
+    ("seo_specialist", "SEO: technical audit, keywords, content", seo_specialist_node),
+    ("review_seo_specialist", "Reviewer checks SEO", review_seo_specialist_node),
+    ("human_seo_specialist", "Human approve after SEO", human_seo_specialist_node),
+    ("ai_citation_strategist", "AI Citation: AEO/GEO audit, fix packs", ai_citation_strategist_node),
+    ("review_ai_citation_strategist", "Reviewer checks AI Citation", review_ai_citation_strategist_node),
+    ("human_ai_citation_strategist", "Human approve after AI Citation", human_ai_citation_strategist_node),
+    ("app_store_optimizer", "ASO: keywords, visuals, conversion", app_store_optimizer_node),
+    ("review_app_store_optimizer", "Reviewer checks ASO", review_app_store_optimizer_node),
+    ("human_app_store_optimizer", "Human approve after ASO", human_app_store_optimizer_node),
     ("e2e", "E2E: run test suite", e2e_node),
 )
 

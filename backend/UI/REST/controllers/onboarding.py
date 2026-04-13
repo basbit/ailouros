@@ -56,8 +56,7 @@ async def onboarding_preconfigure(body: OnboardingPreconfigureRequest) -> JSONRe
         if root.exists():
             detected_stack = _detect_stack(root)
 
-    brave_key = os.getenv("SWARM_BRAVE_SEARCH_API_KEY", "") or os.getenv("BRAVE_API_KEY", "")
-    specs = recommend_mcp_servers(body.workspace_root or "", detected_stack, brave_api_key=brave_key)
+    specs = recommend_mcp_servers(body.workspace_root or "", detected_stack)
     if result.mcp_recommendations:
         rec_set = set(result.mcp_recommendations)
         filtered = [s for s in specs if s.name in rec_set]
@@ -180,8 +179,19 @@ async def get_onboarding_models(workspace_root: str = Query("")) -> JSONResponse
 
     models = await asyncio.to_thread(discover_all_models)
     assignments = await asyncio.to_thread(assign_models_to_roles, models)
+
+    # Build provider availability summary
+    from collections import Counter
+    provider_counts = Counter(m.provider for m in models)
+    all_providers = {"ollama", "lm_studio", "anthropic", "openai"}
+    providers_summary = {
+        prov: {"available": prov in provider_counts, "models_count": provider_counts.get(prov, 0)}
+        for prov in sorted(all_providers)
+    }
+
     return JSONResponse(content={
         "source": "live",
+        "providers": providers_summary,
         "discovered": [{"model_id": m.model_id, "provider": m.provider} for m in models],
         "assignments": [
             {
@@ -189,6 +199,7 @@ async def get_onboarding_models(workspace_root: str = Query("")) -> JSONResponse
                 "model_id": a.model_id,
                 "provider": a.provider,
                 "reason": a.reason,
+                "remote_profile": a.remote_profile,
             }
             for a in assignments
         ],

@@ -30,16 +30,22 @@ _CRITICAL_REVIEW_STEP_TO_OUTPUT_KEY: dict[str, str] = {
     "review_arch": "arch_review_output",
     "review_stack": "stack_review_output",
     "review_spec": "spec_review_output",
+    "review_dev_lead": "dev_lead_review_output",
+    "review_pm_tasks": "dev_lead_review_output",
 }
 _PLANNING_REVIEW_RESUME_STEP: dict[str, str] = {
     "review_pm": "human_pm",
     "review_stack": "human_arch",
     "review_arch": "human_arch",
+    "review_dev_lead": "human_dev_lead",
+    "review_pm_tasks": "human_dev_lead",
 }
 _PLANNING_REVIEW_TARGET_STEP: dict[str, str] = {
     "review_pm": "pm",
     "review_stack": "architect",
     "review_arch": "architect",
+    "review_dev_lead": "dev_lead",
+    "review_pm_tasks": "dev_lead",
 }
 
 
@@ -96,6 +102,27 @@ def require_structured_blockers(
         )
 
 
+def verification_layer_status_message(
+    gate_results: list[dict[str, Any]],
+    *,
+    context: str | None = None,
+) -> str:
+    gate_names = [str(result.get("gate_name") or "").strip() for result in gate_results]
+    gate_names = [name for name in gate_names if name]
+    suffix = f" {context}" if context else ""
+    failed = [
+        str(result.get("gate_name") or "").strip()
+        for result in gate_results
+        if not bool(result.get("passed", False))
+    ]
+    failed = [name for name in failed if name]
+    if failed:
+        return f"Trusted verification gates found issues{suffix}: " + ", ".join(failed)
+    if gate_names:
+        return f"Trusted verification gates passed{suffix}: " + ", ".join(gate_names)
+    return f"Trusted verification gates completed{suffix}"
+
+
 def enforce_planning_review_gate(
     state: PipelineState,
     *,
@@ -110,6 +137,20 @@ def enforce_planning_review_gate(
     verdict = extract_verdict(review_output or "")
     if verdict != "NEEDS_WORK":
         return
+
+    # Only block for human approval when the human gate step is actually in
+    # the user's pipeline.  If they chose not to include human_dev_lead (etc.),
+    # forcing a human pause is unexpected — log a warning and continue.
+    pipeline_step_ids: list[str] = state.get("_pipeline_step_ids") or []
+    if resume_step not in pipeline_step_ids:
+        logger.warning(
+            "Planning gate: %s returned NEEDS_WORK but human gate %r is NOT in "
+            "the pipeline — continuing without blocking. "
+            "Add %r to the pipeline if you want manual review.",
+            step_id, resume_step, resume_step,
+        )
+        return
+
     detail = (
         f"Planning gate: {step_id} returned NEEDS_WORK. "
         "Downstream planning/execution is blocked until explicit human override "
@@ -126,6 +167,12 @@ def enforce_planning_review_gate(
     )
 
 
+def _should_block_for_human(state: PipelineState, human_step: str) -> bool:
+    """Return True only when the human gate is actually in the user's pipeline."""
+    pipeline_step_ids: list[str] = state.get("_pipeline_step_ids") or []
+    return human_step in pipeline_step_ids
+
+
 def enter_fix_cycle_or_escalate(
     state: PipelineState,
     machine: PipelineMachine,
@@ -135,18 +182,24 @@ def enter_fix_cycle_or_escalate(
 ) -> None:
     transition_pipeline_phase(state, machine, PipelinePhase.FIX)
     if machine.should_stop_fix_cycle():
-        raise HumanApprovalRequired(
-            step=step_id,
-            detail=(
-                f"Fix cycle budget exhausted after {machine.fix_cycles} iterations. "
-                "Human intervention is required."
-            ),
-            partial_state={
-                "open_defects": state.get("open_defects") or [],
-                "clustered_open_defects": state.get("clustered_open_defects") or [],
-            },
-            resume_pipeline_step="human_dev",
+        if _should_block_for_human(state, "human_dev"):
+            raise HumanApprovalRequired(
+                step=step_id,
+                detail=(
+                    f"Fix cycle budget exhausted after {machine.fix_cycles} iterations. "
+                    "Human intervention is required."
+                ),
+                partial_state={
+                    "open_defects": state.get("open_defects") or [],
+                    "clustered_open_defects": state.get("clustered_open_defects") or [],
+                },
+                resume_pipeline_step="human_dev",
+            )
+        logger.warning(
+            "Fix cycle budget exhausted after %d iterations but human_dev not in pipeline — continuing",
+            machine.fix_cycles,
         )
+        return
     defect_clusters = cluster_defects(report.open_p0 + report.open_p1)
     for category in defect_clusters:
         category = category or "uncategorized"
@@ -197,6 +250,13 @@ def run_post_dev_verification_gates(state: PipelineState) -> list[dict[str, Any]
             run_shell=False,
         )
         state["workspace_writes"] = workspace_writes
+        # Capture diff for human review gate display
+        from backend.App.workspace.infrastructure.workspace_diff import capture_workspace_diff
+        written = list(workspace_writes.get("written") or [])
+        patched = list(workspace_writes.get("patched") or [])
+        udiff_applied = list(workspace_writes.get("udiff_applied") or [])
+        all_changed = sorted(set(written + patched + udiff_applied))
+        state["dev_workspace_diff"] = capture_workspace_diff(workspace_path, all_changed)
         if (
             workspace_writes.get("parsed", 0) == 0
             and int(state.get("dev_mcp_write_count") or 0) == 0
@@ -349,6 +409,8 @@ def run_post_step_enforcement(
         max_retries = _max_step_retries_env()
         decision = _qg_should_retry(verdict, retries, max_retries) if auto_retry_enabled else "escalate"
 
+        prev_review_text = review_output
+
         while verdict == "NEEDS_WORK" and decision == "retry":
             yield {
                 "agent": "orchestrator",
@@ -375,8 +437,39 @@ def run_post_step_enforcement(
             review_output = str(state.get(review_output_key) or "")
             _record_planning_review_blocker(state, step_id=step_id, review_output=review_output)
             verdict = _qg_extract_verdict(review_output)
+
+            # Stale-review detection: if the reviewer produced near-identical output
+            # to the previous iteration, the model is hallucinating stale feedback
+            # instead of evaluating the updated artifact. Auto-approve to break the loop.
+            if verdict == "NEEDS_WORK" and prev_review_text:
+                _stale_threshold = float(
+                    os.getenv("SWARM_STALE_REVIEW_SIMILARITY_THRESHOLD", "0.85").strip()
+                )
+                from difflib import SequenceMatcher
+                similarity = SequenceMatcher(None, prev_review_text, review_output).ratio()
+                if similarity > _stale_threshold:
+                    logger.warning(
+                        "Planning gate: %s reviewer produced near-identical review "
+                        "(%.0f%% similar, threshold=%.0f%%) — auto-approving to "
+                        "break hallucination loop. task_id=%s",
+                        step_id, similarity * 100, _stale_threshold * 100,
+                        (state.get("task_id") or "")[:36],
+                    )
+                    verdict = "OK"
+            prev_review_text = review_output
+
             retries = get_step_retries(state, target_step)
             decision = _qg_should_retry(verdict, retries, max_retries)
+
+        if verdict == "NEEDS_WORK":
+            yield {
+                "agent": "orchestrator",
+                "status": "progress",
+                "message": (
+                    f"Planning gate: {step_id} still NEEDS_WORK after {max_retries} retries. "
+                    f"Proceeding with current output. Consider human review."
+                ),
+            }
 
         enforce_planning_review_gate(state, step_id=step_id, review_output=review_output)
 
@@ -387,10 +480,7 @@ def run_post_step_enforcement(
             yield {
                 "agent": "verification_layer",
                 "status": "completed",
-                "message": (
-                    "Trusted verification gates passed: "
-                    + ", ".join(result["gate_name"] for result in gate_results)
-                ),
+                "message": verification_layer_status_message(gate_results),
             }
 
     if step_id == "review_dev":
@@ -413,6 +503,8 @@ def run_post_step_enforcement(
             max_retries = _max_step_retries_env()
             decision = _qg_should_retry(verdict, dev_retries, max_retries)
 
+            prev_dev_review_text = str(state.get("dev_review_output") or "")
+
             while decision == "retry":
                 enter_fix_cycle_or_escalate(state, machine, report, step_id="review_dev")
                 yield {
@@ -431,12 +523,15 @@ def run_post_step_enforcement(
                 yield {"agent": "dev", "status": "in_progress", "message": "Dev (retry)"}
                 yield from run_step_with_stream_progress("dev", dev_func, state)
                 yield emit_completed("dev", state)
-                run_post_dev_verification_gates(state)
+                gate_results = run_post_dev_verification_gates(state)
                 transition_pipeline_phase(state, machine, PipelinePhase.VERIFY, source="verification_layer")
                 yield {
                     "agent": "verification_layer",
                     "status": "completed",
-                    "message": "Trusted verification gates passed after dev retry",
+                    "message": verification_layer_status_message(
+                        gate_results,
+                        context="after dev retry",
+                    ),
                 }
 
                 _, review_func = resolve_step("review_dev", base_agent_config)
@@ -445,21 +540,55 @@ def run_post_step_enforcement(
                 yield emit_completed("review_dev", state)
 
                 dev_retries = get_step_retries(state, "dev")
-                verdict = _qg_extract_verdict(state.get("dev_review_output") or "")
+                new_dev_review = str(state.get("dev_review_output") or "")
+                verdict = _qg_extract_verdict(new_dev_review)
+
+                # Stale-review detection for dev review loop
+                if verdict == "NEEDS_WORK" and prev_dev_review_text:
+                    _stale_threshold = float(
+                        os.getenv("SWARM_STALE_REVIEW_SIMILARITY_THRESHOLD", "0.85").strip()
+                    )
+                    from difflib import SequenceMatcher
+                    similarity = SequenceMatcher(None, prev_dev_review_text, new_dev_review).ratio()
+                    if similarity > _stale_threshold:
+                        logger.warning(
+                            "Quality gate: review_dev produced near-identical review "
+                            "(%.0f%% similar) — auto-approving. task_id=%s",
+                            similarity * 100,
+                            (state.get("task_id") or "")[:36],
+                        )
+                        verdict = "OK"
+                prev_dev_review_text = new_dev_review
+
                 report = _load_defect_report(state, "dev_defect_report")
                 _record_open_defects(state, report)
                 require_structured_blockers(report=report, verdict=verdict, step_id="review_dev")
                 decision = _qg_should_retry(verdict, dev_retries, max_retries)
 
-            if decision == "escalate":
-                raise HumanApprovalRequired(
-                    step="review_dev",
-                    detail=(
-                        f"Quality gate: dev retries exhausted ({dev_retries}/{max_retries}). "
-                        "Structured defects require manual intervention."
+            if verdict == "NEEDS_WORK" and decision != "escalate":
+                yield {
+                    "agent": "orchestrator",
+                    "status": "progress",
+                    "message": (
+                        f"Quality gate: review_dev still NEEDS_WORK after {max_retries} retries. "
+                        f"Proceeding to QA. Consider human review."
                     ),
-                    partial_state={"open_defects": state.get("open_defects") or []},
-                    resume_pipeline_step="human_dev",
+                }
+
+            if decision == "escalate":
+                if _should_block_for_human(state, "human_dev"):
+                    raise HumanApprovalRequired(
+                        step="review_dev",
+                        detail=(
+                            f"Quality gate: dev retries exhausted ({dev_retries}/{max_retries}). "
+                            "Structured defects require manual intervention."
+                        ),
+                        partial_state={"open_defects": state.get("open_defects") or []},
+                        resume_pipeline_step="human_dev",
+                    )
+                logger.warning(
+                    "Quality gate: dev retries exhausted (%d/%d) but human_dev not in pipeline — continuing",
+                    dev_retries, max_retries,
                 )
 
     if step_id == "review_qa":
@@ -502,12 +631,15 @@ def run_post_step_enforcement(
                 yield {"agent": "dev", "status": "in_progress", "message": "Dev (retry from QA)"}
                 yield from run_step_with_stream_progress("dev", dev_func, state)
                 yield emit_completed("dev", state)
-                run_post_dev_verification_gates(state)
+                gate_results = run_post_dev_verification_gates(state)
                 transition_pipeline_phase(state, machine, PipelinePhase.VERIFY, source="verification_layer")
                 yield {
                     "agent": "verification_layer",
                     "status": "completed",
-                    "message": "Trusted verification gates passed after QA-triggered dev retry",
+                    "message": verification_layer_status_message(
+                        gate_results,
+                        context="after QA-triggered dev retry",
+                    ),
                 }
 
                 transition_pipeline_phase(state, machine, PipelinePhase.QA, source="system")
@@ -531,14 +663,19 @@ def run_post_step_enforcement(
                 decision = _qg_should_retry(verdict, qa_retries, max_retries)
 
             if decision == "escalate":
-                raise HumanApprovalRequired(
-                    step="review_qa",
-                    detail=(
-                        f"Quality gate: QA retries exhausted ({qa_retries}/{max_retries}). "
-                        "Structured defects require manual intervention."
-                    ),
-                    partial_state={"open_defects": state.get("open_defects") or []},
-                    resume_pipeline_step="human_qa",
+                if _should_block_for_human(state, "human_qa"):
+                    raise HumanApprovalRequired(
+                        step="review_qa",
+                        detail=(
+                            f"Quality gate: QA retries exhausted ({qa_retries}/{max_retries}). "
+                            "Structured defects require manual intervention."
+                        ),
+                        partial_state={"open_defects": state.get("open_defects") or []},
+                        resume_pipeline_step="human_qa",
+                    )
+                logger.warning(
+                    "Quality gate: QA retries exhausted (%d/%d) but human_qa not in pipeline — continuing",
+                    qa_retries, max_retries,
                 )
 
 

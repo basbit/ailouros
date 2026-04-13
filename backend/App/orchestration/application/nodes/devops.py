@@ -12,6 +12,7 @@ from backend.App.orchestration.application.repo_evidence import (
 )
 
 from backend.App.orchestration.application.nodes._shared import (
+    _cfg_model,
     _code_analysis_is_weak,
     _compact_code_analysis_for_prompt,
     _dev_workspace_instructions,
@@ -42,7 +43,7 @@ def devops_node(state: PipelineState) -> dict[str, Any]:
         cfg = {}
     agent = DevopsAgent(
         system_prompt_path_override=cfg.get("prompt_path") or cfg.get("prompt"),
-        model_override=cfg.get("model"),
+        model_override=_cfg_model(cfg),
         environment_override=cfg.get("environment"),
         system_prompt_extra=_skills_extra_for_role_cfg(state, cfg),
         **_remote_api_client_kwargs_for_role(state, cfg),
@@ -90,6 +91,9 @@ def devops_node(state: PipelineState) -> dict[str, Any]:
         step_id="devops_node",
         retry_run=lambda retry_prompt: _llm_planning_agent_run(agent, retry_prompt, state)[0],
     )
+    if (devops_result or "").strip():
+        from backend.App.workspace.application.doc_workspace import write_step_wiki
+        write_step_wiki(state, "devops", devops_result)
     return {
         "devops_output": devops_result,
         "devops_model": agent.used_model,

@@ -13,6 +13,7 @@ from backend.App.orchestration.application.repo_evidence import (
     format_repo_evidence_for_prompt,
 )
 from backend.App.orchestration.application.nodes._shared import (
+    _cfg_model,
     _llm_planning_agent_run,
     _make_human_agent,
     _make_reviewer_agent,
@@ -82,6 +83,10 @@ def ba_node(state: PipelineState) -> dict[str, Any]:
         f"{plan_ctx}\n\n"
         "PM decomposition:\n"
         f"{pm_output}\n\n"
+        "IMPORTANT: Before writing your evidence, use workspace tools to verify your claims:\n"
+        "- Use workspace__list_directory to explore the project structure.\n"
+        "- Use workspace__read_text_file to read key files (composer.json, config, src/ structure).\n"
+        "- Only claim repo_evidence for things you have actually read and confirmed.\n\n"
         "Evidence contract:\n"
         "If you claim that the current repository or existing product already contains a module, "
         "entity, workflow, endpoint, or business constraint, add a final ```json``` block with:\n"
@@ -98,7 +103,7 @@ def ba_node(state: PipelineState) -> dict[str, Any]:
     ba_cfg = (state.get("agent_config") or {}).get("ba") or {}
     agent = BAAgent(
         system_prompt_path_override=ba_cfg.get("prompt_path") or ba_cfg.get("prompt"),
-        model_override=ba_cfg.get("model"),
+        model_override=_cfg_model(ba_cfg),
         environment_override=ba_cfg.get("environment"),
         system_prompt_extra=_skills_extra_for_role_cfg(state, ba_cfg),
         **_remote_api_client_kwargs_for_role(state, ba_cfg),
@@ -112,8 +117,8 @@ def ba_node(state: PipelineState) -> dict[str, Any]:
         retry_run=lambda retry_prompt: _llm_planning_agent_run(agent, retry_prompt, state)[0],
     )
     if (ba_output or "").strip():
-        from backend.App.workspace.application.doc_workspace import write_pipeline_step_to_workspace
-        write_pipeline_step_to_workspace(state, "ba", ba_output)
+        from backend.App.workspace.application.doc_workspace import write_step_wiki
+        write_step_wiki(state, "ba", ba_output)
     return {
         "ba_output": ba_output,
         "ba_model": agent.used_model,

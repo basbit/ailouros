@@ -11,10 +11,7 @@ from backend.App.orchestration.infrastructure.agents.code_workflow_agents import
     RefactorPlanAgent,
 )
 from backend.App.workspace.infrastructure.code_analysis.scan import analysis_to_json, analyze_workspace
-from backend.App.workspace.application.doc_workspace import (
-    write_generated_documentation_to_workspace,
-    write_doc_chain_step_to_workspace,
-)
+from backend.App.workspace.application.doc_workspace import write_step_wiki
 from backend.App.orchestration.application.pipeline_state import PipelineState
 from backend.App.orchestration.application.repo_evidence import (
     ensure_validated_repo_evidence,
@@ -243,6 +240,29 @@ def analyze_code_node(state: PipelineState) -> dict[str, Any]:
             "edges": (rg.get("edges") or [])[:100],
         }
 
+    # Build a meaningful wiki article from the analysis (not just the status line).
+    wiki_parts = [summary]
+    stats = compact_payload.get("stats") or {}
+    if stats:
+        wiki_parts.append(f"\n## Stats\n- Files scanned: {stats.get('scanned_files', '?')}")
+        for k, v in stats.items():
+            if k != "scanned_files" and v:
+                wiki_parts.append(f"- {k}: {v}")
+    conventions = compact_payload.get("conventions")
+    if isinstance(conventions, dict) and conventions:
+        wiki_parts.append("\n## Conventions")
+        for k, v in list(conventions.items())[:20]:
+            wiki_parts.append(f"- **{k}**: {v}")
+    files = compact_payload.get("files")
+    if isinstance(files, list) and files:
+        wiki_parts.append(f"\n## Key files ({min(len(files), 30)} shown)")
+        for f in files[:30]:
+            path = f.get("path", "") if isinstance(f, dict) else str(f)
+            wiki_parts.append(f"- `{path}`")
+    wiki_content = "\n".join(wiki_parts)
+    if wiki_content.strip():
+        from backend.App.workspace.application.doc_workspace import write_step_wiki
+        write_step_wiki(state, "analyze_code", wiki_content)
     return {
         "code_analysis": compact_payload,
         "analyze_code_output": summary,
@@ -319,7 +339,10 @@ def generate_documentation_node(state: PipelineState) -> dict[str, Any]:
         "## Documentation (README / API / ARCHITECTURE)\n\n"
         f"{doc_out}"
     )
-    doc_workspace_files = write_generated_documentation_to_workspace(state, merged, diagram_out)
+    if (diagram_out or "").strip():
+        write_step_wiki(state, "code_diagram", diagram_out)
+    if (merged or "").strip():
+        write_step_wiki(state, "generate_documentation", merged)
     result: dict[str, Any] = {
         "code_diagram_output": diagram_out,
         "code_diagram_model": diagram_agent.used_model,
@@ -328,8 +351,6 @@ def generate_documentation_node(state: PipelineState) -> dict[str, Any]:
         "generate_documentation_model": doc_agent.used_model,
         "generate_documentation_provider": doc_agent.used_provider,
     }
-    if doc_workspace_files:
-        result["documentation_workspace_files"] = doc_workspace_files
     return result
 
 
@@ -423,8 +444,8 @@ def problem_spotter_node(state: PipelineState) -> dict[str, Any]:
         retry_run=lambda retry_prompt: _llm_agent_run_with_optional_mcp(agent, retry_prompt, state, readonly_tools=True)[0],
     )
     if (agent_output or "").strip():
-        write_doc_chain_step_to_workspace(state, "problem_spotter", agent_output)
         _write_plan_artifact(state, "problem-spotter.md", agent_output)
+        write_step_wiki(state, "problem_spotter", agent_output)
     return {
         "problem_spotter_output": agent_output,
         "problem_spotter_model": used_model,
@@ -534,8 +555,8 @@ def refactor_plan_node(state: PipelineState) -> dict[str, Any]:
         retry_run=lambda retry_prompt: _llm_agent_run_with_optional_mcp(agent, retry_prompt, state, readonly_tools=True)[0],
     )
     if (agent_output or "").strip():
-        write_doc_chain_step_to_workspace(state, "refactor_plan", agent_output)
         _write_plan_artifact(state, "refactor-plan.md", agent_output)
+        write_step_wiki(state, "refactor_plan", agent_output)
     return {
         "refactor_plan_output": agent_output,
         "refactor_plan_model": used_model,

@@ -158,6 +158,28 @@ class PipelineState(TypedDict, total=False):
     spec_review_model: str
     spec_review_provider: str
     spec_human_output: str
+    # Design: UX Research → UX Architecture → UI Design
+    ux_researcher_output: str
+    ux_researcher_model: str
+    ux_researcher_provider: str
+    ux_researcher_review_output: str
+    ux_researcher_review_model: str
+    ux_researcher_review_provider: str
+    ux_researcher_human_output: str
+    ux_architect_output: str
+    ux_architect_model: str
+    ux_architect_provider: str
+    ux_architect_review_output: str
+    ux_architect_review_model: str
+    ux_architect_review_provider: str
+    ux_architect_human_output: str
+    ui_designer_output: str
+    ui_designer_model: str
+    ui_designer_provider: str
+    ui_designer_review_output: str
+    ui_designer_review_model: str
+    ui_designer_review_provider: str
+    ui_designer_human_output: str
     # Анализ кода и производные (между human_spec и devops)
     analyze_code_output: str
     code_diagram_output: str
@@ -240,6 +262,28 @@ class PipelineState(TypedDict, total=False):
     qa_review_model: str
     qa_review_provider: str
     qa_human_output: str
+    # Marketing: SEO → AI Citation → App Store Optimization
+    seo_specialist_output: str
+    seo_specialist_model: str
+    seo_specialist_provider: str
+    seo_specialist_review_output: str
+    seo_specialist_review_model: str
+    seo_specialist_review_provider: str
+    seo_specialist_human_output: str
+    ai_citation_strategist_output: str
+    ai_citation_strategist_model: str
+    ai_citation_strategist_provider: str
+    ai_citation_strategist_review_output: str
+    ai_citation_strategist_review_model: str
+    ai_citation_strategist_review_provider: str
+    ai_citation_strategist_human_output: str
+    app_store_optimizer_output: str
+    app_store_optimizer_model: str
+    app_store_optimizer_provider: str
+    app_store_optimizer_review_output: str
+    app_store_optimizer_review_model: str
+    app_store_optimizer_review_provider: str
+    app_store_optimizer_human_output: str
     # E2E
     e2e_output: str
     e2e_status: str
@@ -304,6 +348,15 @@ ARTIFACT_AGENT_OUTPUT_KEYS: tuple[tuple[str, str], ...] = (
     ("spec_merge", "spec_output"),
     ("review_spec", "spec_review_output"),
     ("human_spec", "spec_human_output"),
+    ("ux_researcher", "ux_researcher_output"),
+    ("review_ux_researcher", "ux_researcher_review_output"),
+    ("human_ux_researcher", "ux_researcher_human_output"),
+    ("ux_architect", "ux_architect_output"),
+    ("review_ux_architect", "ux_architect_review_output"),
+    ("human_ux_architect", "ux_architect_human_output"),
+    ("ui_designer", "ui_designer_output"),
+    ("review_ui_designer", "ui_designer_review_output"),
+    ("human_ui_designer", "ui_designer_human_output"),
     ("analyze_code", "analyze_code_output"),
     ("generate_documentation", "generate_documentation_output"),
     ("problem_spotter", "problem_spotter_output"),
@@ -321,6 +374,15 @@ ARTIFACT_AGENT_OUTPUT_KEYS: tuple[tuple[str, str], ...] = (
     ("qa", "qa_output"),
     ("review_qa", "qa_review_output"),
     ("human_qa", "qa_human_output"),
+    ("seo_specialist", "seo_specialist_output"),
+    ("review_seo_specialist", "seo_specialist_review_output"),
+    ("human_seo_specialist", "seo_specialist_human_output"),
+    ("ai_citation_strategist", "ai_citation_strategist_output"),
+    ("review_ai_citation_strategist", "ai_citation_strategist_review_output"),
+    ("human_ai_citation_strategist", "ai_citation_strategist_human_output"),
+    ("app_store_optimizer", "app_store_optimizer_output"),
+    ("review_app_store_optimizer", "app_store_optimizer_review_output"),
+    ("human_app_store_optimizer", "app_store_optimizer_human_output"),
     ("e2e", "e2e_output"),
 )
 

@@ -220,15 +220,24 @@ def apply_auto_mcp_to_agent_config(
                 "Other MCP tools may still be available."
             )
 
-    brave_api_key = (os.getenv("SWARM_BRAVE_SEARCH_API_KEY") or "").strip()
-    if not brave_api_key:
-        brave_api_key = str(swarm.get("brave_search_api_key") or "").strip()
-    if brave_api_key:
-        from backend.App.integrations.infrastructure.mcp.web_search.brave_search_mcp import (
-            brave_search_mcp_config,
+    # Web search: Tavily / Exa / ScrapingDog router (rotation by monthly counter)
+    from backend.App.integrations.infrastructure.mcp.web_search.web_search_router import (
+        web_search_available,
+        get_active_provider_info,
+    )
+    _search_config_keys = {
+        "tavily": str(swarm.get("tavily_api_key") or "").strip(),
+        "exa": str(swarm.get("exa_api_key") or "").strip(),
+        "scrapingdog": str(swarm.get("scrapingdog_api_key") or "").strip(),
+    }
+    if web_search_available(_search_config_keys):
+        os.environ["_WEB_SEARCH_ENABLED"] = "1"
+        info = get_active_provider_info()
+        logger.info(
+            "MCP auto: web_search_provider=router configured=%s usage=%s",
+            info.get("configured_providers"),
+            info.get("usage"),
         )
-        servers.append(brave_search_mcp_config(brave_api_key))
-        logger.info("MCP auto: web_search_provider=brave (SWARM_BRAVE_SEARCH_API_KEY is set)")
         os.environ.pop("_DDG_SEARCH_ENABLED", None)
     else:
         from backend.App.integrations.infrastructure.mcp.web_search.ddg_search import (
@@ -237,14 +246,16 @@ def apply_auto_mcp_to_agent_config(
         if ddg_search_available():
             os.environ["_DDG_SEARCH_ENABLED"] = "1"
             logger.info(
-                "MCP auto: web_search_provider=duckduckgo (no API key, DDG package available)"
+                "MCP auto: web_search_provider=duckduckgo "
+                "(no provider keys set, DDG package available)"
             )
         else:
+            os.environ.pop("_WEB_SEARCH_ENABLED", None)
             os.environ.pop("_DDG_SEARCH_ENABLED", None)
             logger.warning(
-                "MCP auto: web_search_provider=none — no Brave key set and "
-                "duckduckgo-search package not installed. "
-                "Install 'duckduckgo-search' or set SWARM_BRAVE_SEARCH_API_KEY."
+                "MCP auto: web_search_provider=none — no provider keys set "
+                "(SWARM_TAVILY_API_KEY / SWARM_EXA_API_KEY / SWARM_SCRAPINGDOG_API_KEY) "
+                "and duckduckgo-search not installed."
             )
 
     # ── fetch_page builtin tool ──────────────────────────────────────────
