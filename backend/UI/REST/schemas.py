@@ -273,3 +273,11 @@ class OnboardingMcpPreflightRequest(BaseModel):
     tavily_api_key: str = ""
     exa_api_key: str = ""
     scrapingdog_api_key: str = ""
+
+
+class UserSettingsRequest(BaseModel):
+    """Request body for PUT /v1/user/settings — global cross-project settings."""
+
+    tavily_api_key: str = ""
+    exa_api_key: str = ""
+    scrapingdog_api_key: str = ""

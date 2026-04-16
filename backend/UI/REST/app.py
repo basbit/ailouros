@@ -33,6 +33,7 @@ from backend.UI.REST.controllers.shell import router as _router_shell
 from backend.UI.REST.controllers.workspace import router as _router_workspace
 from backend.UI.REST.controllers.wiki import router as _router_wiki
 from backend.UI.REST.controllers.pipelines import router as _router_pipelines
+from backend.UI.REST.controllers.user_settings import router as _router_user_settings
 
 logger = logging.getLogger(__name__)
 
@@ -106,3 +107,4 @@ app.include_router(_router_shell)
 app.include_router(_router_workspace)
 app.include_router(_router_wiki)
 app.include_router(_router_pipelines)
+app.include_router(_router_user_settings)

@@ -1,6 +1,8 @@
 """DevOps pipeline nodes: devops, review_devops, human_devops."""
 from __future__ import annotations
 
+import logging
+import os
 from typing import Any
 
 from backend.App.orchestration.infrastructure.agents.devops_agent import DevopsAgent
@@ -10,7 +12,6 @@ from backend.App.orchestration.application.repo_evidence import (
     ensure_validated_repo_evidence,
     format_repo_evidence_for_prompt,
 )
-
 from backend.App.orchestration.application.nodes._shared import (
     _cfg_model,
     _code_analysis_is_weak,
@@ -33,6 +34,8 @@ from backend.App.orchestration.application.nodes._shared import (
     embedded_pipeline_input_for_review,
     embedded_review_artifact,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def devops_node(state: PipelineState) -> dict[str, Any]:
@@ -85,6 +88,22 @@ def devops_node(state: PipelineState) -> dict[str, Any]:
     )
     prompt += ws
     devops_result, _, _ = _llm_planning_agent_run(agent, prompt, state)
+    _devops_min = int(os.environ.get("SWARM_DEVOPS_MIN_OUTPUT_CHARS", "80"))
+    if len((devops_result or "").strip()) < _devops_min:
+        logger.warning(
+            "devops_node: output too short (%d chars < %d min) — retrying once. task_id=%s",
+            len((devops_result or "").strip()),
+            _devops_min,
+            str(state.get("task_id") or "")[:36],
+        )
+        _retry_prompt = (
+            "The previous attempt produced no output. Please try again.\n\n"
+            "Describe the bootstrap steps (dependency install, project init) "
+            "and provide any needed setup commands in <swarm_shell> tags. "
+            "Keep the response concise.\n\n"
+            + prompt
+        )
+        devops_result, _, _ = _llm_planning_agent_run(agent, _retry_prompt, state)
     devops_result, validated_repo_evidence = ensure_validated_repo_evidence(
         raw_output=devops_result,
         base_prompt=prompt,

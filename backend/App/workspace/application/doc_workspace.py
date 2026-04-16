@@ -90,5 +90,13 @@ def write_step_wiki(
             step_name, subfolder, slug, len(body),
             (state.get("task_id") or "")[:36],
         )
+        # Eagerly rebuild graph.json so the frontend graph view reflects the
+        # latest wiki state without waiting for a manual GET /api/wiki/graph.
+        try:
+            from backend.App.workspace.application.wiki_service import get_or_build_graph
+            wiki_root = Path(workspace_root).resolve() / ".swarm" / "wiki"
+            get_or_build_graph(wiki_root)
+        except Exception as _graph_exc:  # noqa: BLE001  # graph refresh is non-critical display enhancement; article write already succeeded above
+            logger.warning("write_step_wiki: graph rebuild failed: %s", _graph_exc)
     except OSError as exc:
         logger.warning("write_step_wiki: failed to write wiki for step %r: %s", step_name, exc)

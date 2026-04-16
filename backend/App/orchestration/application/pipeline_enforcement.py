@@ -580,6 +580,15 @@ def prepare_pipeline_machine_for_step(
         transition_pipeline_phase(state, machine, PipelinePhase.IMPLEMENT)
     elif step_id == "qa" and machine.phase in (PipelinePhase.VERIFY, PipelinePhase.IMPLEMENT):
         transition_pipeline_phase(state, machine, PipelinePhase.QA)
+    elif step_id == "review_dev" and machine.phase == PipelinePhase.PLAN:
+        # Custom pipeline: review_dev placed before dev. Advance machine so
+        # enter_fix_cycle_or_escalate can later transition VERIFY→FIX.
+        logger.info(
+            "prepare_pipeline_machine_for_step: review_dev running in PLAN phase "
+            "(dev not yet executed) — advancing machine PLAN→IMPLEMENT→VERIFY"
+        )
+        transition_pipeline_phase(state, machine, PipelinePhase.IMPLEMENT)
+        transition_pipeline_phase(state, machine, PipelinePhase.VERIFY)
 
 
 def run_post_step_enforcement(

@@ -49,13 +49,39 @@ FREE_TIER_LIMIT = 1_000  # requests per provider per calendar month
 
 # ~/.swarm/web_search_counts.json  → {"2026-04": {"tavily": 12, "exa": 0, ...}}
 _COUNTS_FILE = Path.home() / ".swarm" / "web_search_counts.json"
-
+# ~/.swarm/global_settings.json — written by PUT /v1/user/settings (UI global panel)
 _PROVIDERS = ("tavily", "exa", "scrapingdog")
 _ENV_KEYS = {
     "tavily": "SWARM_TAVILY_API_KEY",
     "exa": "SWARM_EXA_API_KEY",
     "scrapingdog": "SWARM_SCRAPINGDOG_API_KEY",
 }
+_GLOBAL_SETTING_KEYS = {
+    "tavily": "tavily_api_key",
+    "exa": "exa_api_key",
+    "scrapingdog": "scrapingdog_api_key",
+}
+
+
+def _global_settings_path() -> Path:
+    """Return the global settings file path (overridable via SWARM_GLOBAL_SETTINGS_FILE)."""
+    override = os.environ.get("SWARM_GLOBAL_SETTINGS_FILE", "").strip()
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".swarm" / "global_settings.json"
+
+
+def _load_global_settings() -> dict[str, str]:
+    """Read API keys from ~/.swarm/global_settings.json (set via UI global settings)."""
+    path = _global_settings_path()
+    try:
+        if path.is_file():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return {k: str(v).strip() for k, v in data.items() if v}
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -102,12 +128,23 @@ def _get_usage(month: str) -> dict[str, int]:
 # ---------------------------------------------------------------------------
 
 def _configured_keys(config_keys: Optional[dict[str, str]] = None) -> dict[str, str]:
-    """Return {provider: api_key} for all providers that have a key set."""
+    """Return {provider: api_key} for all providers that have a key set.
+
+    Priority (highest → lowest):
+      1. Per-request config_keys (from UI agent_config.swarm — includes global keys
+         forwarded by the frontend via buildAgentConfig).
+      2. Global settings file ~/.swarm/global_settings.json (server-side scripts /
+         direct API calls that bypass the UI).
+      3. Environment variables SWARM_*_API_KEY (legacy / server-side config).
+    """
+    global_file = _load_global_settings()
     result: dict[str, str] = {}
     for provider in _PROVIDERS:
         env_var = _ENV_KEYS[provider]
+        global_key = global_file.get(_GLOBAL_SETTING_KEYS[provider], "")
         key = (
             (config_keys or {}).get(provider)
+            or global_key
             or os.getenv(env_var, "")
             or ""
         ).strip()
