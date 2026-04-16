@@ -131,6 +131,16 @@ class _ShellConfirmRequest(BaseModel):
     approved: bool
 
 
+class _ManualShellConfirmRequest(BaseModel):
+    """Response from the "I can't run this — please run it yourself" dialog.
+
+    ``done=True`` — user clicked Done (executed the command themselves; the
+                    side-effects are in place, pipeline continues).
+    ``done=False`` — Cancel (pipeline is told the command was not run).
+    """
+    done: bool
+
+
 class _HumanConfirmRequest(BaseModel):
     approved: bool
     user_input: str = ""

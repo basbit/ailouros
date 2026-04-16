@@ -392,6 +392,12 @@ def _run_shell_block(
                 capture_output=True,
                 text=True,
                 env=_safe_subprocess_env(),
+                # Never let the subprocess read from the orchestrator's stdin —
+                # any command that prompts interactively (sudo, ssh-agent, npm
+                # login, etc.) would otherwise block the whole pipeline until
+                # the hard timeout. With DEVNULL it fails fast and the agent
+                # gets an actionable error on retry. See §24 in future-plan.md.
+                stdin=subprocess.DEVNULL,
             )
             shell_runs.append(
                 {

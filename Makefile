@@ -33,6 +33,17 @@ install: _ensure-venv ## install Python dependencies
 submodules: ## init/update git submodules
 	@if [ -f .gitmodules ]; then git submodule update --init --recursive; fi
 
+bump-frontend: ## fast-forward frontend submodule pointer to tip of origin/main
+	@git submodule update --init --remote --recursive -- frontend
+	@pinned=$$(git ls-files -s frontend | awk '{print $$2}'); \
+	 tip=$$(cd frontend && git rev-parse HEAD); \
+	 if [ "$$pinned" = "$$tip" ]; then \
+	   echo "frontend: already at $$tip"; \
+	 else \
+	   git add frontend; \
+	   echo "frontend: bumped $$pinned → $$tip (stage only; run 'git commit' to record)"; \
+	 fi
+
 lint: ## flake8 + import-linter + mypy
 	$(PY) -m flake8 .
 	$(LINT_IMPORTS)

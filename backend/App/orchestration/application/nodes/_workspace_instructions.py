@@ -170,6 +170,14 @@ def _dev_workspace_instructions(state: PipelineState) -> str:
             "after writing files from the same response. "
             "Use only commands allowed by `SWARM_SHELL_ALLOWLIST` and appropriate for the **Architect** stack "
             "(dependency install, codegen, test runners, etc.).\n"
+            "**Do NOT emit `sudo …`** — the automated shell has no TTY and no password prompt, so sudo "
+            "cannot be executed. It will be routed to a manual-execution dialog where the user runs it "
+            "themselves; that's slow and interrupts the pipeline. Prefer user-level package managers "
+            "(pip --user, npm install without -g, pyenv, nvm, uv, asdf, homebrew on macOS) or ask the "
+            "user to run the privileged setup once before the task. Also avoid any command that prompts "
+            "interactively (ssh without keys, npm login, gh auth login) — stdin is closed and it will "
+            "fail. If privileged setup is truly required, describe it in the dev notes so the user can "
+            "run it manually.\n"
         )
     else:
         part += (

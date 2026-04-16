@@ -204,6 +204,67 @@ class PipelineSSEHandler:
                         run_shell_flag = False
                         if command_exec_allowed():
                             shell_cmds = extract_shell_commands(msg_ev)
+                            # Strip sudo commands up-front — they're structurally
+                            # unsupported (no TTY, no password prompt) and would
+                            # hang until the 5-min hard timeout. See §24 in
+                            # docs/future-plan.md for the planned password-UI.
+                            # We don't silently drop them: a dedicated status line
+                            # is emitted so the user (and the dev agent on retry)
+                            # know why nothing happened.
+                            sudo_cmds = [
+                                c for c in shell_cmds
+                                if (extract_command_binary(c) or "") == "sudo"
+                            ]
+                            if sudo_cmds:
+                                # Remove sudo from the automated batch — it's
+                                # structurally unsupported (no TTY / no password
+                                # prompt; hangs for 5 min until hard timeout).
+                                # Route into the manual-execution dialog instead:
+                                # the user runs the command in their own terminal
+                                # and clicks Done (or Cancel) in the UI. See
+                                # docs/future-plan.md §24 for the planned password UI.
+                                shell_cmds = [c for c in shell_cmds if c not in sudo_cmds]
+                                from backend.App.orchestration.infrastructure.manual_shell_approval import (
+                                    request_manual_execution,
+                                )
+                                sudo_preview = ", ".join(f"`{c}`" for c in sudo_cmds[:3])
+                                if len(sudo_cmds) > 3:
+                                    sudo_preview += f" … (+{len(sudo_cmds) - 3})"
+                                ask_manual = (
+                                    f"[orchestrator] Cannot run {len(sudo_cmds)} sudo "
+                                    f"command(s) — asking user to run manually: "
+                                    f"{sudo_preview}\n"
+                                )
+                                append_task_run_log(task_dir, ask_manual.strip())
+                                yield _sse_delta_line(now, request_model, ask_manual)
+                                manual_done = request_manual_execution(
+                                    task_id,
+                                    sudo_cmds,
+                                    self._task_store,
+                                    reason=(
+                                        "sudo is not supported by the automated "
+                                        "shell (no TTY / password prompt). "
+                                        "Please run these commands yourself in "
+                                        "your terminal."
+                                    ),
+                                    cancel_event=cancel_event,
+                                )
+                                manual_result_line = (
+                                    f"[orchestrator] user "
+                                    f"{'confirmed manual execution' if manual_done else 'cancelled (command not run)'}: "
+                                    f"{sudo_preview}\n"
+                                )
+                                append_task_run_log(task_dir, manual_result_line.strip())
+                                yield _sse_delta_line(now, request_model, manual_result_line)
+                                # The Done / Cancel outcome reaches the next
+                                # dev iteration via the streamed transcript
+                                # (history contains the "user confirmed manual
+                                # execution" / "user cancelled" lines) plus the
+                                # "do not emit sudo" system-prompt instruction
+                                # in _dev_workspace_instructions. Nothing else
+                                # needs a stash here; any per-task flags would
+                                # be dead unless a downstream consumer reads
+                                # them (§10.5).
                             if shell_cmds:
                                 # Split commands by whether their binary is already
                                 # in the env allowlist. Out-of-allowlist ones require

@@ -1,10 +1,12 @@
 """Approval endpoints: shell commands & human review gates.
 
 Routes:
-    GET  /v1/tasks/{task_id}/pending-shell   — list pending shell commands
-    POST /v1/tasks/{task_id}/confirm-shell   — approve or reject shell commands
-    GET  /v1/tasks/{task_id}/pending-human   — check pending human approval
-    POST /v1/tasks/{task_id}/confirm-human   — approve or reject human gate
+    GET  /v1/tasks/{task_id}/pending-shell          — list pending shell commands
+    POST /v1/tasks/{task_id}/confirm-shell          — approve or reject shell commands
+    GET  /v1/tasks/{task_id}/pending-manual-shell   — list commands the user must run manually
+    POST /v1/tasks/{task_id}/confirm-manual-shell   — user clicked Done / Cancel
+    GET  /v1/tasks/{task_id}/pending-human          — check pending human approval
+    POST /v1/tasks/{task_id}/confirm-human          — approve or reject human gate
 """
 from __future__ import annotations
 
@@ -18,12 +20,20 @@ from backend.App.orchestration.infrastructure.human_approval import (
     complete_human_approval,
     pending_human_context,
 )
+from backend.App.orchestration.infrastructure.manual_shell_approval import (
+    complete_manual_execution,
+    pending_manual_payload,
+)
 from backend.App.orchestration.infrastructure.shell_approval import (
     complete_shell_approval,
     pending_shell_commands,
     pending_shell_payload,
 )
-from backend.UI.REST.schemas import _HumanConfirmRequest, _ShellConfirmRequest
+from backend.UI.REST.schemas import (
+    _HumanConfirmRequest,
+    _ManualShellConfirmRequest,
+    _ShellConfirmRequest,
+)
 from backend.UI.REST.task_instance import task_store
 
 router = APIRouter()
@@ -84,6 +94,64 @@ async def confirm_shell(task_id: str, req: _ShellConfirmRequest) -> JSONResponse
         raise HTTPException(status_code=409, detail="No pending shell approval for this task")
     complete_shell_approval(task_id, req.approved)
     return JSONResponse(content={"ok": True, "approved": req.approved})
+
+
+# ---------------------------------------------------------------------------
+# Manual-execution gate (commands the orchestrator can't run itself, e.g. sudo)
+# ---------------------------------------------------------------------------
+
+@router.get("/v1/tasks/{task_id}/pending-manual-shell")
+async def get_pending_manual_shell(task_id: str) -> JSONResponse:
+    """Return the commands the user must run manually.
+
+    ``reason`` explains why the orchestrator can't run them itself (e.g. sudo
+    with no TTY). UI should render the commands verbatim with a Copy button
+    and Done / Cancel actions.
+    """
+    try:
+        task_store.get_task(task_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Task not found") from exc
+    payload = pending_manual_payload(task_id)
+    if payload is None:
+        return JSONResponse(
+            content={
+                "task_id": task_id,
+                "commands": [],
+                "reason": "",
+                "pending": False,
+            }
+        )
+    return JSONResponse(
+        content={
+            "task_id": task_id,
+            "commands": payload["commands"],
+            "reason": payload["reason"],
+            "pending": True,
+        }
+    )
+
+
+@router.post("/v1/tasks/{task_id}/confirm-manual-shell")
+async def confirm_manual_shell(
+    task_id: str, req: _ManualShellConfirmRequest,
+) -> JSONResponse:
+    """Receive Done / Cancel from the manual-execution dialog."""
+    try:
+        task_store.get_task(task_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Task not found") from exc
+    for _ in range(50):
+        if pending_manual_payload(task_id) is not None:
+            break
+        await asyncio.sleep(0.1)
+    if pending_manual_payload(task_id) is None:
+        raise HTTPException(
+            status_code=409,
+            detail="No pending manual-shell approval for this task",
+        )
+    complete_manual_execution(task_id, req.done)
+    return JSONResponse(content={"ok": True, "done": req.done})
 
 
 # ---------------------------------------------------------------------------

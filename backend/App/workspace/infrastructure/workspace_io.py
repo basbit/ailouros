@@ -222,6 +222,18 @@ def _shell_command_allowed(line: str) -> tuple[bool, str]:
     executable_name = Path(parts[0]).name.lower()
     if executable_name.endswith(".exe"):
         executable_name = executable_name[:-4]
+    # sudo is structurally unsupported: the orchestrator runs subprocesses
+    # with no TTY and no interactive stdin, so any sudo call that isn't
+    # pre-authorised via NOPASSWD sits blocking the pipeline until the
+    # hard timeout (5 min by default) — see docs/future-plan.md §24 for the
+    # planned password-prompt UI. Reject up-front with a clear reason that
+    # reaches the agent on retry instead of letting it hang.
+    if executable_name == "sudo":
+        return False, (
+            "sudo is not supported by the automated shell (no TTY / no password "
+            "prompt) — ask the user to run privileged setup manually, or use a "
+            "user-level package manager. See docs/future-plan.md §24."
+        )
     if executable_name in _shell_allowlist():
         return True, ""
     if executable_name in _runtime_shell_allowlist():
