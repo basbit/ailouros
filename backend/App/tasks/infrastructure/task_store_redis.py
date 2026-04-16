@@ -10,14 +10,14 @@ import json
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 try:
-    import redis
-    from redis.exceptions import WatchError
+    import redis  # type: ignore[import-not-found]
+    from redis.exceptions import WatchError  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover
-    redis = None
-    WatchError = Exception
+    redis = None  # type: ignore[assignment]
+    WatchError = Exception  # type: ignore[misc,assignment]
 
 from backend.App.tasks.infrastructure.config import REDIS_URL as _DEFAULT_REDIS_URL
 
@@ -168,7 +168,7 @@ class RedisTaskStore:
         raw = self.client.get(self._key(task_id))
         if not raw:
             raise KeyError(task_id)
-        return json.loads(raw)
+        return cast(dict[str, Any], json.loads(cast(Any, raw)))
 
     def update_task(
         self,
@@ -195,7 +195,7 @@ class RedisTaskStore:
                 if not raw:
                     pipe.reset()
                     raise KeyError(task_id)
-                payload = json.loads(raw)
+                payload = json.loads(cast(Any, raw))
                 payload = self._apply_update(payload, status=status, agent=agent, message=message)
                 pipe.multi()
                 pipe.set(key, json.dumps(payload, ensure_ascii=False), ex=self._ttl_sec)
@@ -234,7 +234,7 @@ class RedisTaskStore:
 # New code should use FallbackTaskStore from task_store_fallback.py instead.
 # ---------------------------------------------------------------------------
 
-def _build_legacy_task_store() -> "RedisTaskStore | _LegacyInMemoryProxy":
+def _build_legacy_task_store() -> Any:
     """Instantiate a store using environment variables (legacy entry-point).
 
     Kept so that existing `task_instance.py` imports still resolve.

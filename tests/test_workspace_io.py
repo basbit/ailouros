@@ -375,25 +375,6 @@ from_fence
     assert (root / "a.txt").read_text(encoding="utf-8") == "from_tag"
 
 
-def test_write_generated_documentation_to_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("SWARM_ALLOW_WORKSPACE_WRITE", "1")
-    root = tmp_path / "repo"
-    root.mkdir()
-    from backend.App.workspace.application.doc_workspace import write_generated_documentation_to_workspace
-
-    state = {
-        "workspace_root": str(root),
-        "workspace_apply_writes": True,
-        "task_id": "tid",
-        "agent_config": {},
-    }
-    paths = write_generated_documentation_to_workspace(state, "# Full doc\n", "## mermaid only\n")
-    assert "docs/swarm/AGENT_SWARM_DOCS.md" in paths
-    assert "docs/swarm/DIAGRAMS.md" in paths
-    assert (root / "docs" / "swarm" / "AGENT_SWARM_DOCS.md").read_text(encoding="utf-8") == "# Full doc\n"
-    assert (root / "docs" / "swarm" / "DIAGRAMS.md").read_text(encoding="utf-8") == "## mermaid only\n"
-
-
 def test_apply_workspace_uses_pipeline_steps_order_review_wins(tmp_path: Path):
     """Стрим кладёт review_dev_output, а не dev_output — раньше review игнорировался."""
     root = tmp_path / "w"

@@ -204,6 +204,21 @@ def run_with_mcp_tools_openai_compat(
                         tools.append(tool)
                 logger.info("MCP: local evidence tools injected for workspace=%s", _workspace_root)
 
+            # env: SWARM_WIKI_TOOLS
+            from backend.App.integrations.infrastructure.mcp.wiki_tools import (
+                wiki_tools_available,
+                wiki_tools_definitions,
+            )
+            if wiki_tools_available(_workspace_root):
+                existing_tool_names = {
+                    t.get("function", {}).get("name", "") for t in tools
+                }
+                for tool in wiki_tools_definitions():
+                    name = tool.get("function", {}).get("name", "")
+                    if name and name not in existing_tool_names:
+                        tools.append(tool)
+                logger.info("MCP: wiki tools injected for workspace=%s", _workspace_root)
+
         if not tools:
             logger.warning("MCP: tools/list is empty — falling back to plain agent.run")
             raise RuntimeError("MCP: tools/list is empty — check your servers")
@@ -299,6 +314,8 @@ def run_with_mcp_tools_openai_compat(
         _last_mcp_telemetry.tool_call_rounds = getattr(loop, '_last_tool_call_rounds', 0)
         _last_mcp_telemetry.tool_parser_failures = getattr(loop, '_last_tool_parser_failures', 0)
         _last_mcp_telemetry.files_read_count = getattr(loop, '_last_files_read_count', 0)
+        _last_mcp_telemetry.file_read_cache_hits = getattr(loop, '_last_file_read_cache_hits', 0)
+        _last_mcp_telemetry.file_read_cache_misses = getattr(loop, '_last_file_read_cache_misses', 0)
         _last_mcp_telemetry.time_to_first_tool = getattr(loop, '_last_time_to_first_tool', None)
         _last_mcp_telemetry.time_after_last_tool_until_finish = getattr(loop, '_last_time_after_last_tool_until_finish', None)
         return result
@@ -314,5 +331,7 @@ _last_mcp_telemetry = threading.local()
 _last_mcp_telemetry.tool_call_rounds = 0
 _last_mcp_telemetry.tool_parser_failures = 0
 _last_mcp_telemetry.files_read_count = 0
+_last_mcp_telemetry.file_read_cache_hits = 0
+_last_mcp_telemetry.file_read_cache_misses = 0
 _last_mcp_telemetry.time_to_first_tool = None
 _last_mcp_telemetry.time_after_last_tool_until_finish = None

@@ -36,9 +36,19 @@ def _mcp_compact_tools_enabled() -> bool:
 
     When active, description of each tool is truncated to
     SWARM_MCP_TOOL_DESCRIPTION_MAX_CHARS (default 200) instead of 8000.
-    Enable via SWARM_MCP_COMPACT_TOOLS=1.
+
+    Auto-enabled when SWARM_ROUTE_DEFAULT=local (local models typically have
+    smaller context windows). Override with SWARM_MCP_COMPACT_TOOLS=0 to force
+    full descriptions even for local models.
     """
-    return os.getenv("SWARM_MCP_COMPACT_TOOLS", "0").strip().lower() in ("1", "true", "yes", "on")
+    explicit = os.getenv("SWARM_MCP_COMPACT_TOOLS", "").strip().lower()
+    if explicit in ("1", "true", "yes", "on"):
+        return True
+    if explicit in ("0", "false", "no", "off"):
+        return False
+    # Auto-enable for local models (lmstudio, ollama, etc.)
+    route = os.getenv("SWARM_ROUTE_DEFAULT", "local").strip().lower()
+    return route == "local"
 
 
 def _mcp_tool_description_max_chars() -> int:

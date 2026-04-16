@@ -29,7 +29,7 @@ def validate_agent_boundary(
 
 
 def run_agent_with_boundary(
-    state: PipelineState,
+    state: Any,
     agent: Any,
     prompt: str,
     *,

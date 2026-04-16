@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import Any
 
@@ -48,7 +47,8 @@ def _write_plan_artifact(state: "PipelineState", filename: str, content: str) ->
     task_id = (state.get("task_id") or "").strip()
     if not task_id or not (content or "").strip():
         return
-    art_root = Path(os.getenv("SWARM_ARTIFACTS_DIR", "var/artifacts")).resolve()
+    from backend.App.paths import artifacts_root as _anchored_artifacts_root
+    art_root = _anchored_artifacts_root()
     dest = art_root / task_id / filename
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -192,7 +192,8 @@ def analyze_code_node(state: PipelineState) -> dict[str, Any]:
         root, languages_filter=langs, tree_sitter_disabled=ts_off
     )
     analysis_json = analysis_to_json(payload)
-    art_root = Path(os.getenv("SWARM_ARTIFACTS_DIR", "var/artifacts")).resolve()
+    from backend.App.paths import artifacts_root as _anchored_artifacts_root
+    art_root = _anchored_artifacts_root()
     if task_id:
         dest = art_root / task_id
         dest.mkdir(parents=True, exist_ok=True)
@@ -280,7 +281,8 @@ def generate_documentation_node(state: PipelineState) -> dict[str, Any]:
     _remote_api_kwargs = _pg._remote_api_client_kwargs
 
     agent_config = state.get("agent_config") or {}
-    code_analysis = state.get("code_analysis") if isinstance(state.get("code_analysis"), dict) else {}
+    _ca_raw = state.get("code_analysis")
+    code_analysis: dict[str, Any] = _ca_raw if isinstance(_ca_raw, dict) else {}
     compact = _compact_code_analysis_for_prompt(code_analysis)
     compact_doc_pass = _compact_code_analysis_for_prompt(
         code_analysis, max_chars=_doc_generate_second_pass_analysis_max_chars()
@@ -316,7 +318,8 @@ def generate_documentation_node(state: PipelineState) -> dict[str, Any]:
     )
     diagram_out = _run_agent_with_boundary(state, diagram_agent, diagram_prompt)
 
-    doc_generate_cfg = agent_config.get("doc_generate") if isinstance(agent_config.get("doc_generate"), dict) else {}
+    _dg_raw = agent_config.get("doc_generate")
+    doc_generate_cfg: dict[str, Any] = _dg_raw if isinstance(_dg_raw, dict) else {}
     doc_agent = _DocGenerateAgent(
         system_prompt_path_override=doc_generate_cfg.get("prompt_path") or doc_generate_cfg.get("prompt"),
         model_override=doc_generate_cfg.get("model"),
@@ -356,7 +359,8 @@ def generate_documentation_node(state: PipelineState) -> dict[str, Any]:
 
 def problem_spotter_node(state: PipelineState) -> dict[str, Any]:
     agent_config = state.get("agent_config") or {}
-    code_analysis = state.get("code_analysis") if isinstance(state.get("code_analysis"), dict) else {}
+    _ca_raw = state.get("code_analysis")
+    code_analysis: dict[str, Any] = _ca_raw if isinstance(_ca_raw, dict) else {}
     analyze_code_output = (state.get("analyze_code_output") or "").strip()
     use_mcp = _should_use_mcp_for_workspace(state)
     if use_mcp:
@@ -364,7 +368,8 @@ def problem_spotter_node(state: PipelineState) -> dict[str, Any]:
         compact = f"[Use MCP filesystem tools to explore the workspace: {workspace_root}]\n"
     else:
         compact = _compact_code_analysis_for_prompt(code_analysis)
-    problem_spotter_cfg = agent_config.get("problem_spotter") if isinstance(agent_config.get("problem_spotter"), dict) else {}
+    _ps_raw = agent_config.get("problem_spotter")
+    problem_spotter_cfg: dict[str, Any] = _ps_raw if isinstance(_ps_raw, dict) else {}
     agent = ProblemSpotterAgent(
         system_prompt_path_override=problem_spotter_cfg.get("prompt_path") or problem_spotter_cfg.get("prompt"),
         model_override=problem_spotter_cfg.get("model"),
@@ -413,10 +418,32 @@ def problem_spotter_node(state: PipelineState) -> dict[str, Any]:
             if analyze_code_output
             else ""
         )
+    # Include accumulated wiki context so problem_spotter is aware of
+    # what previous pipeline steps (PM, BA, Arch, etc.) have documented.
+    # Use semantic retrieval scoped to "problem_spotter" so the wiki
+    # snippets are about issues/risks rather than the first articles
+    # alphabetically.
+    _wiki_block = ""
+    workspace_root = (state.get("workspace_root") or "").strip()
+    if workspace_root:
+        try:
+            from backend.App.orchestration.application.wiki_context_loader import (
+                load_wiki_context,
+                query_for_pipeline_step,
+            )
+            _wiki_query = query_for_pipeline_step(state, "problem_spotter")
+            _wiki = load_wiki_context(workspace_root, query=_wiki_query or None, max_chars=2000)
+            if _wiki:
+                _wiki_capped = _wiki[:2000] + "\n…[wiki truncated]" if len(_wiki) > 2000 else _wiki
+                _wiki_block = f"[Project wiki — previous pipeline decisions]\n{_wiki_capped}\n\n"
+        except Exception:
+            pass
+
     prompt = (
         f"{_swarm_prompt_prefix(state)}"
         f"{_documentation_locale_line(state)}"
         f"{_swarm_languages_line(state)}"
+        f"{_wiki_block}"
         f"{spec_section}"
         f"{analyze_code_summary_block}"
         "[Static analysis]\n"
@@ -457,7 +484,8 @@ def problem_spotter_node(state: PipelineState) -> dict[str, Any]:
 
 def refactor_plan_node(state: PipelineState) -> dict[str, Any]:
     agent_config = state.get("agent_config") or {}
-    code_analysis = state.get("code_analysis") if isinstance(state.get("code_analysis"), dict) else {}
+    _ca_raw = state.get("code_analysis")
+    code_analysis: dict[str, Any] = _ca_raw if isinstance(_ca_raw, dict) else {}
     analyze_code_output = (state.get("analyze_code_output") or "").strip()
     use_mcp = _should_use_mcp_for_workspace(state)
     if use_mcp:
@@ -465,7 +493,8 @@ def refactor_plan_node(state: PipelineState) -> dict[str, Any]:
         compact = f"[Use MCP filesystem tools to explore the workspace: {workspace_root}]\n"
     else:
         compact = _compact_code_analysis_for_prompt(code_analysis, max_chars=8000)
-    refactor_plan_cfg = agent_config.get("refactor_plan") if isinstance(agent_config.get("refactor_plan"), dict) else {}
+    _rp_raw = agent_config.get("refactor_plan")
+    refactor_plan_cfg: dict[str, Any] = _rp_raw if isinstance(_rp_raw, dict) else {}
     agent = RefactorPlanAgent(
         system_prompt_path_override=refactor_plan_cfg.get("prompt_path") or refactor_plan_cfg.get("prompt"),
         model_override=refactor_plan_cfg.get("model"),

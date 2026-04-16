@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, TypedDict
+from collections.abc import Mapping
+from typing import Any, TypedDict, cast
 
 from backend.App.orchestration.application.pipeline_state import PipelineState
 from backend.App.orchestration.domain.defect import Defect, DefectReport, cluster_defects
@@ -57,6 +58,9 @@ class PipelineMetricsArtifact(TypedDict):
     total_fix_cycles: int
     avg_dev_writes_per_minute: float
     avg_dev_artifact_yield_per_subtask: float
+    file_read_cache_hits: int
+    file_read_cache_misses: int
+    file_read_cache_hit_rate: float
     step_metrics: dict[str, Any]
 
 
@@ -80,6 +84,8 @@ def build_pipeline_metrics(state: PipelineState) -> PipelineMetricsArtifact:
     steps = step_metrics.get("steps") or {}
 
     total_input_tokens = 0
+    total_cache_hits = 0
+    total_cache_misses = 0
     small_step_token_samples: list[int] = []
     small_steps = ("pm", "ba", "review_pm", "review_ba", "review_dev", "review_qa", "qa", "devops")
     for step_id, payload in steps.items():
@@ -88,6 +94,8 @@ def build_pipeline_metrics(state: PipelineState) -> PipelineMetricsArtifact:
         tokens = payload.get("tokens") or {}
         input_tokens = int(tokens.get("input_tokens") or 0)
         total_input_tokens += input_tokens
+        total_cache_hits += int(tokens.get("file_read_cache_hits") or 0)
+        total_cache_misses += int(tokens.get("file_read_cache_misses") or 0)
         if step_id in small_steps and input_tokens > 0:
             for _ in range(int(payload.get("count") or 0) or 1):
                 small_step_token_samples.append(input_tokens)
@@ -141,15 +149,21 @@ def build_pipeline_metrics(state: PipelineState) -> PipelineMetricsArtifact:
             / max(1, len(dev_subtask_contracts)),
             3,
         ) if dev_subtask_contracts else 0.0,
+        "file_read_cache_hits": total_cache_hits,
+        "file_read_cache_misses": total_cache_misses,
+        "file_read_cache_hit_rate": round(
+            total_cache_hits / (total_cache_hits + total_cache_misses),
+            3,
+        ) if (total_cache_hits + total_cache_misses) else 0.0,
         "step_metrics": step_metrics,
     }
 
 
 def finalize_pipeline_metrics(state: PipelineState) -> None:
-    state["pipeline_metrics"] = build_pipeline_metrics(state)
+    state["pipeline_metrics"] = cast(dict[str, Any], build_pipeline_metrics(state))
 
 
-def load_defect_report(state: PipelineState, key: str) -> DefectReport:
+def load_defect_report(state: Mapping[str, Any], key: str) -> DefectReport:
     raw = state.get(key)
     if isinstance(raw, dict):
         return DefectReport.from_dict(raw)
@@ -181,12 +195,12 @@ def record_planning_review_blocker(
     target_step = _PLANNING_REVIEW_TARGET_STEP.get(step_id, "")
     if verdict == "NEEDS_WORK":
         blockers.append(
-            PlanningReviewBlocker(
+            cast(dict[str, Any], PlanningReviewBlocker(
                 review_step=step_id,
                 target_step=target_step,
                 verdict=verdict,
                 review_output=review_output,
-            )
+            ))
         )
         if target_step:
             feedback[target_step] = review_output
@@ -232,7 +246,7 @@ def record_open_defects(state: PipelineState, *reports: DefectReport) -> None:
         for defect in report.open_p0 + report.open_p1:
             open_defects.append(defect.to_dict())
             grouped_defects.append(defect)
-    state["open_defects"] = open_defects
+    cast(dict[str, Any], state)["open_defects"] = open_defects
     clusters: list[DefectClusterEntry] = []
     for category, defects in cluster_defects(grouped_defects).items():
         unique_files: list[str] = []
@@ -251,4 +265,4 @@ def record_open_defects(state: PipelineState, *reports: DefectReport) -> None:
                 file_paths=unique_files,
             )
         )
-    state["clustered_open_defects"] = clusters
+    cast(dict[str, Any], state)["clustered_open_defects"] = clusters

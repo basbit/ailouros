@@ -204,12 +204,25 @@ class MemoryConsolidator:
                 provenance_ids[:3],
             )
 
+        # Embedding-based DreamPass (infrastructure layer) — runs after the
+        # TF-IDF pass when SWARM_DREAM_PASS_ENABLED=1.  Clusters episodes that
+        # already carry embedding vectors; results land in pattern_memory.
+        dream_patterns = 0
+        try:
+            from backend.App.integrations.infrastructure.memory_consolidation import (
+                dream_pass,
+            )
+            dream_patterns = dream_pass(namespace)
+        except Exception as exc:
+            logger.warning("MemoryConsolidator: dream_pass failed: %s", exc)
+
         elapsed = time.monotonic() - t_start
         stats = {
             "episodes_loaded": len(episodes),
             "clusters_formed": len(clusters),
             "patterns_stored": patterns_stored,
             "episodes_marked": episodes_marked,
+            "dream_patterns": dream_patterns,
         }
         logger.info(
             "MemoryConsolidator: done elapsed=%.2fs stats=%s",
@@ -305,8 +318,16 @@ class MemoryConsolidator:
             "Be specific and actionable. Max 400 words.\n\n"
             f"---\n{combined_body[:6000]}\n---"
         )
+        # Caller (``_distill_cluster_to_pattern``) guarantees ``self._llm`` is
+        # non-None before invoking this method; re-check for type safety and
+        # fail-fast on programmer errors per §2 of docs/review-rules.md.
+        if self._llm is None:
+            raise RuntimeError(
+                "_llm_extract called without an LLM backend; caller must check self._llm is not None"
+            )
+        llm = self._llm
         try:
-            text, _ = self._llm.chat(
+            text, _ = llm.chat(
                 messages=[{"role": "user", "content": prompt}],
                 model=os.getenv("SWARM_MEMORY_CONSOLIDATION_MODEL", "claude-haiku-4-5"),
                 temperature=0.2,

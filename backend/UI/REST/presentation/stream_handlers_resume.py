@@ -168,6 +168,15 @@ def _stream_human_resume_chunks(
             except StopIteration as e:
                 final_state = e.value
                 break
+            if "agent" not in event:
+                # Meta-event without an agent (e.g. ``active_steps`` from
+                # staged runners). Forward as a plain delta line.
+                msg_ev = str(event.get("message") or "")
+                if msg_ev:
+                    meta_line = f"[orchestrator] {msg_ev}\n"
+                    append_task_run_log(task_dir, meta_line.strip())
+                    yield _sse_delta_line(now, request_model, meta_line)
+                continue
             agent = event["agent"]
             st_ev = event.get("status") or ""
             msg_ev = str(event.get("message") or "")
@@ -311,8 +320,8 @@ def _stream_human_resume_chunks(
     task_store.update_task(
         task_id,
         status="completed",
-        agent=task_store_agent_label(final_state, steps),
-        message=final_pipeline_user_message(final_state, steps),
+        agent=task_store_agent_label(cast(PipelineState, final_state), steps),
+        message=final_pipeline_user_message(cast(PipelineState, final_state), steps),
     )
     (task_dir / "pipeline.json").write_text(
         json.dumps(

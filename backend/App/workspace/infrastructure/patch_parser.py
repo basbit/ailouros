@@ -18,7 +18,6 @@ from backend.App.workspace.infrastructure.workspace_io import (
     _ShellAction,
     _UdiffAction,
     _is_under,
-    _shell_command_allowed,
     command_exec_allowed,
 )
 
@@ -173,6 +172,52 @@ def parse_swarm_file_writes(text: str) -> list[tuple[str, str]]:
     return [(m.group(1).strip(), m.group(2)) for m in _PAT_FILE.finditer(text)]
 
 
+# Extensions that cannot be produced as plain UTF-8 text by the pipeline.
+# A <swarm_patch> or <swarm_file> on these paths is always a model mistake:
+# the agent has to request the asset via the asset pipeline (see
+# docs/future-plan.md §23) instead of hallucinating binary content.
+_BINARY_ASSET_EXTENSIONS = frozenset({
+    # Images
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif",
+    ".ico", ".icns", ".heic", ".heif", ".avif",
+    # Vector that is often treated as binary (fonts)
+    ".woff", ".woff2", ".ttf", ".otf", ".eot",
+    # Audio
+    ".mp3", ".wav", ".ogg", ".flac", ".m4a", ".aac", ".opus",
+    # Video
+    ".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v",
+    # Archives / packaged assets
+    ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar",
+    # Documents (binary)
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    # Game / 3D assets (common in Godot / Unity / Unreal workspaces)
+    ".psd", ".blend", ".fbx", ".glb", ".gltf", ".obj", ".dae",
+    # Compiled binaries
+    ".exe", ".dll", ".so", ".dylib", ".class", ".jar", ".wasm",
+})
+
+
+def _is_binary_asset_path(rel: str) -> bool:
+    """Return True if *rel* points at a file whose content can't be authored as text.
+
+    Used by ``apply_workspace_pipeline`` to short-circuit ``<swarm_patch>``
+    blocks that target images / audio / archives — those are never fixable by
+    re-prompting the LLM; they need the asset pipeline (download or user upload).
+    """
+    suffix = Path(rel).suffix.lower()
+    return suffix in _BINARY_ASSET_EXTENSIONS
+
+
+def _patch_body_has_search_markers(body: str) -> bool:
+    """Return True if a ``<swarm_patch>`` body contains the SEARCH/REPLACE structure.
+
+    Used to detect the common model mistake where a small LLM wraps new-file
+    content in ``<swarm_patch>`` instead of ``<swarm_file>``. We accept either
+    the canonical marker or the Windows-line-ending variant.
+    """
+    return "<<<<<<< SEARCH" in body
+
+
 def apply_workspace_pipeline(
     text: str,
     root: Path,
@@ -207,6 +252,11 @@ def apply_workspace_pipeline(
     write_actions: list[dict[str, str]] = []
     shell_runs: list[dict[str, Any]] = []
     errors: list[str] = []
+    # Informational signals distinct from hard errors — consumed by
+    # pipeline_enforcement to produce cleaner gate warnings and targeted
+    # retry prompts instead of the generic "file_write_integrity" bucket.
+    healed_patches: list[str] = []  # promoted <swarm_patch> → <swarm_file>
+    binary_assets_requested: list[str] = []  # <swarm_patch> on PNG/MP3/etc.
     parsed = 0
 
     for action in events:
@@ -218,6 +268,16 @@ def apply_workspace_pipeline(
                     f"(…); not overwriting file"
                 )
                 continue
+            # Binary asset authored as plaintext is always a model hallucination —
+            # route to the asset pipeline instead of writing nonsense bytes.
+            if _is_binary_asset_path(action.rel):
+                binary_assets_requested.append(action.rel)
+                logger.warning(
+                    "swarm_file %r targets a binary asset; skipped — "
+                    "request via asset pipeline (download or user upload)",
+                    action.rel,
+                )
+                continue
             res = apply_workspace_writes(root, [(action.rel, content)], dry_run=dry_run)
             written.extend(res["written"])
             write_actions.extend(res.get("write_actions") or [])
@@ -225,18 +285,72 @@ def apply_workspace_pipeline(
             parsed += 1
         elif isinstance(action, _PatchAction):
             patch_mode = "patch_create"
+            dest_exists = False
             try:
                 patch_dest = safe_relative_path(root, action.rel)
-                if patch_dest.is_file():
+                dest_exists = patch_dest.is_file()
+                if dest_exists:
                     patch_mode = "patch_edit"
             except ValueError:
                 patch_mode = "patch_invalid"
+
+            # Heal A: <swarm_patch> on binary asset — never try to text-patch it.
+            # Emit a dedicated signal so the asset pipeline (or human) can handle it.
+            if patch_mode != "patch_invalid" and _is_binary_asset_path(action.rel):
+                binary_assets_requested.append(action.rel)
+                logger.warning(
+                    "swarm_patch %r targets a binary asset; skipped — "
+                    "text patches do not apply to binary files (request via asset pipeline)",
+                    action.rel,
+                )
+                continue
+
+            # Heal B: <swarm_patch> without SEARCH/REPLACE markers on a file that
+            # does not exist yet. This is the classic "small model used <swarm_patch>
+            # where it meant <swarm_file>" mistake — promote the body to a file create
+            # instead of failing 8 patches in a row and spamming the gate warnings.
+            if (
+                patch_mode == "patch_create"
+                and not dest_exists
+                and not _patch_body_has_search_markers(action.body)
+            ):
+                healed_body = _strip_outer_markdown_fence_from_swarm_file_body(action.body)
+                if _is_placeholder_swarm_file_body(healed_body):
+                    # Empty patch body with no target file — nothing to heal; record
+                    # a concise error, skip noisy SEARCH/REPLACE complaint.
+                    errors.append(
+                        f"swarm_patch {action.rel!r}: empty body and file does not exist"
+                    )
+                    continue
+                res = apply_workspace_writes(
+                    root, [(action.rel, healed_body)], dry_run=dry_run
+                )
+                written.extend(res["written"])
+                write_actions.extend(res.get("write_actions") or [])
+                errors.extend(res["errors"])
+                healed_patches.append(action.rel)
+                parsed += 1
+                logger.info(
+                    "swarm_patch HEALED for %r: no SEARCH/REPLACE markers + file did "
+                    "not exist → promoted to swarm_file create (%d chars)",
+                    action.rel, len(healed_body),
+                )
+                continue
+
             ok, perrs = _apply_patch_block(root, action.rel, action.body, dry_run=dry_run)
             if ok:
                 patched.append(action.rel)
                 if patch_mode != "patch_invalid":
                     write_actions.append({"path": action.rel, "mode": patch_mode})
                 parsed += 1
+            else:
+                # Log failed patches prominently — a patch on a nonexistent file
+                # often means the dev agent tried to edit a file it never created.
+                logger.warning(
+                    "swarm_patch FAILED for %r (mode=%s): %s — "
+                    "the dev agent may need to create this file with <swarm_file> first",
+                    action.rel, patch_mode, perrs,
+                )
             errors.extend(perrs)
         elif isinstance(action, _UdiffAction):
             udiff_mode = "udiff_create"
@@ -261,6 +375,32 @@ def apply_workspace_pipeline(
             shell_runs.extend(runs)
             errors.extend(serr)
 
+    if errors:
+        logger.warning(
+            "apply_workspace_pipeline: %d error(s) during workspace writes: %s",
+            len(errors), errors,
+        )
+    total_changed = len(written) + len(patched) + len(udiff_applied)
+    if total_changed:
+        logger.info(
+            "apply_workspace_pipeline: %d file(s) written, %d patched, %d udiff applied, "
+            "%d error(s)",
+            len(written), len(patched), len(udiff_applied), len(errors),
+        )
+
+    if healed_patches:
+        logger.info(
+            "apply_workspace_pipeline: healed %d malformed swarm_patch block(s) → "
+            "swarm_file creates: %s",
+            len(healed_patches), healed_patches,
+        )
+    if binary_assets_requested:
+        logger.info(
+            "apply_workspace_pipeline: %d binary asset(s) requested via <swarm_patch>/"
+            "<swarm_file> — routed to asset pipeline (not written): %s",
+            len(binary_assets_requested), binary_assets_requested,
+        )
+
     out: dict[str, Any] = {
         "written": written,
         "patched": patched,
@@ -269,6 +409,11 @@ def apply_workspace_pipeline(
         "shell_runs": shell_runs,
         "errors": errors,
         "parsed": parsed,
+        # New structured signals (2026-04-16) — consumed by pipeline_enforcement
+        # to produce targeted gate warnings instead of the generic
+        # "file_write_integrity" bucket, and by the asset pipeline plan (§23).
+        "healed_patches": healed_patches,
+        "binary_assets_requested": binary_assets_requested,
     }
     if not events:
         out["note"] = "no swarm_file, swarm_patch, or swarm_shell blocks"
@@ -301,12 +446,28 @@ def apply_workspace_writes(
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text(content, encoding="utf-8")
+            # Post-write verification: ensure file exists and is non-empty
+            if not dest.is_file():
+                errors.append(f"{rel}: write verification failed — file does not exist after write")
+                continue
+            actual_size = dest.stat().st_size
+            if actual_size == 0 and len(content) > 0:
+                errors.append(
+                    f"{rel}: write verification failed — file is empty "
+                    f"(expected {len(content)} bytes)"
+                )
+                continue
             rel_path = dest.relative_to(root).as_posix()
             written.append(rel_path)
             write_actions.append({"path": rel_path, "mode": mode})
         except OSError as e:
             errors.append(f"{rel}: {e}")
 
+    if errors:
+        logger.warning(
+            "apply_workspace_writes: %d/%d files had errors: %s",
+            len(errors), len(writes), errors,
+        )
     return {"written": written, "write_actions": write_actions, "errors": errors}
 
 
@@ -345,14 +506,18 @@ def _extract_commands_from_bare_bash_fences(text: str) -> list[str]:
             line_text = line.strip()
             if not line_text or line_text.startswith("#") or "<swarm_" in line_text.lower():
                 continue
-            ok, _ = _shell_command_allowed(line_text)
-            if ok:
-                cmds.append(line_text)
+            cmds.append(line_text)
     return cmds
 
 
 def extract_shell_commands(text: str) -> list[str]:
-    """Возвращает список команд из <swarm_shell> блоков без выполнения."""
+    """Возвращает список команд из <swarm_shell> блоков без выполнения.
+
+    Возвращает ВСЕ команды — как разрешённые, так и нет.
+    Фильтрация по allowlist выполняется вызывающей стороной (SSE-хэндлер),
+    которая разбивает список на already_allowed / needs_allowlist и показывает
+    пользователю диалог одобрения для неразрешённых бинарей.
+    """
     lifted = _lift_swarm_shell_from_prompt_style_xml_fences(text)
     lifted = _lift_swarm_shell_from_bash_sh_fences(lifted)
     fence_spans = _markdown_fence_spans(lifted)
@@ -364,9 +529,7 @@ def extract_shell_commands(text: str) -> list[str]:
             line_text = line.strip()
             if not line_text or line_text.startswith("#"):
                 continue
-            ok, _ = _shell_command_allowed(line_text)
-            if ok:
-                cmds.append(line_text)
+            cmds.append(line_text)
     if not cmds:
         cmds = _extract_commands_from_bare_bash_fences(text)
     return cmds

@@ -1,4 +1,10 @@
-"""QA pipeline nodes: qa, review_qa, human_qa."""
+"""QA pipeline nodes: qa, review_qa, human_qa.
+
+M-9 (output compression): after qa_node produces output the full report is
+stored as an artifact and a compact JSON summary (``qa_compressed``) is added
+to the result.  Downstream human-gate and re-prompt cycles reference the
+compact form to avoid re-embedding 20-80 KB of QA prose.
+"""
 from __future__ import annotations
 
 import logging
@@ -9,6 +15,11 @@ from backend.App.orchestration.infrastructure.agents.qa_agent import QAAgent
 from backend.App.orchestration.application.review_moa import run_reviewer_or_moa
 from backend.App.orchestration.application.pipeline_state import PipelineState
 from backend.App.orchestration.domain.defect import DefectReport, parse_defect_report
+from backend.App.orchestration.application.output_contracts import (
+    compress_qa_output,
+    format_compressed_qa,
+    output_compression_enabled,
+)
 
 from backend.App.orchestration.application.nodes._shared import (
     _cfg_model,
@@ -58,7 +69,8 @@ def qa_node(state: PipelineState) -> dict[str, Any]:
         qa_cfg = {}
     langs = _swarm_languages_line(state)
     qa_ctx = _pipeline_context_block(state, "qa")
-    ca = state.get("code_analysis") if isinstance(state.get("code_analysis"), dict) else {}
+    _ca_raw = state.get("code_analysis")
+    ca: dict[str, Any] = _ca_raw if isinstance(_ca_raw, dict) else {}
     ca_block = ""
     if not _code_analysis_is_weak(ca):
         ca_block = "\n[Existing code analysis]\n" + _compact_code_analysis_for_prompt(ca, max_chars=6000) + "\n"
@@ -91,7 +103,7 @@ def qa_node(state: PipelineState) -> dict[str, Any]:
             qa_ctx
             + _swarm_prompt_prefix(state)
             + f"{langs}"
-            + _project_knowledge_block(state)
+            + _project_knowledge_block(state, step_id="qa")
             + _qa_workspace_verification_instructions(state)
             + "User task:\n"
             f"{pipeline_user_task(state) if use_mcp else build_phase_pipeline_user_context(state)}\n\n"
@@ -134,11 +146,13 @@ def qa_node(state: PipelineState) -> dict[str, Any]:
             _qa_retry_prompt = (
                 prompt
                 + "\n\n[CRITICAL] Your previous QA report was too brief and contained no evidence "
-                "of actual file verification. You MUST:\n"
-                "1. Use workspace__list_directory to check project structure\n"
-                "2. Use workspace__read_text_file to read key source files\n"
-                "3. Report what you found — file existence, code correctness, missing pieces\n"
-                "Write a detailed QA report with evidence from your tool calls."
+                "of actual verification. You MUST:\n"
+                "1. Analyze the dev output above for completeness — check that all specified files "
+                "were created with proper <swarm_file> tags\n"
+                "2. Verify code correctness by reviewing the content of each file in the dev output\n"
+                "3. Check that all acceptance criteria from the specification are addressed\n"
+                "4. Report what you found — file completeness, code correctness, missing pieces\n"
+                "Write a detailed QA report with evidence from the dev output analysis."
             )
             qa_output, qa_model_out, qa_provider_out = _llm_build_agent_run(agent, _qa_retry_prompt, state)
         _stream_progress_emit(
@@ -148,13 +162,22 @@ def qa_node(state: PipelineState) -> dict[str, Any]:
         if (qa_output or "").strip():
             from backend.App.workspace.application.doc_workspace import write_step_wiki
             write_step_wiki(state, "qa", qa_output)
-        return {
+        # M-9: compress QA output — store prose as artifact, keep compact summary.
+        _qa_result: dict[str, Any] = {
             "qa_output": qa_output,
             "qa_task_outputs": [qa_output],
             "qa_model": qa_model_out,
             "qa_provider": qa_provider_out,
             "qa_defect_report": report.to_dict(),
         }
+        if output_compression_enabled() and (qa_output or "").strip():
+            _qac = compress_qa_output(qa_output)
+            _qa_result["qa_compressed"] = format_compressed_qa(_qac)
+            logger.debug(
+                "qa_node: M-9 compressed output %d chars → %d chars compact",
+                _qac.char_count, len(_qa_result["qa_compressed"]),
+            )
+        return _qa_result
     if len(dev_task_outputs) != len(tasks):
         filler = state.get("dev_output") or ""
         dev_task_outputs = [filler] * len(tasks) if filler else [""] * len(tasks)
@@ -200,7 +223,7 @@ def qa_node(state: PipelineState) -> dict[str, Any]:
             qa_ctx
             + _swarm_prompt_prefix(state)
             + f"{langs}"
-            + _project_knowledge_block(state)
+            + _project_knowledge_block(state, step_id="qa")
             + _qa_workspace_verification_instructions(state)
             + "[Pipeline rule] Verify compliance with the **stack (Architect)** and Dev output "
             "for this subtask.\n\n"
@@ -251,9 +274,10 @@ def qa_node(state: PipelineState) -> dict[str, Any]:
             )
             _qa_retry = (
                 prompt
-                + "\n\n[CRITICAL] Your previous QA report was too brief. You MUST use "
-                "workspace__list_directory and workspace__read_text_file to verify files, "
-                "then write a detailed report with evidence."
+                + "\n\n[CRITICAL] Your previous QA report was too brief. You MUST "
+                "analyze the dev output for completeness, verify code correctness "
+                "by reviewing each file's content, and check all acceptance criteria. "
+                "Write a detailed report with evidence from the dev output."
             )
             output, used_model, used_provider = _llm_build_agent_run(agent, _qa_retry, state)
         _stream_progress_emit(
@@ -279,7 +303,10 @@ def qa_node(state: PipelineState) -> dict[str, Any]:
                 i = fut_to_idx[fut]
                 _, qa_task_output, qa_model, qa_provider = fut.result()  # raises on thread error
                 results[i] = (i, qa_task_output, qa_model, qa_provider)
-        for _, qa_task_output, qa_model, qa_provider in results:
+        for item in results:
+            if item is None:
+                continue  # unreachable: all slots filled via as_completed above
+            _, qa_task_output, qa_model, qa_provider = item
             qa_task_outputs.append(qa_task_output)
     else:
         for subtask_idx, task in enumerate(tasks):
@@ -299,13 +326,22 @@ def qa_node(state: PipelineState) -> dict[str, Any]:
     if (merged or "").strip():
         from backend.App.workspace.application.doc_workspace import write_step_wiki
         write_step_wiki(state, "qa", merged)
-    return {
+    # M-9: compress multi-task merged QA output.
+    _qa_multi_result: dict[str, Any] = {
         "qa_output": merged,
         "qa_task_outputs": qa_task_outputs,
         "qa_model": qa_model,
         "qa_provider": qa_provider,
         "qa_defect_report": report.to_dict(),
     }
+    if output_compression_enabled() and (merged or "").strip():
+        _qac_multi = compress_qa_output(merged)
+        _qa_multi_result["qa_compressed"] = format_compressed_qa(_qac_multi)
+        logger.debug(
+            "qa_node: M-9 compressed multi-task output %d chars → %d chars compact",
+            _qac_multi.char_count, len(_qa_multi_result["qa_compressed"]),
+        )
+    return _qa_multi_result
 
 
 def _review_dev_output_max_chars() -> int:

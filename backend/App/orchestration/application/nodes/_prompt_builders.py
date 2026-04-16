@@ -14,6 +14,7 @@ from typing import Any, Optional, cast
 
 from backend.App.orchestration.infrastructure.agents.base_agent import BaseAgent
 from backend.App.orchestration.domain.exceptions import PipelineCancelled
+from backend.App.orchestration.domain.pipeline_machine import PipelinePhase
 from backend.App.orchestration.application.agent_runner import (
     run_agent_with_boundary as _canonical_run_agent_with_boundary,
     validate_agent_boundary as _canonical_validate_agent_boundary,
@@ -21,6 +22,23 @@ from backend.App.orchestration.application.agent_runner import (
 from backend.App.orchestration.application.pipeline_state import PipelineState
 
 logger = logging.getLogger(__name__)
+
+
+def _current_phase(state: PipelineState) -> Optional[PipelinePhase]:
+    """Parse pipeline_phase from state into the typed enum.
+
+    Returns ``None`` when the field is empty or unrecognised.  Callers must
+    treat ``None`` as a domain signal (no active phase), not a default.
+    """
+    raw = str(state.get("pipeline_phase") or "").strip().upper()
+    if not raw:
+        return None
+    try:
+        return PipelinePhase(raw)
+    except ValueError:
+        logger.warning("pipeline_phase=%r is not a recognised PipelinePhase", raw)
+        return None
+
 
 _ASSEMBLED_USER_TASK_MARKER = "\n\n---\n\n# User task\n\n"
 
@@ -217,7 +235,8 @@ def _should_use_mcp_for_workspace(state: PipelineState) -> bool:
     if swarm_section.get("skip_mcp_tools"):
         return False
     agent_config = state.get("agent_config") or {}
-    mcp_config = agent_config.get("mcp") if isinstance(agent_config.get("mcp"), dict) else {}
+    _mcp_raw = agent_config.get("mcp")
+    mcp_config: dict[str, Any] = _mcp_raw if isinstance(_mcp_raw, dict) else {}
     return bool(mcp_config.get("servers"))
 
 
@@ -411,7 +430,7 @@ def _llm_agent_run_with_optional_mcp(
                     agent.role,
                     exc,
                     exc_info=True,
-            )
+                )
     output = _canonical_run_agent_with_boundary(state, agent, prompt)
     if not output or not output.strip():
         logger.warning("agent.run returned empty output for role=%s model=%s", agent.role, agent.model)
@@ -443,7 +462,8 @@ def build_compact_build_phase_user_context(state: PipelineState) -> str:
     project_manifest = str(state.get("project_manifest") or "").strip()
     workspace_root = _workspace_root_str(state)
     budget = _context_budget_profile(state)
-    code_analysis_data = state.get("code_analysis") if isinstance(state.get("code_analysis"), dict) else {}
+    _ca_raw = state.get("code_analysis")
+    code_analysis_data: dict[str, Any] = _ca_raw if isinstance(_ca_raw, dict) else {}
     ca_txt = _compact_code_analysis_for_prompt_with_budget(
         code_analysis_data,
         max_chars=budget["code_analysis_max_chars"],
@@ -478,7 +498,7 @@ def should_use_compact_build_pipeline_input(state: PipelineState) -> bool:
     current_step_id = str(state.get("_current_step_id") or "").strip()
     if (
         current_step_id in {"dev", "qa", "devops"}
-        and str(state.get("pipeline_phase") or "").strip().upper() == "FIX"
+        and _current_phase(state) is PipelinePhase.FIX
         and bool(state.get("open_defects"))
     ):
         return True
@@ -486,7 +506,8 @@ def should_use_compact_build_pipeline_input(state: PipelineState) -> bool:
         return bool(_workspace_root_str(state))
     if mode != WORKSPACE_CONTEXT_MODE_POST_ANALYSIS_COMPACT:
         return False
-    code_analysis = state.get("code_analysis") if isinstance(state.get("code_analysis"), dict) else {}
+    _ca_raw2 = state.get("code_analysis")
+    code_analysis: dict[str, Any] = _ca_raw2 if isinstance(_ca_raw2, dict) else {}
     if _code_analysis_is_weak(code_analysis):
         logger.warning(
             "post_analysis_compact: code_analysis weak — build steps keep full pipeline input. task_id=%s",
@@ -505,9 +526,12 @@ def _relevant_context_paths(state: PipelineState) -> list[str]:
             relevant.append(text)
 
     for key in ("must_exist_files", "production_paths"):
-        for item in state.get(key) or []:
-            _add(item)
-    workspace_writes = state.get("workspace_writes") if isinstance(state.get("workspace_writes"), dict) else {}
+        _items = state.get(key) or []
+        if isinstance(_items, list):
+            for item in _items:
+                _add(item)
+    _ww_raw = state.get("workspace_writes")
+    workspace_writes: dict[str, Any] = _ww_raw if isinstance(_ww_raw, dict) else {}
     for key in ("written", "patched", "udiff_applied"):
         for item in workspace_writes.get(key, []) or []:
             _add(item)
@@ -518,36 +542,101 @@ def _relevant_context_paths(state: PipelineState) -> list[str]:
     return relevant
 
 
+# ---------------------------------------------------------------------------
+# Code-analysis context budget — config-driven, no hardcoded role/phase logic
+# ---------------------------------------------------------------------------
+#
+# Resolution order for each field:
+#   1. SWARM_CODE_ANALYSIS_<FIELD>_<STEP>_<PHASE>   (most specific)
+#   2. SWARM_CODE_ANALYSIS_<FIELD>_<STEP>
+#   3. SWARM_CODE_ANALYSIS_<FIELD>_<PHASE>
+#   4. SWARM_CODE_ANALYSIS_<FIELD>                  (global default)
+#   5. Module-level fallback constant (full context)
+#
+# This removes the hardcoded "if step == qa elif step == devops" chain
+# (§3 forbids workflow logic in code).  Operators set env vars or
+# agent_config to express their policy; the code layer is dumb.
+
+# Legacy env vars kept for operators that already rely on this knob style.
+# They take precedence over the per-step ContextBudget defaults so existing
+# deployments keep their tuning. New deployments should prefer
+# ``SWARM_CONTEXT_CODE_ANALYSIS_CHARS_<STEP>`` etc.
+_CODE_ANALYSIS_BUDGET_FIELDS: dict[str, str] = {
+    # legacy field name → ContextBudget field name
+    "max_chars":                 "code_analysis_chars",
+    "max_files":                 "code_analysis_max_files",
+    "fix_cycle_summary_max_chars": "fix_cycle_summary_chars",
+}
+
+
+def _code_analysis_legacy_env(state: PipelineState, legacy_field: str) -> Optional[int]:
+    """Resolve a code-analysis budget field via the legacy env var cascade.
+
+    Returns ``None`` if no env var is set; the caller then falls back
+    to the per-step :class:`ContextBudget`. No role/phase knowledge in
+    code — this only consults env vars supplied by ops.
+    """
+    step = str(state.get("_current_step_id") or "").strip().upper()
+    phase = str(state.get("pipeline_phase") or "").strip().upper()
+    field_upper = legacy_field.upper()
+
+    candidates: list[str] = []
+    if step and phase:
+        candidates.append(f"SWARM_CODE_ANALYSIS_{field_upper}_{step}_{phase}")
+    if step:
+        candidates.append(f"SWARM_CODE_ANALYSIS_{field_upper}_{step}")
+    if phase:
+        candidates.append(f"SWARM_CODE_ANALYSIS_{field_upper}_{phase}")
+    candidates.append(f"SWARM_CODE_ANALYSIS_{field_upper}")
+
+    for env_var in candidates:
+        raw = os.environ.get(env_var, "").strip()
+        if raw:
+            try:
+                return int(raw)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid {env_var}={raw!r}: expected int. {exc}"
+                ) from exc
+    return None
+
+
 def _context_budget_profile(state: PipelineState) -> dict[str, int]:
-    current_step_id = str(state.get("_current_step_id") or "").strip()
-    pipeline_phase = str(state.get("pipeline_phase") or "").strip().upper()
-    if pipeline_phase == "FIX" and current_step_id in {"dev", "qa", "devops"}:
-        return {
-            "code_analysis_max_chars": _review_int_env("SWARM_FIX_CYCLE_CODE_ANALYSIS_MAX_CHARS", 8_000),
-            "code_analysis_max_files": _review_int_env("SWARM_FIX_CYCLE_CODE_ANALYSIS_MAX_FILES", 40),
-            "fix_cycle_summary_max_chars": _review_int_env("SWARM_FIX_CYCLE_SUMMARY_MAX_CHARS", 4_000),
-        }
-    if current_step_id == "qa":
-        return {
-            "code_analysis_max_chars": _review_int_env("SWARM_QA_CODE_ANALYSIS_MAX_CHARS", 8_000),
-            "code_analysis_max_files": _review_int_env("SWARM_QA_CODE_ANALYSIS_MAX_FILES", 60),
-            "fix_cycle_summary_max_chars": _review_int_env("SWARM_FIX_CYCLE_SUMMARY_MAX_CHARS", 4_000),
-        }
-    if current_step_id == "devops":
-        return {
-            "code_analysis_max_chars": _review_int_env("SWARM_DEVOPS_CODE_ANALYSIS_MAX_CHARS", 10_000),
-            "code_analysis_max_files": _review_int_env("SWARM_DEVOPS_CODE_ANALYSIS_MAX_FILES", 80),
-            "fix_cycle_summary_max_chars": _review_int_env("SWARM_FIX_CYCLE_SUMMARY_MAX_CHARS", 4_000),
-        }
-    return {
-        "code_analysis_max_chars": _review_int_env("SWARM_BUILD_CODE_ANALYSIS_MAX_CHARS", 12_000),
-        "code_analysis_max_files": _review_int_env("SWARM_BUILD_CODE_ANALYSIS_MAX_FILES", 120),
-        "fix_cycle_summary_max_chars": _review_int_env("SWARM_FIX_CYCLE_SUMMARY_MAX_CHARS", 4_000),
+    """Return code-analysis budget for the current step/phase.
+
+    Defaults come from the per-step :class:`ContextBudget` (resolved via
+    :func:`get_context_budget`). Legacy ``SWARM_CODE_ANALYSIS_*`` env
+    vars override that default — order matches the wider H-1 design:
+    env wins over agent_config wins over role profile.
+    """
+    from backend.App.orchestration.application.context_budget import (
+        get_context_budget,
+    )
+
+    step_id = str(state.get("_current_step_id") or "").strip()
+    agent_config = state.get("agent_config") if isinstance(state.get("agent_config"), dict) else None
+    budget = get_context_budget(step_id, agent_config)
+
+    result: dict[str, int] = {
+        "code_analysis_max_chars":      budget.code_analysis_chars,
+        "code_analysis_max_files":      budget.code_analysis_max_files,
+        "fix_cycle_summary_max_chars":  budget.fix_cycle_summary_chars,
     }
+    for legacy_field, _budget_field in _CODE_ANALYSIS_BUDGET_FIELDS.items():
+        env_val = _code_analysis_legacy_env(state, legacy_field)
+        if env_val is not None:
+            # legacy "max_chars" → result key "code_analysis_max_chars" etc.
+            if legacy_field == "max_chars":
+                result["code_analysis_max_chars"] = env_val
+            elif legacy_field == "max_files":
+                result["code_analysis_max_files"] = env_val
+            elif legacy_field == "fix_cycle_summary_max_chars":
+                result["fix_cycle_summary_max_chars"] = env_val
+    return result
 
 
 def _fix_cycle_context_summary(state: PipelineState, *, max_chars: int) -> str:
-    if str(state.get("pipeline_phase") or "").strip().upper() != "FIX":
+    if _current_phase(state) is not PipelinePhase.FIX:
         return ""
     parts: list[str] = ["# Fix cycle context reset"]
     clustered = state.get("clustered_open_defects") or []
@@ -695,21 +784,81 @@ def embedded_review_artifact(
     return full_text[:max_chars] + f"\n…[truncated — increase {env_name}]"
 
 
+_SPEC_FOR_BUILD_MAX_CHARS = int(os.getenv("SWARM_SPEC_FOR_BUILD_MAX_CHARS", "60000"))
+
+_SPEC_SUMMARY_MAX_CHARS = int(os.getenv("SWARM_SPEC_SUMMARY_MAX_CHARS", "5000"))
+
+
+def spec_summary_for_subtask(
+    full_spec: str,
+    development_scope: str,
+    *,
+    max_chars: int = 0,
+) -> str:
+    """Build a compact spec context for a Dev subtask.
+
+    This is a **deterministic, content-agnostic** reducer: it truncates the
+    spec to ``max_chars`` characters and appends the subtask's
+    ``development_scope`` verbatim.  It does NOT parse, search, or make any
+    assumption about spec structure — the spec is opaque text (§1, §3,
+    §8 of docs/review-rules.md).
+
+    If callers need a semantic summary, they must compute it upstream
+    (e.g. the Architect agent can emit a dedicated ``spec_summary`` field
+    that is passed in here as ``full_spec``).
+
+    Inputs:
+      ``full_spec``         — spec text (already truncated upstream)
+      ``development_scope`` — subtask's own scope block from Dev Lead plan
+      ``max_chars``         — hard character cap (0 → ``SWARM_SPEC_SUMMARY_MAX_CHARS``)
+    """
+    if max_chars < 0:
+        raise ValueError(f"max_chars must be non-negative, got {max_chars}")
+    if max_chars == 0:
+        max_chars = _SPEC_SUMMARY_MAX_CHARS
+
+    spec_text = full_spec.strip()
+    scope_text = development_scope.strip()
+
+    if not spec_text and not scope_text:
+        return ""
+
+    parts: list[str] = []
+    if spec_text:
+        truncated = spec_text[:max_chars]
+        marker = "" if len(spec_text) <= max_chars else "\n…[spec truncated to max_chars]"
+        parts.append("[Approved specification — context for subtask]")
+        parts.append(truncated + marker)
+    if scope_text:
+        parts.append("\n[Subtask development scope]")
+        parts.append(scope_text)
+
+    return "\n".join(parts)
+
+
 def _effective_spec_for_build(state: PipelineState) -> str:
     """Spec for Dev/DevOps/Dev Lead: ``spec_merge`` if present, otherwise accumulated step outputs."""
     spec = (state.get("spec_output") or "").strip()
     if spec:
+        if len(spec) > _SPEC_FOR_BUILD_MAX_CHARS:
+            logger.warning(
+                "pipeline build: spec_output truncated from %d to %d chars (SWARM_SPEC_FOR_BUILD_MAX_CHARS)",
+                len(spec), _SPEC_FOR_BUILD_MAX_CHARS,
+            )
+            spec = spec[:_SPEC_FOR_BUILD_MAX_CHARS] + "\n…[spec truncated]"
         return spec
     pm_output = (state.get("pm_output") or "").strip()
     ba = (state.get("ba_output") or "").strip()
     arch = (state.get("arch_output") or "").strip()
+    # Cap individual parts to avoid unbounded concatenation
+    _part_cap = _SPEC_FOR_BUILD_MAX_CHARS // 3
     parts: list[str] = []
     if pm_output:
-        parts.append("[PM — plan and tasks]\n" + pm_output)
+        parts.append("[PM — plan and tasks]\n" + pm_output[:_part_cap])
     if ba:
-        parts.append("[BA — requirements]\n" + ba)
+        parts.append("[BA — requirements]\n" + ba[:_part_cap])
     if arch:
-        parts.append("[Architect — stack and boundaries]\n" + arch)
+        parts.append("[Architect — stack and boundaries]\n" + arch[:_part_cap])
     if parts:
         merged = "\n\n---\n\n".join(parts)
         logger.info(
@@ -806,10 +955,52 @@ def _documentation_product_context_block(state: PipelineState, *, log_node: str)
     return _effective_spec_block_for_doc_chain(state, log_node=log_node)
 
 
+# ---------------------------------------------------------------------------
+# Context budget — config-driven only (no hardcoded heuristics)
+# ---------------------------------------------------------------------------
+#
+# The pipeline does NOT encode which step needs which context — that is
+# workflow knowledge and belongs in configuration, not code (see §3, §8
+# of docs/review-rules.md). Per-step defaults live in JSON
+# (``context_budget_profiles.json``); operators override them via
+# ``agent_config.swarm.context_budgets`` or ``SWARM_CONTEXT_<FIELD>(_<STEP>)``
+# env vars. The Python module
+# ``backend/App/orchestration/application/context_budget.py`` owns the
+# resolution logic and the typed :class:`ContextBudget` dataclass.
+#
+# This shim returns a plain dict so existing callers that look up
+# ``budget["wiki_chars"]`` etc. keep working without translation. New
+# callers should prefer :func:`get_context_budget` (typed dataclass).
+
+
+def _context_budget(
+    step_id: str,
+    agent_config: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Return the resolved context budget for *step_id* as a plain dict.
+
+    Thin wrapper around
+    :func:`backend.App.orchestration.application.context_budget.get_context_budget`
+    that returns ``asdict(budget)`` so legacy callers keep their dict
+    look-ups (``budget["wiki_chars"]``, ``budget["include_summaries"]``,
+    ``budget.get("knowledge_chars", …)``) unchanged.
+
+    See ``context_budget.py`` for the full resolution order.
+    """
+    from backend.App.orchestration.application.context_budget import (
+        context_budget_as_dict,
+        get_context_budget,
+    )
+
+    return context_budget_as_dict(get_context_budget(step_id, agent_config))
+
+
 def _pipeline_context_block(state: PipelineState, current_step_id: str) -> str:
     """Brief pipeline context block: previous/current/next steps."""
     from backend.App.orchestration.application.pipeline_graph import PIPELINE_STEP_REGISTRY
 
+    agent_config = state.get("agent_config") if isinstance(state, dict) else None
+    budget = _context_budget(current_step_id, agent_config)
     raw_step_ids: Any = state.get("_pipeline_step_ids")
     step_ids: list[str] = list(raw_step_ids) if isinstance(raw_step_ids, list) else []
 
@@ -839,46 +1030,123 @@ def _pipeline_context_block(state: PipelineState, current_step_id: str) -> str:
     else:
         lines.append(f"Current step: {current_step_id} — {_label(current_step_id)}")
 
-    summaries: list[str] = []
-    for key, label in (
-        ("clarify_input_human_output", "UserClarification"),
-        ("pm_output", "PM"),
-        ("ba_output", "BA"),
-        ("arch_output", "Architect"),
-        ("spec_output", "Spec"),
-        ("devops_output", "DevOps"),
-        ("dev_output", "Dev"),
-    ):
-        val = (state.get(key) or "").strip()
-        if val and key != f"{current_step_id}_output":
-            summaries.append(f"  {label}: {val[:300].replace(chr(10), ' ')}…")
-    if summaries:
-        lines.append("Previous agents summary:")
-        lines.extend(summaries)
+    # Only include agent summaries that are NOT already in the merged spec.
+    # When spec_output exists, PM/BA/Arch are already merged there — no need to
+    # repeat them as separate 300-char previews (saves ~900 tokens).
+    # Role-aware: skip summaries entirely for steps that don't need them (Dev, QA).
+    if budget.get("include_summaries", True):
+        _has_merged_spec = bool((state.get("spec_output") or "").strip())
+        _skip_if_spec = {"pm_output", "ba_output", "arch_output"} if _has_merged_spec else set()
+        summaries: list[str] = []
+        for key, label in (
+            ("clarify_input_human_output", "UserClarification"),
+            ("pm_output", "PM"),
+            ("ba_output", "BA"),
+            ("arch_output", "Architect"),
+            ("spec_output", "Spec"),
+            ("devops_output", "DevOps"),
+            ("dev_output", "Dev"),
+        ):
+            if key in _skip_if_spec:
+                continue
+            val = str(state.get(key) or "").strip()
+            if val and key != f"{current_step_id}_output":
+                summaries.append(f"  {label}: {val[:300].replace(chr(10), ' ')}…")
+        if summaries:
+            lines.append("Previous agents summary:")
+            lines.extend(summaries)
 
+    # Reload wiki context from disk if workspace_root is available — previous
+    # steps may have written new wiki articles via write_step_wiki(). Use
+    # semantic retrieval scoped to the current step so the agent gets the
+    # *relevant* slice of the wiki, not a flat dump of the first articles.
+    workspace_root = (state.get("workspace_root") or "").strip()
+    if workspace_root:
+        try:
+            from backend.App.orchestration.application.wiki_context_loader import (
+                load_wiki_context,
+                query_for_pipeline_step,
+            )
+            wiki_query = query_for_pipeline_step(state, current_step_id)
+            fresh_wiki = load_wiki_context(workspace_root, query=wiki_query or None)
+            if fresh_wiki:
+                state["wiki_context"] = fresh_wiki
+        except Exception:
+            pass  # non-critical — fall back to initial wiki_context
+
+    # Role-aware wiki injection: wiki_chars=0 skips wiki entirely for steps
+    # that don't benefit from it (Dev, QA, dev_lead — they have spec + code).
+    _wiki_chars = int(budget.get("wiki_chars", 6000) or 0)
     wiki_ctx = (state.get("wiki_context") or "").strip()
-    if wiki_ctx:
+    if wiki_ctx and _wiki_chars > 0:
         lines.append("\n[Project wiki memory]")
-        # Cap at 3000 chars to avoid bloating every agent prompt
-        if len(wiki_ctx) > 3000:
-            wiki_ctx = wiki_ctx[:3000] + "\n…[wiki truncated]"
+        # Smart context: rank wiki text by relevance to the step query when
+        # SWARM_SMART_CONTEXT=1; otherwise fall back to positional truncation.
+        try:
+            from backend.App.orchestration.application.smart_context_builder import (
+                build_context,
+                smart_context_enabled,
+            )
+            _step_query = wiki_query if workspace_root else ""
+            if smart_context_enabled() and _step_query:
+                wiki_ctx = build_context(
+                    [("Wiki", wiki_ctx)],
+                    query=_step_query,
+                    budget_chars=_wiki_chars,
+                )
+            elif len(wiki_ctx) > _wiki_chars:
+                wiki_ctx = wiki_ctx[:_wiki_chars] + "\n…[wiki truncated]"
+        except Exception:
+            if len(wiki_ctx) > _wiki_chars:
+                wiki_ctx = wiki_ctx[:_wiki_chars] + "\n…[wiki truncated]"
+        # Wrap with untrusted markers — wiki may contain content written by external
+        # tools or injected via dependencies; signal to model it is context, not instruction.
+        try:
+            from backend.App.orchestration.application.untrusted_content import wrap_untrusted
+            wiki_ctx = wrap_untrusted(wiki_ctx, source="project_wiki")
+        except Exception:
+            pass
         lines.append(wiki_ctx)
 
     return "\n".join(lines) + "\n\n"
 
 
-def _project_knowledge_block(state: PipelineState, *, max_chars: int = 2500) -> str:
+def _project_knowledge_block(
+    state: PipelineState,
+    *,
+    max_chars: int = 2500,
+    step_id: Optional[str] = None,
+) -> str:
     """Compact shared project context: workspace structure + docs.
 
     Injected into every agent so they all work from the same project model.
     Based on ``workspace_evidence_brief`` collected by PM before any agent runs.
     Returns empty string when no evidence is available.
+
+    When *step_id* is supplied, the per-step context budget from configuration
+    (see :func:`_context_budget`) may lower ``max_chars`` or skip the block
+    entirely (``knowledge_chars`` = 0).
     """
     brief = str(state.get("workspace_evidence_brief") or "").strip()
     if not brief:
         return ""
+    # Config-driven cap: budget may lower max_chars from configuration
+    if step_id:
+        agent_config = state.get("agent_config") if isinstance(state, dict) else None
+        budget = _context_budget(step_id, agent_config)
+        knowledge_chars = int(budget.get("knowledge_chars", max_chars) or 0)
+        if knowledge_chars <= 0:
+            return ""
+        max_chars = min(max_chars, knowledge_chars)
     if len(brief) > max_chars:
         brief = brief[:max_chars] + "\n…[workspace brief truncated]"
+    # Wrap with untrusted markers — workspace_evidence_brief may contain content
+    # from external repositories or user-authored files that could carry injections.
+    try:
+        from backend.App.orchestration.application.untrusted_content import wrap_untrusted
+        brief = wrap_untrusted(brief, source="workspace_evidence")
+    except Exception:
+        pass
     return (
         "[Project knowledge — workspace structure and documentation]\n"
         + brief

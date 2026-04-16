@@ -9,6 +9,7 @@ from backend.App.integrations.infrastructure.mcp.openai_loop.context_manager imp
     _truncate_oldest_tool_results,
 )
 from backend.App.integrations.infrastructure.mcp.openai_loop.config import (
+    MCPLoopConfig,
     _mcp_fallback_allow,
     _mcp_history_compress_after_rounds,
     _mcp_max_context_chars,
@@ -629,3 +630,27 @@ def test_parse_mixed_formats():
     assert len(parsed) == 2
     assert parsed[0].function.name == "workspace_read_file"
     assert parsed[1].function.name == "workspace_write_file"
+
+
+# ---------------------------------------------------------------------------
+# MCPLoopConfig.from_env — default max_rounds
+# ---------------------------------------------------------------------------
+
+def test_mcp_loop_config_max_rounds_default_is_five(monkeypatch):
+    """Regression (§23.1): default max_rounds is 5, not 8.
+
+    Rounds 6–8 typically re-prefill the accumulating prompt without adding
+    new tool calls. Lower default keeps local-model pipelines responsive;
+    cloud deployments can still set SWARM_MCP_MAX_ROUNDS=8 for complex
+    workflows where prefill is free.
+    """
+    monkeypatch.delenv("SWARM_MCP_MAX_ROUNDS", raising=False)
+    cfg = MCPLoopConfig.from_env()
+    assert cfg.max_rounds == 5
+
+
+def test_mcp_loop_config_max_rounds_env_override(monkeypatch):
+    """Operators bumping SWARM_MCP_MAX_ROUNDS back to 8 (or higher) still works."""
+    monkeypatch.setenv("SWARM_MCP_MAX_ROUNDS", "8")
+    cfg = MCPLoopConfig.from_env()
+    assert cfg.max_rounds == 8

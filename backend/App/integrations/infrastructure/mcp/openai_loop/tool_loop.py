@@ -162,7 +162,7 @@ def _parse_text_tool_calls(text: str) -> list:
     id, function.name, function.arguments).
     """
     from types import SimpleNamespace
-    results = []
+    results: list[SimpleNamespace] = []
     # Format 1: Qwen/DeepSeek XML
     for m in _TEXT_TOOL_CALL_RE.finditer(text):
         fn_name = m.group(1)
@@ -402,6 +402,15 @@ class MCPToolLoop:
             )
         return f"ERROR: unsupported local evidence tool: {name}"
 
+    @staticmethod
+    def _handle_wiki_tool(name: str, args: dict[str, Any]) -> str:
+        """Dispatch wiki_search / wiki_read / wiki_write locally."""
+        from backend.App.integrations.infrastructure.mcp.wiki_tools import handle_wiki_tool_call
+        workspace_root = os.getenv("SWARM_WORKSPACE_ROOT", "").strip()
+        if not workspace_root:
+            return "ERROR: SWARM_WORKSPACE_ROOT is not set; wiki tools are unavailable."
+        return handle_wiki_tool_call(name, args, workspace_root)
+
     def run(
         self,
         messages: list[dict[str, Any]],
@@ -439,7 +448,9 @@ class MCPToolLoop:
         _mcp_write_actions: list[dict[str, str]] = []
         _tool_parser_failures = 0
         _files_read_count = 0  # track read_file / read_text_file / read_multiple_files calls
-        _file_read_cache: dict[str, str] = {}  # FIX 10.4: per-invocation read cache (not shared across calls)
+        _file_read_cache: dict[str, str] = {}  # per-invocation read cache (not shared across calls)
+        _file_read_cache_hits = 0  # observability: count cache hits per agent.run()
+        _file_read_cache_misses = 0  # observability: count cache misses per agent.run()
         _time_to_first_tool: float | None = None
         _time_last_tool: float | None = None
         _loop_start_time = time.monotonic()
@@ -856,8 +867,16 @@ class MCPToolLoop:
                 _cache_key = f"{name}:{json.dumps(args, sort_keys=True)}" if _is_cacheable_read else ""
                 if _is_cacheable_read and _cache_key in _file_read_cache:
                     result = _file_read_cache[_cache_key]
-                    logger.debug("[CACHE HIT] tool=%r key_len=%d result_len=%d", name, len(_cache_key), len(result))
+                    _file_read_cache_hits += 1
+                    logger.debug(
+                        "file_read_cache HIT tool=%r path=%r result_len=%d",
+                        name,
+                        args.get("path") or args.get("file_path") or "?",
+                        len(result),
+                    )
                 else:
+                    if _is_cacheable_read:
+                        _file_read_cache_misses += 1
                     # Builtin tools: handle locally without MCP dispatch
                     if name == "web_search" and self._web_search_enabled:
                         result = self._handle_web_search(args)
@@ -867,6 +886,8 @@ class MCPToolLoop:
                         result = self._handle_fetch_page(args)
                     elif name in {"grep_context", "find_class_definition", "find_symbol_usages"}:
                         result = self._handle_local_evidence_tool(name, args)
+                    elif name in {"wiki_search", "wiki_read", "wiki_write"}:
+                        result = self._handle_wiki_tool(name, args)
                     else:
                         with _mcp_global_lock_acquire():
                             try:
@@ -897,6 +918,21 @@ class MCPToolLoop:
                         result[:_result_limit]
                         + "\n[…result truncated — set SWARM_MCP_TOOL_RESULT_MAX_CHARS to adjust]"
                     )
+
+                # Untrusted content isolation: quarantine + wrap external tool results
+                try:
+                    from backend.App.orchestration.application.untrusted_content import (
+                        is_external_tool,
+                        wrap_untrusted,
+                        QuarantineAgent,
+                    )
+                    if is_external_tool(name):
+                        _quarantine = QuarantineAgent(state=getattr(self, "_pipeline_state", None) or {})
+                        result = _quarantine.summarize(result, source=name)
+                        result = wrap_untrusted(result, source=name)
+                except Exception as _uc_exc:
+                    logger.debug("untrusted_content: isolation step skipped: %s", _uc_exc)
+
                 messages.append(
                     {
                         "role": "tool",
@@ -1017,6 +1053,17 @@ class MCPToolLoop:
         self._last_tool_call_rounds = _tool_call_rounds
         self._last_tool_parser_failures = _tool_parser_failures
         self._last_files_read_count = _files_read_count
+        self._last_file_read_cache_hits = _file_read_cache_hits
+        self._last_file_read_cache_misses = _file_read_cache_misses
+        if _file_read_cache_hits or _file_read_cache_misses:
+            _total = _file_read_cache_hits + _file_read_cache_misses
+            logger.info(
+                "file_read_cache summary: hits=%d misses=%d total=%d hit_rate=%.1f%%",
+                _file_read_cache_hits,
+                _file_read_cache_misses,
+                _total,
+                100.0 * _file_read_cache_hits / _total,
+            )
         self._last_time_to_first_tool = _time_to_first_tool
         _finish_time = time.monotonic()
         self._last_time_after_last_tool_until_finish = (

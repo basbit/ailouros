@@ -4,16 +4,21 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from pathlib import Path
 from typing import Any
+
+from backend.App.paths import artifacts_root
 
 logger = logging.getLogger(__name__)
 
 
 def _default_artifacts_dir() -> Path:
-    """Return the default artifacts root, resolved from SWARM_ARTIFACTS_DIR env var."""
-    return Path(os.getenv("SWARM_ARTIFACTS_DIR", "var/artifacts")).resolve()
+    """Return the default artifacts root (anchored to the app root).
+
+    Reads ``SWARM_ARTIFACTS_DIR`` env var if set (supports relative paths that
+    are resolved against the app root, not the process CWD).
+    """
+    return artifacts_root()
 
 
 def load_partial_pipeline_state(

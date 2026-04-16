@@ -10,6 +10,7 @@ from backend.App.orchestration.infrastructure.shell_approval import (
     _SHELL_APPROVAL_EVENTS,
     complete_shell_approval,
     pending_shell_commands,
+    pending_shell_payload,
     request_shell_approval,
     run_shell_after_user_approval,
 )
@@ -103,6 +104,73 @@ def test_request_shell_approval_rejected():
     result = request_shell_approval(task_id, ["cmd1"], ts)
     t.join(timeout=2)
     assert result is False
+
+
+def test_pending_shell_commands_reads_structured_payload():
+    """New flow stores a dict; legacy list flow must still work."""
+    store_pending(
+        "shell",
+        "t-struct",
+        {
+            "commands": ["godot --headless foo.tscn"],
+            "needs_allowlist": ["godot"],
+            "already_allowed": ["npm"],
+        },
+    )
+    try:
+        assert pending_shell_commands("t-struct") == ["godot --headless foo.tscn"]
+        payload = pending_shell_payload("t-struct")
+        assert payload == {
+            "commands": ["godot --headless foo.tscn"],
+            "needs_allowlist": ["godot"],
+            "already_allowed": ["npm"],
+        }
+    finally:
+        clear_pending("shell", "t-struct")
+
+
+def test_pending_shell_payload_wraps_legacy_list() -> None:
+    """Legacy flat-list payloads must be readable through the new accessor."""
+    store_pending("shell", "t-legacy", ["cmd1", "cmd2"])
+    try:
+        assert pending_shell_payload("t-legacy") == {
+            "commands": ["cmd1", "cmd2"],
+            "needs_allowlist": [],
+            "already_allowed": [],
+        }
+    finally:
+        clear_pending("shell", "t-legacy")
+
+
+def test_request_shell_approval_propagates_allowlist_hints() -> None:
+    """Approval UI payload must carry needs_allowlist / already_allowed."""
+    ts = _make_task_store()
+    task_id = "t-allowlist-hints"
+
+    def approve_later() -> None:
+        time.sleep(0.05)
+        # Verify the stored payload contains our hints BEFORE approving.
+        payload = pending_shell_payload(task_id)
+        assert payload is not None, "payload should be registered before approval"
+        assert "godot" in payload["needs_allowlist"]
+        assert "npm" in payload["already_allowed"]
+        complete_shell_approval(task_id, approved=True)
+
+    t = threading.Thread(target=approve_later, daemon=True)
+    t.start()
+    result = request_shell_approval(
+        task_id,
+        ["godot --headless x.tscn", "npm install"],
+        ts,
+        needs_allowlist=["godot"],
+        already_allowed=["npm"],
+    )
+    t.join(timeout=2)
+    assert result is True
+    # Task-store message should surface the allowlist extension hint
+    ts.update_task.assert_called()
+    messages = [call.kwargs.get("message") for call in ts.update_task.call_args_list]
+    assert any("godot" in (m or "") for m in messages), messages
 
 
 def test_request_shell_approval_cancel_event():

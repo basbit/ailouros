@@ -7,7 +7,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 from backend.App.orchestration.infrastructure.agents.dev_agent import DevAgent
 from backend.App.orchestration.infrastructure.agents.dev_lead_agent import DevLeadAgent
@@ -33,6 +33,7 @@ from backend.App.orchestration.application.nodes._shared import (
     _should_use_mcp_for_workspace,
     _skills_extra_for_role_cfg,
     _spec_for_build_mcp_safe,
+    _stream_automation_emit,
     _stream_progress_emit,
     _swarm_languages_line,
     _swarm_prompt_prefix,
@@ -61,6 +62,16 @@ from backend.App.orchestration.application.nodes.dev_review import (
     _review_spec_max_chars,
     human_dev_node,
     review_dev_node,
+)
+from backend.App.orchestration.application.delta_prompt import (
+    build_dev_lead_delta_retry_prompt,
+    delta_prompting_enabled,
+    store_artifact,
+)
+from backend.App.orchestration.application.output_contracts import (
+    compress_dev_lead_output,
+    format_compressed_dev_lead,
+    output_compression_enabled,
 )
 
 logger = logging.getLogger(__name__)
@@ -94,6 +105,47 @@ def _run_agent_with_boundary(state: PipelineState, agent: Any, prompt: str) -> s
 def _validate_agent_boundary(state: PipelineState, agent: Any, prompt: str, output: str) -> None:
     """Backward-compatible alias for tests patching the old local boundary hook."""
     _canonical_validate_agent_boundary(state, agent, prompt, output)
+
+
+def is_dev_retry_lean(state: Any) -> bool:
+    """Return True when the Dev subtask is running *again* after NEEDS_WORK
+    or a swarm_file re-wrap instruction AND ``SWARM_DEV_RETRY_LEAN`` is on.
+
+    When true, the subtask prompt drops the pattern/knowledge/sibling blocks
+    (see §23.3 — LM Studio slot-cache is already warm from the first run,
+    and the review feedback is the only signal that matters). Public helper
+    so tests can lock the decision separately from the giant
+    ``_one()`` closure that builds the prompt.
+    """
+    prior_review = bool(str(state.get("dev_review_output") or "").strip())
+    swarm_reprompt = bool(str(state.get("_swarm_file_reprompt") or "").strip())
+    if not (prior_review or swarm_reprompt):
+        return False
+    env_value = os.environ.get("SWARM_DEV_RETRY_LEAN", "1").strip().lower()
+    return env_value not in ("0", "false", "no", "off")
+
+
+def is_progressive_context(state: Any) -> bool:
+    """Return True when M-7 progressive context loading is active.
+
+    Progressive context loading skips pre-loading pattern-memory,
+    project-knowledge and sibling-task blocks on the **first** pass of a Dev
+    subtask when the agent is running in MCP-tool mode
+    (``workspace_context_mode == "retrieve"``).  The agent can access memory
+    via the ``read_file`` tool instead (e.g. ``.swarm/pattern_memory.json``).
+
+    Toggle: ``SWARM_PROGRESSIVE_CONTEXT=1`` (default off — no behaviour
+    change unless explicitly enabled).  Has no effect in non-MCP
+    (``workspace_context_mode != "retrieve"``) runs.
+    """
+    if os.environ.get("SWARM_PROGRESSIVE_CONTEXT", "0").strip().lower() not in (
+        "1", "true", "yes"
+    ):
+        return False
+    from backend.App.orchestration.application.nodes._prompt_builders import (
+        _workspace_context_mode_normalized,
+    )
+    return _workspace_context_mode_normalized(state) == "retrieve"
 
 
 def _small_task_profile(task: dict[str, Any]) -> dict[str, Any]:
@@ -257,7 +309,7 @@ def dev_lead_node(state: PipelineState) -> dict[str, Any]:
     # Workspace structure brief (collected by PM evidence prefetch).
     # Dev Lead MUST use this to derive expected_paths from the real directory tree,
     # NOT invent paths that don't match the existing project layout.
-    workspace_brief = (state.get("workspace_evidence_brief") or "").strip()
+    workspace_brief = str(state.get("workspace_evidence_brief") or "").strip()
     if workspace_brief:
         code_hint += (
             f"\n\n[Workspace structure and documentation — CRITICAL for expected_paths]\n"
@@ -280,12 +332,24 @@ def dev_lead_node(state: PipelineState) -> dict[str, Any]:
         )
 
     # Prepend research advisory if BA/PM/spec detected external sources
-    research_advisory = (state.get("research_advisory") or "").strip()
+    research_advisory = str(state.get("research_advisory") or "").strip()
     research_advisory_block = (
         f"\n{research_advisory}\n"
         if research_advisory
         else ""
     )
+
+    # §10.7 — Inject missing-section instruction when retrying after validation failure
+    _missing_sections_block = ""
+    _missing_sections = state.get("_dev_lead_missing_sections")
+    if _missing_sections:
+        _missing_sections_block = (
+            "\n\n## CRITICAL: Your previous output was REJECTED — missing required sections\n"
+            f"Missing: {_missing_sections}\n"
+            "You MUST include ALL of the following in the `deliverables` object of your JSON response: "
+            f"{_missing_sections}. "
+            "Do NOT omit any of them. The pipeline cannot proceed without these sections.\n"
+        )
 
     prompt = (
         _swarm_prompt_prefix(state)
@@ -331,10 +395,24 @@ def dev_lead_node(state: PipelineState) -> dict[str, Any]:
         "- `placeholder_allow_list`: explicit allow-list for temporary placeholders that are intentionally permitted by the approved task; otherwise [].\n"
         "- Each task must include non-empty `expected_paths` for the concrete files it is expected to touch; use workspace-relative paths only.\n"
         "- Use `dependencies` only when a subtask truly cannot start before another subtask.\n"
+        + _missing_sections_block
     )
-    dev_lead_cfg = agent_config.get("dev_lead") or agent_config.get("pm_tasks") or agent_config.get("pm") or {}
-    if not isinstance(dev_lead_cfg, dict):
-        dev_lead_cfg = {}
+    # Resolve dev_lead config via explicit cascade.  Legacy keys are still
+    # accepted for backward compat but logged so operators can migrate.
+    # No silent role-name fallbacks (§3): the cascade is documented and visible.
+    _DEV_LEAD_CONFIG_KEYS = ("dev_lead", "pm_tasks", "pm")
+    dev_lead_cfg: dict[str, Any] = {}
+    for _cfg_key in _DEV_LEAD_CONFIG_KEYS:
+        candidate = agent_config.get(_cfg_key)
+        if isinstance(candidate, dict) and candidate:
+            dev_lead_cfg = candidate
+            if _cfg_key != "dev_lead":
+                logger.warning(
+                    "dev_lead_node: using legacy agent_config[%r] for dev_lead role; "
+                    "migrate to agent_config['dev_lead'] (deprecated since v3).",
+                    _cfg_key,
+                )
+            break
     # SWARM_DEV_LEAD_MODEL: model override for dev_lead step (env var fallback when not set in config).
     # Use to route dev_lead to a more powerful reasoning model than the default planning model.
     agent = DevLeadAgent(
@@ -344,21 +422,63 @@ def dev_lead_node(state: PipelineState) -> dict[str, Any]:
         system_prompt_extra=_skills_extra_for_role_cfg(state, dev_lead_cfg),
         **_remote_api_client_kwargs_for_role(state, dev_lead_cfg),
     )
-    dev_lead_output = _run_agent_with_boundary(state, agent, prompt)
+
+    # H-2: on retry (missing deliverable sections), replace the full 15-20 KB
+    # prompt with a compact delta that includes the previous output + instruction
+    # to add the missing sections.  Only activated when a prior run produced
+    # output (state["dev_lead_output"] is set) and delta prompting is enabled.
+    _run_prompt = prompt
+    if _missing_sections and delta_prompting_enabled():
+        _prev_dl_output = str(state.get("dev_lead_output") or "").strip()
+        if _prev_dl_output:
+            _missing_list = (
+                list(_missing_sections)
+                if isinstance(_missing_sections, list)
+                else [str(_missing_sections)]
+            )
+            _run_prompt = build_dev_lead_delta_retry_prompt(
+                prev_output=_prev_dl_output,
+                missing_sections=_missing_list,
+                user_task=pipeline_user_task(state),
+            )
+            logger.info(
+                "dev_lead_node: H-2 delta retry prompt (%d chars) used instead of "
+                "full prompt (%d chars) — missing_sections=%s",
+                len(_run_prompt), len(prompt), _missing_sections,
+            )
+        else:
+            logger.debug(
+                "dev_lead_node: H-2 delta retry skipped — no previous dev_lead_output "
+                "in state; using full prompt. missing_sections=%s",
+                _missing_sections,
+            )
+
+    dev_lead_output = _run_agent_with_boundary(state, agent, _run_prompt)
     plan = parse_dev_lead_plan(dev_lead_output)
     tasks = plan["tasks"]
     deliverables = plan["deliverables"]
+    # Strict mode: raise instead of warn when the agent's plan is incomplete.
+    # Default off for backward compat — operators opt in via env (§2 fail-fast).
+    _strict_deliverables = os.environ.get(
+        "SWARM_DEV_LEAD_REQUIRE_DELIVERABLES", "0",
+    ).strip() == "1"
     if tasks and not plan.get("has_deliverables"):
-        logger.warning(
-            "dev_lead_node: missing canonical `deliverables` object in Dev Lead JSON plan — "
-            "continuing with empty defaults; gates will be skipped"
+        msg = (
+            "dev_lead_node: Dev Lead JSON plan is missing the canonical `deliverables` "
+            "object; downstream verification gates require it."
         )
+        if _strict_deliverables:
+            raise ValueError(msg)
+        logger.warning("%s Continuing with empty defaults; gates will be skipped.", msg)
     elif tasks and not plan.get("has_complete_deliverables"):
-        logger.warning(
-            "dev_lead_node: deliverables object is missing some canonical keys "
+        msg = (
+            "dev_lead_node: Dev Lead `deliverables` is missing canonical keys "
             "(must_exist_files, spec_symbols, verification_commands, assumptions, "
-            "production_paths, placeholder_allow_list) — continuing with partial deliverables"
+            "production_paths, placeholder_allow_list)."
         )
+        if _strict_deliverables:
+            raise ValueError(msg)
+        logger.warning("%s Continuing with partial deliverables.", msg)
     if target_n is not None:
         tasks = normalize_dev_qa_tasks_to_count(tasks, target_n)
 
@@ -451,7 +571,31 @@ def dev_lead_node(state: PipelineState) -> dict[str, Any]:
     if (dev_lead_output or "").strip():
         from backend.App.workspace.application.doc_workspace import write_step_wiki
         write_step_wiki(state, "dev_lead", dev_lead_output)
-    return {
+
+    # M-9: store dev_lead raw output as content-addressed artifact and produce a
+    # compact JSON representation.  The compact form contains the parsed task plan
+    # and deliverables (all fields downstream validators check) plus an artifact_ref
+    # for resolving the full narrative when needed.
+    _dl_artifact_ref = ""
+    _dl_compressed_str = ""
+    if output_compression_enabled() and (dev_lead_output or "").strip():
+        _dl_compressed = compress_dev_lead_output(dev_lead_output)
+        _dl_artifact_ref = _dl_compressed.artifact_ref
+        _dl_compressed_str = format_compressed_dev_lead(_dl_compressed)
+        logger.debug(
+            "dev_lead_node: M-9 compressed output %d chars → %d chars compact "
+            "(artifact_ref=%s…)",
+            _dl_compressed.char_count,
+            len(_dl_compressed_str),
+            _dl_artifact_ref[-12:],
+        )
+    else:
+        # Even when compression is disabled, register the raw output as artifact
+        # so delta prompting can reference it on retry.
+        if (dev_lead_output or "").strip():
+            _dl_artifact_ref = store_artifact(dev_lead_output)
+
+    result: dict[str, Any] = {
         "dev_lead_output": dev_lead_output,
         "dev_lead_model": agent.used_model,
         "dev_lead_provider": agent.used_provider,
@@ -463,6 +607,11 @@ def dev_lead_node(state: PipelineState) -> dict[str, Any]:
         "placeholder_allow_list": list(deliverables.get("placeholder_allow_list") or []),
         "planning_review_blockers": list(state.get("planning_review_blockers") or []),
     }
+    if _dl_artifact_ref:
+        result["dev_lead_output_ref"] = _dl_artifact_ref
+    if _dl_compressed_str:
+        result["dev_lead_compressed"] = _dl_compressed_str
+    return result
 
 
 def review_dev_lead_node(state: PipelineState) -> dict[str, Any]:
@@ -566,7 +715,8 @@ def dev_node(state: PipelineState) -> dict[str, Any]:
         if devops_ctx
         else ""
     )
-    ca = state.get("code_analysis") if isinstance(state.get("code_analysis"), dict) else {}
+    _ca_raw = state.get("code_analysis")
+    ca: dict[str, Any] = _ca_raw if isinstance(_ca_raw, dict) else {}
     ca_block = ""
     conventions_block = ""
     if not _code_analysis_is_weak(ca):
@@ -576,6 +726,13 @@ def dev_node(state: PipelineState) -> dict[str, Any]:
     langs = _swarm_languages_line(state)
     ws_block = _dev_workspace_instructions(state)
     apply_writes = bool(state.get("workspace_apply_writes"))
+
+    # §12.5 — Index pipeline state for semantic context lookup within subtasks
+    from backend.App.orchestration.application.state_searcher import (
+        index_state as _index_state,
+        search_context as _search_context,
+    )
+    _index_state(cast(dict[str, Any], state))
     swarm_file_guidance = ""
     if ws_block.strip():
         if apply_writes and use_mcp:
@@ -665,17 +822,62 @@ def dev_node(state: PipelineState) -> dict[str, Any]:
         scope = (task.get("development_scope") or "").strip()
         expected_paths = [str(item or "").strip() for item in (task.get("expected_paths") or []) if str(item or "").strip()]
         small_profile = _small_task_profile(task)
+        # §12.5 — pre-compute semantic context for this subtask
+        _sem_ctx = _search_context(cast(dict[str, Any], state), f"{title} {scope[:200]}", top_k=2)
         if not scope:
             scope = (
                 "Implement everything necessary according to the full specification within the meaning of this subtask "
                 f"({title}); if the scope is general — organize the work logically."
             )
-        mem = format_pattern_memory_block(
-            state,
-            f"{pipeline_user_task(state)}\n{title}\n{scope}",
+        from backend.App.orchestration.application.context_budget import get_context_budget
+        _dev_budget = get_context_budget(
+            "dev",
+            state.get("agent_config") if isinstance(state.get("agent_config"), dict) else None,
         )
         user_ctx = pipeline_user_task(state) if use_mcp else build_phase_pipeline_user_context(state)
         prior_review = (state.get("dev_review_output") or "").strip()
+        # §10.4 — swarm_file re-wrap instruction injected by pipeline enforcement
+        _swarm_file_reprompt = str(state.get("_swarm_file_reprompt") or "").strip()
+        # §23.3 — second-pass leanness.
+        # When this subtask is running *again* after NEEDS_WORK or a swarm_file
+        # re-wrap instruction, the pattern/knowledge/sibling blocks are in the
+        # LM Studio slot cache already (prefix unchanged from the first run) OR
+        # duplicate information the reviewer already had access to. Dropping
+        # them shrinks the prompt from ~20 KB to ~8–10 KB, which halves
+        # prefill cost on the retry without losing the review feedback.
+        # Override with SWARM_DEV_RETRY_LEAN=0 to revert.
+        _retry_lean = is_dev_retry_lean(state)
+        _progressive = not _retry_lean and is_progressive_context(state)
+        if _retry_lean:
+            mem = ""
+            retry_lean_note = (
+                "[Retry context] This is a re-run of the subtask after reviewer "
+                "feedback (or format-enforcement). The pattern/knowledge/sibling "
+                "context from the first run is unchanged — focus on the feedback "
+                "block below.\n\n"
+            )
+            logger.info(
+                "pipeline dev subtask %d/%d retry-lean: pattern/knowledge/sibling blocks dropped",
+                i + 1, task_count,
+            )
+        elif _progressive:
+            mem = ""
+            retry_lean_note = (
+                "[Progressive context — M-7] Pattern/knowledge/sibling blocks were not "
+                "pre-loaded (SWARM_PROGRESSIVE_CONTEXT=1, MCP mode). "
+                "Use the read_file tool to access .swarm/ if you need memory context.\n\n"
+            )
+            logger.info(
+                "pipeline dev subtask %d/%d progressive-context: memory/knowledge blocks skipped",
+                i + 1, task_count,
+            )
+        else:
+            mem = format_pattern_memory_block(
+                state,
+                f"{pipeline_user_task(state)}\n{title}\n{scope}",
+                max_chars=_dev_budget.pattern_memory_chars,
+            )
+            retry_lean_note = ""
         prior_feedback_block = ""
         if prior_review:
             prior_feedback_block = (
@@ -686,8 +888,25 @@ def dev_node(state: PipelineState) -> dict[str, Any]:
                 "or <swarm_patch path=\"...\">SEARCH/REPLACE blocks</swarm_patch>.\n"
                 "Text descriptions WITHOUT code tags will be REJECTED.\n"
             )
-        subtask_spec = spec
-        # Cap subtask spec to avoid sending full spec to every subtask LLM call.
+        if _swarm_file_reprompt:
+            prior_feedback_block += (
+                "\n\n## IMPORTANT: File tagging correction required\n"
+                f"{_swarm_file_reprompt}\n"
+            )
+        # Spec injection strategy: when SWARM_DEV_SUBTASK_SPEC_SUMMARY=1 (default),
+        # give each subtask a compact spec summary (arch decisions + scope) instead
+        # of the full 20-60 KB spec.  Set =0 to revert to full spec injection.
+        _use_summary = os.environ.get("SWARM_DEV_SUBTASK_SPEC_SUMMARY", "1").strip() != "0"
+        if _use_summary and scope:
+            from backend.App.orchestration.application.nodes._prompt_builders import spec_summary_for_subtask
+            subtask_spec = spec_summary_for_subtask(spec, scope)
+            logger.info(
+                "dev subtask %d/%d: using spec summary (%d chars) instead of full spec (%d chars)",
+                i + 1, task_count, len(subtask_spec), len(spec),
+            )
+        else:
+            subtask_spec = spec
+        # Additional cap on subtask spec (legacy env var, applies after summary)
         _subtask_spec_max = int(os.environ.get("SWARM_DEV_SUBTASK_SPEC_MAX_CHARS", "0").strip() or "0")
         if _subtask_spec_max > 0 and len(subtask_spec) > _subtask_spec_max:
             logger.info(
@@ -713,8 +932,9 @@ def dev_node(state: PipelineState) -> dict[str, Any]:
             + _swarm_prompt_prefix(state)
             + f"{langs}"
             + swarm_file_guidance
-            + _project_knowledge_block(state)
-            + _dev_sibling_tasks_block(tasks, i)
+            + ("" if (_retry_lean or _progressive) else _project_knowledge_block(state, step_id="dev"))
+            + ("" if (_retry_lean or _progressive) else _dev_sibling_tasks_block(tasks, i))
+            + retry_lean_note
             + "[Pipeline rule] Implement according to the **stack and boundaries from the Architect section** "
             + "in the spec below; do not substitute with PM/BA assumptions.\n\n"
             + "[Increment] This is a **narrow subtask** for a fast model: do the **minimum** work "
@@ -727,6 +947,7 @@ def dev_node(state: PipelineState) -> dict[str, Any]:
             + f"{subtask_ca_block}\n"
             + f"{conventions_block}"
             + f"{find_reference_file(ca, scope, str(state.get('workspace_root') or ''))}"
+            + (f"\n## Relevant pipeline context\n{_sem_ctx}\n" if _sem_ctx else "")
             + f"## Development subtask [{subtask_id}] {title}\n"
             + f"{scope}\n"
             + (
@@ -776,6 +997,12 @@ def dev_node(state: PipelineState) -> dict[str, Any]:
 
         task_spec_for_verify = f"{pipeline_user_task(state)}\n\n{scope}"
         started_at = time.monotonic()
+        from backend.App.orchestration.application.self_verify import _verify_enabled
+        if _verify_enabled():
+            _stream_automation_emit(
+                state, "self_verify",
+                f"self_verify: checking subtask {i + 1}/{task_count} output…",
+            )
         output = run_with_self_verify(_agent_run_for_verify, task_spec_for_verify, prompt)
 
         # Sanitize control tokens leaked by gpt-oss / LM Studio models
@@ -871,6 +1098,50 @@ def dev_node(state: PipelineState) -> dict[str, Any]:
                     f"{(output or '')[:2000]}\n"
                 )
             _mcp_writes = _mcp_writes_2
+
+        # §12.2 — Optional per-subtask dialogue review loop
+        # Set SWARM_DEV_DIALOGUE_ROUNDS=2 (or 3) to enable; default 0 = off.
+        _dialogue_rounds = int(os.environ.get("SWARM_DEV_DIALOGUE_ROUNDS", "0").strip() or "0")
+        if _dialogue_rounds > 1 and output and apply_writes and not (output or "").startswith("[EC-3"):
+            try:
+                from backend.App.orchestration.application.dialogue_loop import (
+                    DialogueLoop as _DialogueLoop,
+                )
+                from backend.App.orchestration.domain.quality_gate_policy import (
+                    extract_verdict as _extract_verdict,
+                )
+
+                _reviewer_for_dia = _make_reviewer_agent(state)
+                _first_call_done: list[bool] = [False]
+                _first_output = output
+
+                class _DevRoundAdapter:
+                    """Returns existing output on first call; revises on subsequent rounds."""
+
+                    def run(self, p: str, **_kw: Any) -> str:
+                        if not _first_call_done[0]:
+                            _first_call_done[0] = True
+                            return _first_output
+                        revised, *_ = _llm_build_agent_run(agent, p, state)
+                        return revised or _first_output
+
+                _dialogue = _DialogueLoop(max_rounds=_dialogue_rounds)
+                _dia = _dialogue.run(
+                    agent_a=_DevRoundAdapter(),
+                    agent_b=_reviewer_for_dia,
+                    initial_input=prompt,
+                    extract_verdict_fn=_extract_verdict,
+                    progress_queue=state.get("_stream_progress_queue"),
+                    step_label=f"dev[{subtask_id}]↔reviewer",
+                )
+                if _dia.final_output:
+                    output = _dia.final_output
+                    logger.info(
+                        "dev_node: subtask [%s] dialogue done rounds=%d verdict=%s",
+                        subtask_id, _dia.rounds_used, _dia.verdict,
+                    )
+            except Exception as _dia_exc:
+                logger.warning("dev_node: dialogue loop failed for subtask [%s]: %s — using original output", subtask_id, _dia_exc)
 
         used_model = _used_model_ref[0] if _used_model_ref else ""
         used_provider = _used_provider_ref[0] if _used_provider_ref else ""
@@ -1056,8 +1327,17 @@ def dev_node(state: PipelineState) -> dict[str, Any]:
             )
             focus = (role_cfg.get("scope") or "").strip()
             focus_block = f"\n[Role focus: {role_name}]\n{focus}\n" if focus else f"\n[Role: {role_name}]\n"
+            from backend.App.orchestration.application.context_budget import get_context_budget
+            _crole_budget = get_context_budget(
+                f"crole_{role_name}",
+                state.get("agent_config") if isinstance(state.get("agent_config"), dict) else None,
+            )
             role_prompt = (
-                format_pattern_memory_block(state, f"{pipeline_user_task(state)}\n{role_name}")
+                format_pattern_memory_block(
+                    state,
+                    f"{pipeline_user_task(state)}\n{role_name}",
+                    max_chars=_crole_budget.pattern_memory_chars,
+                )
                 + dev_ctx
                 + _swarm_prompt_prefix(state)
                 + f"{langs}"
@@ -1154,21 +1434,47 @@ def dev_node(state: PipelineState) -> dict[str, Any]:
     _total_mcp_write_actions: list[dict[str, Any]] = []
     subtask_contracts: list[dict[str, Any]] = []
 
-    topology = (state.get("agent_config") or {}).get("swarm", {}).get("topology", "")
-    if topology == "mesh" and task_count > 1:
+    _force_sequential = os.environ.get("SWARM_DEV_FORCE_SEQUENTIAL", "").strip() in ("1", "true", "yes")
+    if not _force_sequential and task_count > 1:
+        logger.info(
+            "dev_node: running %d subtasks in parallel "
+            "(SWARM_DEV_FORCE_SEQUENTIAL=1 to disable). task_id=%s",
+            task_count,
+            (state.get("task_id") or "")[:36],
+        )
         max_workers = min(swarm_max_parallel_tasks(), task_count)
         results: list[Optional[tuple[int, str, str, str, int, list[dict[str, Any]], dict[str, Any]]]] = [None] * task_count
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             fut_to_idx = {executor.submit(_one, i, task): i for i, task in enumerate(tasks)}
             for fut in as_completed(fut_to_idx):
                 i = fut_to_idx[fut]
-                _, output, dev_model, dev_provider, _count, _actions, contract = fut.result()
-                results[i] = (i, output, dev_model, dev_provider, _count, _actions, contract)
-                _total_mcp_writes += _count
-                _total_mcp_write_actions.extend(_actions)
-        for _, output, dev_model, dev_provider, _, _, contract in results:
-            dev_task_outputs.append(output)
-            subtask_contracts.append(contract)
+                try:
+                    _, out_i, m_i, p_i, cnt_i, acts_i, contract_i = fut.result()
+                    results[i] = (i, out_i, m_i, p_i, cnt_i, acts_i, contract_i)
+                    _total_mcp_writes += cnt_i
+                    _total_mcp_write_actions.extend(acts_i)
+                except Exception as _fut_exc:
+                    logger.error(
+                        "dev_node: subtask %d/%d raised an exception — skipping (task_id=%s): %s",
+                        i + 1, task_count, (state.get("task_id") or "")[:36], _fut_exc,
+                    )
+                    results[i] = None
+        _parallel_models: list[str] = []
+        _parallel_providers: list[str] = []
+        for _r in results:
+            if _r is None:
+                dev_task_outputs.append("")
+                subtask_contracts.append({})
+            else:
+                _, _o, _m, _p, _, _, _c = _r
+                dev_task_outputs.append(_o)
+                subtask_contracts.append(_c)
+                _parallel_models.append(_m or "")
+                _parallel_providers.append(_p or "")
+        if _parallel_models:
+            dev_model = " | ".join(m for m in _parallel_models if m) or dev_model
+        if _parallel_providers:
+            dev_provider = " | ".join(p for p in _parallel_providers if p) or dev_provider
     else:
         for i, task in enumerate(tasks):
             _, output, dev_model, dev_provider, _count, _actions, contract = _one(i, task)

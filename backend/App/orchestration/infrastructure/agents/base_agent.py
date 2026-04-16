@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import queue
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from backend.App.integrations.infrastructure.llm.client import ask_model
 from backend.App.integrations.infrastructure.llm.prompt_size import estimate_chat_request_size, format_size_hint_ru
@@ -242,6 +245,20 @@ def resolve_agent_model(role: str, role_default_model: str = "") -> str:
     global_model = os.getenv("SWARM_MODEL", "").strip()
     if global_model:
         return global_model
+
+    # Broader group fallbacks ONLY for roles not in any known group (e.g. marketing agents)
+    _all_known_roles = _route_planning_roles | _model_planning_roles | build_roles()
+    if role_key not in _all_known_roles:
+        for env_key in ("SWARM_MODEL_BUILD", "SWARM_MODEL_PLANNING"):
+            group_model = os.getenv(env_key, "").strip()
+            if group_model:
+                logger.warning(
+                    "resolve_agent_model(%s): role not in known groups — "
+                    "falling back to %s=%s. Set SWARM_MODEL or SWARM_MODEL_%s to fix.",
+                    role, env_key, group_model, role_key,
+                )
+                return group_model
+
     if role_default_model:
         logger.warning(
             "resolve_agent_model(%s): no SWARM_MODEL or SWARM_MODEL_%s set — "
@@ -276,6 +293,29 @@ def _local_base_url_from_environment(environment: str) -> tuple[str, str]:
     )
 
 
+def _has_unclosed_xml_tags(text: str) -> bool:
+    """Return True if *text* contains XML-style open tags with no matching close.
+
+    Detects mid-stream truncation where the LLM stopped before closing its own
+    structural tags (e.g. ``<swarm_file ...>`` without ``</swarm_file>``).
+    Only looks at custom/swarm tags, not HTML voids.
+    """
+    # All opening tags (includes self-closing — filtered below)
+    all_opens = re.findall(r'<([a-zA-Z_][a-zA-Z0-9_]*)(?:\s[^>]*)?>', text)
+    # Self-closing tags: <tag ... />
+    self_closing = set(re.findall(r'<([a-zA-Z_][a-zA-Z0-9_]*)(?:\s[^>]*)?\s*/>', text))
+    # Filter out self-closing from opens
+    opens = [t for t in all_opens if t not in self_closing]
+    closes = re.findall(r'</([a-zA-Z_][a-zA-Z0-9_]*)>', text)
+    counts: dict[str, int] = {}
+    for tag in opens:
+        counts[tag] = counts.get(tag, 0) + 1
+    for tag in closes:
+        if tag in counts:
+            counts[tag] -= 1
+    return any(v > 0 for v in counts.values())
+
+
 @dataclass
 class BaseAgent:
     role: str
@@ -293,6 +333,8 @@ class BaseAgent:
     last_usage: dict = field(default_factory=dict)
     # Markdown из UI ``agent_config.skills`` + ``skill_ids`` роли (см. integrations.agent_skills)
     system_prompt_extra: str = ""
+    # Filled during run() when truncation retry occurred
+    truncation_retries: int = 0
 
     def effective_system_prompt(self) -> str:
         extra = (self.system_prompt_extra or "").strip()
@@ -300,7 +342,16 @@ class BaseAgent:
             return self.system_prompt
         return f"{self.system_prompt.rstrip()}\n\n### Agent skills (injected)\n\n{extra}"
 
-    def run(self, user_input: str) -> str:
+    def run(self, user_input: str, *, _progress_queue: Any = None) -> str:
+        """Run the agent with optional truncation-detection retry.
+
+        Args:
+            user_input: The user message to send to the LLM.
+            _progress_queue: Optional ``queue.Queue`` from the step executor.
+                When provided, truncation events are emitted as structured JSON
+                messages into the queue so the SSE layer can surface them.
+        """
+        self.truncation_retries = 0
         messages = [
             {"role": "system", "content": self.effective_system_prompt()},
             {"role": "user", "content": user_input},
@@ -375,4 +426,49 @@ class BaseAgent:
             logger.debug("Failed to accumulate thread usage", exc_info=True)
         self.used_model = model
         self.used_provider = cfg.provider_label or f"local:{resolve_default_environment()}"
-        return llm_response
+
+        # § 10.2 — Output truncation detection + retry
+        _max_truncation_retries = int(os.getenv("SWARM_TRUNCATION_MAX_RETRIES", "2"))
+        accumulated = llm_response
+        for _retry_n in range(_max_truncation_retries):
+            if not _has_unclosed_xml_tags(accumulated):
+                break
+            logger.warning(
+                "[%s] output_truncated: unclosed XML tags detected on attempt %d/%d — "
+                "retrying with CONTINUE prompt. role=%s model=%s",
+                self.role, _retry_n + 1, _max_truncation_retries, self.role, model,
+            )
+            self.truncation_retries += 1
+            if isinstance(_progress_queue, queue.Queue):
+                try:
+                    _progress_queue.put(json.dumps({
+                        "_event_type": "output_truncated",
+                        "role": self.role,
+                        "attempt": _retry_n + 1,
+                        "message": f"[{self.role}] output truncated — resuming (attempt {_retry_n + 1}/{_max_truncation_retries})",
+                    }))
+                except Exception:
+                    pass
+            messages.append({"role": "assistant", "content": accumulated})
+            messages.append({"role": "user", "content": "[CONTINUE FROM WHERE YOU LEFT OFF]"})
+            continuation, cont_usage = ask_model(messages=messages, model=model, **ask_kwargs)
+            accumulated = accumulated + "\n" + continuation
+            # Merge usage
+            try:
+                self.last_usage = {
+                    "input_tokens": (self.last_usage.get("input_tokens") or 0) + (cont_usage.get("input_tokens") or 0),
+                    "output_tokens": (self.last_usage.get("output_tokens") or 0) + (cont_usage.get("output_tokens") or 0),
+                }
+                _accumulate_thread_usage(cont_usage)
+            except Exception:
+                pass
+        else:
+            # Exhausted retries and still truncated — log at error level
+            if _has_unclosed_xml_tags(accumulated):
+                logger.error(
+                    "[%s] output_truncated: still truncated after %d retries — "
+                    "returning partial output. role=%s",
+                    self.role, _max_truncation_retries, self.role,
+                )
+
+        return accumulated

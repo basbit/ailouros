@@ -286,6 +286,106 @@ def test_apply_workspace_pipeline_run_shell_from_env(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Heal: malformed <swarm_patch> without SEARCH/REPLACE markers
+# (2026-04-16 fix — small models wrapped new-file content in <swarm_patch>
+# instead of <swarm_file>, causing 8× "no ======= separator" errors per run)
+# ---------------------------------------------------------------------------
+
+def test_apply_workspace_pipeline_heals_patch_without_markers_on_new_file(tmp_path):
+    """<swarm_patch> with no SEARCH markers + file does not exist → promoted to create."""
+    text = (
+        '<swarm_patch path="scripts/main.gd">\n'
+        'extends Node\n\nfunc _ready():\n\tprint("hello")\n'
+        "</swarm_patch>"
+    )
+    result = apply_workspace_pipeline(text, tmp_path)
+    assert "scripts/main.gd" in result["healed_patches"]
+    assert "scripts/main.gd" in result["written"]
+    assert result["errors"] == []
+    assert result["parsed"] == 1
+    written_content = (tmp_path / "scripts" / "main.gd").read_text()
+    assert 'print("hello")' in written_content
+
+
+def test_apply_workspace_pipeline_patch_without_markers_on_existing_file_still_fails(tmp_path):
+    """Safety: when the file DOES exist, malformed patch is still an error (never silently overwrite)."""
+    existing = tmp_path / "existing.py"
+    existing.write_text("original = 1\n")
+    text = (
+        '<swarm_patch path="existing.py">\n'
+        "rewrite_as_new = True\n"
+        "</swarm_patch>"
+    )
+    result = apply_workspace_pipeline(text, tmp_path)
+    assert result["healed_patches"] == []
+    assert any("no <<<<<<<" in e or "no =======" in e for e in result["errors"])
+    # Original content preserved.
+    assert existing.read_text() == "original = 1\n"
+
+
+def test_apply_workspace_pipeline_patch_on_binary_asset_is_skipped(tmp_path):
+    """PNG targeted by <swarm_patch> → dedicated binary_assets_requested signal, no errors."""
+    text = (
+        '<swarm_patch path="assets/sprites/hero.png">\n'
+        "pretend this is pixel data\n"
+        "</swarm_patch>"
+    )
+    result = apply_workspace_pipeline(text, tmp_path)
+    assert "assets/sprites/hero.png" in result["binary_assets_requested"]
+    # No text file was written for the binary path.
+    assert result["written"] == []
+    assert result["patched"] == []
+    # And — crucially — no "no ======= separator" error in the errors bucket.
+    assert result["errors"] == []
+    assert not (tmp_path / "assets" / "sprites" / "hero.png").exists()
+
+
+def test_apply_workspace_pipeline_swarm_file_on_binary_asset_is_skipped(tmp_path):
+    """Same heal for <swarm_file>: text body on a binary extension never lands on disk."""
+    text = '<swarm_file path="logo.png">fake-png-bytes</swarm_file>'
+    result = apply_workspace_pipeline(text, tmp_path)
+    assert "logo.png" in result["binary_assets_requested"]
+    assert result["written"] == []
+    assert result["errors"] == []
+
+
+def test_apply_workspace_pipeline_heal_coexists_with_valid_patch(tmp_path):
+    """Mixed output: one valid patch on existing file + one malformed patch on new file both succeed."""
+    existing = tmp_path / "exists.py"
+    existing.write_text("x = 1\n")
+    text = (
+        '<swarm_patch path="exists.py">\n'
+        "<<<<<<< SEARCH\n"
+        "x = 1\n"
+        "=======\n"
+        "x = 2\n"
+        ">>>>>>> REPLACE\n"
+        "</swarm_patch>\n"
+        '<swarm_patch path="new_file.py">\n'
+        "print('created via heal')\n"
+        "</swarm_patch>"
+    )
+    result = apply_workspace_pipeline(text, tmp_path)
+    assert "exists.py" in result["patched"]
+    assert "new_file.py" in result["healed_patches"]
+    assert "new_file.py" in result["written"]
+    assert result["errors"] == []
+    assert existing.read_text() == "x = 2\n"
+
+
+def test_apply_workspace_pipeline_empty_patch_body_is_clean_error(tmp_path):
+    """Empty body + non-existent target → concise error, not the noisy SEARCH/REPLACE complaint."""
+    text = '<swarm_patch path="nothing.py">   </swarm_patch>'
+    result = apply_workspace_pipeline(text, tmp_path)
+    assert result["written"] == []
+    assert result["healed_patches"] == []
+    # One clean error, not the "no ======= separator" noise.
+    assert any(
+        "empty body and file does not exist" in e for e in result["errors"]
+    )
+
+
+# ---------------------------------------------------------------------------
 # text_contains_swarm_workspace_actions
 # ---------------------------------------------------------------------------
 
@@ -453,9 +553,12 @@ def test_extract_shell_commands_fallback_bash_fence():
 
 
 def test_extract_shell_commands_disallowed_command():
+    # extract_shell_commands now returns ALL commands regardless of allowlist.
+    # The SSE handler categorises them into already_allowed / needs_allowlist
+    # and shows the user an approval dialog for the out-of-allowlist binaries.
     text = "<swarm_shell>rm -rf /</swarm_shell>"
     cmds = extract_shell_commands(text)
-    assert len(cmds) == 0
+    assert "rm -rf /" in cmds
 
 
 # ---------------------------------------------------------------------------

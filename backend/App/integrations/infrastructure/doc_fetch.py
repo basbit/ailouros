@@ -170,7 +170,8 @@ def run_doc_fetch_if_enabled(
     if not rows:
         return []
 
-    art_root = Path(os.getenv("SWARM_ARTIFACTS_DIR", "var/artifacts")).expanduser().resolve()
+    from backend.App.paths import artifacts_root as _anchored_artifacts_root
+    art_root = _anchored_artifacts_root()
     tid = (task_id or "").strip() or "_no_task"
     base_art = art_root / tid / "doc_fetch"
 

@@ -10,10 +10,13 @@ from backend.App.workspace.infrastructure.workspace_io import (
     _shell_command_allowed,
     command_exec_allowed,
     collect_workspace_priority_snapshot,
+    extend_runtime_shell_allowlist,
+    extract_command_binary,
     normalize_workspace_context_mode,
     read_project_context_file,
     resolve_project_context_path,
     resolve_workspace_context_mode,
+    scoped_runtime_shell_allowlist,
     tools_only_workspace_placeholder,
     validate_readable_file,
     validate_workspace_root,
@@ -207,6 +210,59 @@ def test_shell_command_allowed_custom_allowlist(monkeypatch):
     assert ok is True
     ok2, _ = _shell_command_allowed("npm test")
     assert ok2 is False
+
+
+# ---------------------------------------------------------------------------
+# Runtime shell allowlist extension (per-task user approvals)
+# ---------------------------------------------------------------------------
+
+def test_runtime_allowlist_extension_permits_approved_binary() -> None:
+    """Binaries added inside a scope are executable; env allowlist still wins."""
+    # Baseline: godot is not in the default env allowlist.
+    ok, reason = _shell_command_allowed("godot --version")
+    assert ok is False
+    assert "allowlist" in reason
+
+    with scoped_runtime_shell_allowlist():
+        extend_runtime_shell_allowlist(["godot", "Flutter.EXE"])
+        ok_g, _ = _shell_command_allowed("godot --headless project.tscn")
+        assert ok_g is True
+        ok_f, _ = _shell_command_allowed("flutter build apk")
+        assert ok_f is True
+        # Env-based allowlist continues to work unchanged.
+        ok_npm, _ = _shell_command_allowed("npm install")
+        assert ok_npm is True
+
+
+def test_runtime_allowlist_extension_scoped_to_task() -> None:
+    """Approvals must NOT leak past the ``scoped_runtime_shell_allowlist`` block."""
+    with scoped_runtime_shell_allowlist():
+        extend_runtime_shell_allowlist(["godot"])
+        assert _shell_command_allowed("godot --version")[0] is True
+
+    # After scope exit — godot once again needs approval.
+    ok, reason = _shell_command_allowed("godot --version")
+    assert ok is False
+    assert "allowlist" in reason
+
+
+def test_runtime_allowlist_extension_idempotent_dedup() -> None:
+    """Extending twice with the same binary should not double-count it."""
+    with scoped_runtime_shell_allowlist():
+        extend_runtime_shell_allowlist(["godot"])
+        extend_runtime_shell_allowlist(["GODOT"])  # case-fold
+        # Behaviour check: still permits godot exactly once.
+        assert _shell_command_allowed("godot --help")[0] is True
+
+
+def test_extract_command_binary_cases() -> None:
+    """extract_command_binary normalises path + case + .exe suffix."""
+    assert extract_command_binary("godot --headless foo.tscn") == "godot"
+    assert extract_command_binary("/usr/local/bin/Flutter.EXE build ios") == "flutter"
+    assert extract_command_binary("") is None
+    assert extract_command_binary("# comment line") is None
+    # malformed shell — shlex raises → caller gets None (not an exception).
+    assert extract_command_binary("a \"b") is None
 
 
 # ---------------------------------------------------------------------------

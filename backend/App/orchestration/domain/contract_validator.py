@@ -16,7 +16,7 @@ import logging
 from datetime import datetime, timezone
 import uuid
 from dataclasses import dataclass
-from typing import Any, Optional, TypedDict
+from typing import Any, Optional, TypedDict, cast
 
 _logger = logging.getLogger(__name__)
 
@@ -329,10 +329,12 @@ class ContractValidator:
                     idx, msg_id, task_id,
                 )
 
-        # Accumulate into coverage map
+        # Accumulate into coverage map.  Cast widens TypedDict →
+        # ``dict[str, Any]`` for the mutable map; TypedDict is not a subtype
+        # of ``dict[str, Any]`` in mypy even though they share the runtime.
         if task_id:
             self._evidence_map.setdefault(task_id, []).extend(
-                [item for item in evidence if isinstance(item, dict)]
+                [cast(dict[str, Any], item) for item in evidence if isinstance(item, dict)]
             )
 
         if hallucinated:
@@ -475,8 +477,14 @@ class ContractValidator:
         operation: str = "",
         recoverable: bool = False,
     ) -> ProtocolMessage:
-        """Build a protocol-compliant ERROR message."""
-        return {
+        """Build a protocol-compliant ERROR message.
+
+        Cast widens the concrete dict to ``ProtocolMessage``; the ``"from"``
+        key is part of the wire protocol but is not representable as an
+        identifier in Python, so the TypedDict uses ``from_`` and the
+        return cast reconciles the two.
+        """
+        return cast(ProtocolMessage, {
             "id": f"msg-{uuid.uuid4().hex[:12]}",
             "type": "ERROR",
             "from": from_agent,
@@ -512,7 +520,7 @@ class ContractValidator:
                 "max_attempts": 1,
                 "requires_action": False,
             },
-        }
+        })
 
 
 # Module-level singleton for use across the orchestrator
@@ -569,7 +577,7 @@ def normalize_evidence(evidence: ProtocolEvidence) -> ProtocolEvidence:
     if "size" not in result:
         result["size"] = len(data_str.encode("utf-8", errors="replace"))
 
-    return result
+    return cast(ProtocolEvidence, result)
 
 
 def normalize_evidence_list(evidence_list: list[ProtocolEvidence]) -> list[ProtocolEvidence]:
@@ -646,7 +654,7 @@ def validate_agent_exchange(
             "requires_action": True,
         },
     }
-    validator.validate_outgoing(request_msg)
+    validator.validate_outgoing(cast(ProtocolMessage, request_msg))
 
     response_msg = {
         "id": f"msg-{uuid.uuid4().hex[:12]}",
@@ -687,4 +695,4 @@ def validate_agent_exchange(
             "requires_action": False,
         },
     }
-    validator.validate_incoming(response_msg)
+    validator.validate_incoming(cast(ProtocolMessage, response_msg))

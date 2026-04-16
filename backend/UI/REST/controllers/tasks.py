@@ -159,15 +159,34 @@ def get_clarify_questions(task_id: str, request: Request) -> JSONResponse:
     })
 
 
-@router.get("/v1/tasks/{task_id}/checkpoints")
-async def get_task_checkpoints(task_id: str, request: Request) -> JSONResponse:
-    """Return saved checkpoints for *task_id* (K-3)."""
-    from backend.App.orchestration.application.checkpoint_manager import CheckpointManager
+@router.get("/v1/tasks/{task_id}/metrics")
+def get_task_metrics(task_id: str) -> JSONResponse:
+    """Return per-step token and timing metrics for a specific task.
 
-    # Use checkpoint manager attached to app state, or a fresh in-memory instance
-    mgr: CheckpointManager = getattr(request.app.state, "checkpoint_manager", None) or CheckpointManager()
-    checkpoints = mgr.list_checkpoints(task_id)
-    return JSONResponse(content={"task_id": task_id, "checkpoints": checkpoints})
+    Uses ``snapshot_for_task`` from step_metrics to retrieve in-process
+    counters accumulated during pipeline execution.  The response is shaped
+    for the StepTokensPanel frontend component.
+    """
+    from backend.App.integrations.infrastructure.observability.step_metrics import (
+        snapshot_for_task,
+    )
+
+    data = snapshot_for_task(task_id)
+    raw_steps: dict = data.get("steps", {})
+
+    steps = []
+    for step_id, info in raw_steps.items():
+        tokens: dict = info.get("tokens", {})
+        steps.append({
+            "step_id": step_id,
+            "count": info.get("count", 0),
+            "p50_ms": info.get("p50_ms", 0.0),
+            "input_tokens": tokens.get("input_tokens", 0),
+            "output_tokens": tokens.get("output_tokens", 0),
+            "tool_calls_count": tokens.get("tool_calls_count", 0),
+        })
+
+    return JSONResponse({"steps": steps})
 
 
 @router.get("/v1/background-recommendations")

@@ -1,8 +1,9 @@
 """Arch pipeline nodes: arch, review_stack, review_arch, human_arch, ba_arch_debate, merge_spec, review_spec, human_spec."""
 from __future__ import annotations
 
+import logging
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from backend.App.orchestration.infrastructure.agents.arch_agent import ArchitectAgent
@@ -32,8 +33,10 @@ from backend.App.orchestration.application.nodes._shared import (
 )
 from backend.App.orchestration.application.nodes._prompt_builders import _run_agent_with_boundary
 
+_log = logging.getLogger(__name__)
 
-def _repo_memory_facts(repo_evidence: list[dict[str, Any]]) -> list[str]:
+
+def _repo_memory_facts(repo_evidence: Sequence[Mapping[str, Any]]) -> list[str]:
     facts: list[str] = []
     for item in repo_evidence:
         path = str(item.get("path") or "").strip()
@@ -111,7 +114,7 @@ def arch_node(state: PipelineState) -> dict[str, Any]:
         ctx
         + _swarm_prompt_prefix(state)
         + planning_mcp_tool_instruction(state)
-        + _project_knowledge_block(state)
+        + _project_knowledge_block(state, step_id="architect")
         + "User task:\n"
         + f"{plan_ctx}\n\n"
         + "PM decomposition:\n"
@@ -329,6 +332,18 @@ def ba_arch_debate_node(state: PipelineState) -> dict[str, Any]:
     )
     agent = _make_reviewer_agent(state)
     debate_output = _run_agent_with_boundary(state, agent, prompt)
+    # Retry on empty output
+    if not (debate_output or "").strip():
+        _log.warning(
+            "ba_arch_debate_node: model returned empty output — retrying. task_id=%s",
+            (state.get("task_id") or "")[:36],
+        )
+        debate_output = _run_agent_with_boundary(state, agent, prompt)
+    if not (debate_output or "").strip():
+        _log.error(
+            "ba_arch_debate_node: model returned empty output after retry. task_id=%s",
+            (state.get("task_id") or "")[:36],
+        )
     if (debate_output or "").strip():
         from backend.App.workspace.application.doc_workspace import write_step_wiki
         write_step_wiki(state, "ba_arch_debate", debate_output)

@@ -23,6 +23,26 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+try:
+    import requests  # type: ignore[import-untyped]
+except ImportError as _requests_import_error:  # explicit named binding
+    requests = None  # type: ignore[assignment]
+    _REQUESTS_IMPORT_ERROR: Optional[BaseException] = _requests_import_error
+else:
+    _REQUESTS_IMPORT_ERROR = None
+
+
+def _require_requests() -> Any:
+    """Return the ``requests`` module or raise an actionable error."""
+    if requests is None:
+        raise RuntimeError(
+            "'requests' package is required for web search providers — "
+            "install with `pip install requests`. "
+            f"Original import error: {_REQUESTS_IMPORT_ERROR!r}"
+        )
+    return requests
+
+
 logger = logging.getLogger(__name__)
 
 FREE_TIER_LIMIT = 1_000  # requests per provider per calendar month
@@ -145,10 +165,7 @@ def select_provider(
 # ---------------------------------------------------------------------------
 
 def _search_tavily(query: str, api_key: str, max_results: int) -> list[dict[str, str]]:
-    try:
-        import requests as _req  # type: ignore[import]
-    except ImportError:
-        raise RuntimeError("'requests' package is required for Tavily search — pip install requests")
+    _req = _require_requests()
     resp = _req.post(
         "https://api.tavily.com/search",
         json={"api_key": api_key, "query": query, "max_results": max_results},
@@ -167,10 +184,7 @@ def _search_tavily(query: str, api_key: str, max_results: int) -> list[dict[str,
 
 
 def _search_exa(query: str, api_key: str, max_results: int) -> list[dict[str, str]]:
-    try:
-        import requests as _req  # type: ignore[import]
-    except ImportError:
-        raise RuntimeError("'requests' package is required for Exa search — pip install requests")
+    _req = _require_requests()
     resp = _req.post(
         "https://api.exa.ai/search",
         headers={"x-api-key": api_key, "Content-Type": "application/json"},
@@ -191,10 +205,7 @@ def _search_exa(query: str, api_key: str, max_results: int) -> list[dict[str, st
 
 
 def _search_scrapingdog(query: str, api_key: str, max_results: int) -> list[dict[str, str]]:
-    try:
-        import requests as _req  # type: ignore[import]
-    except ImportError:
-        raise RuntimeError("'requests' package is required for ScrapingDog search — pip install requests")
+    _req = _require_requests()
     resp = _req.get(
         "https://api.scrapingdog.com/google",
         params={

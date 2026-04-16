@@ -21,6 +21,7 @@ from backend.App.orchestration.infrastructure.human_approval import (
 from backend.App.orchestration.infrastructure.shell_approval import (
     complete_shell_approval,
     pending_shell_commands,
+    pending_shell_payload,
 )
 from backend.UI.REST.schemas import _HumanConfirmRequest, _ShellConfirmRequest
 from backend.UI.REST.task_instance import task_store
@@ -30,14 +31,37 @@ router = APIRouter()
 
 @router.get("/v1/tasks/{task_id}/pending-shell")
 async def get_pending_shell(task_id: str) -> JSONResponse:
-    """Return the list of shell commands waiting for user approval."""
+    """Return the list of shell commands waiting for user approval.
+
+    Also exposes ``needs_allowlist`` (binaries the agent is asking the user to
+    grant per-task permission for, e.g. ``godot`` on a gamedev project) and
+    ``already_allowed`` (binaries already in ``SWARM_SHELL_ALLOWLIST``) so the
+    UI can render a meaningful consent screen — the legacy ``commands`` field
+    is preserved for old clients.
+    """
     try:
         task_store.get_task(task_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Task not found") from exc
-    cmds = pending_shell_commands(task_id)
+    payload = pending_shell_payload(task_id)
+    if payload is None:
+        return JSONResponse(
+            content={
+                "task_id": task_id,
+                "commands": [],
+                "needs_allowlist": [],
+                "already_allowed": [],
+                "pending": False,
+            }
+        )
     return JSONResponse(
-        content={"task_id": task_id, "commands": cmds or [], "pending": cmds is not None}
+        content={
+            "task_id": task_id,
+            "commands": payload["commands"],
+            "needs_allowlist": payload["needs_allowlist"],
+            "already_allowed": payload["already_allowed"],
+            "pending": True,
+        }
     )
 
 

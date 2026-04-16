@@ -30,7 +30,6 @@ from backend.UI.REST.controllers.tasks import router as _router_task_endpoints
 from backend.UI.REST.controllers.schedules import router as _router_schedules
 from backend.UI.REST.controllers.ui import router as _router_ui
 from backend.UI.REST.controllers.shell import router as _router_shell
-from backend.UI.REST.controllers.observability import router as _router_observability
 from backend.UI.REST.controllers.workspace import router as _router_workspace
 from backend.UI.REST.controllers.wiki import router as _router_wiki
 from backend.UI.REST.controllers.pipelines import router as _router_pipelines
@@ -49,6 +48,15 @@ task_store = _task_store_instance
 async def lifespan(app: FastAPI):
     container = AppContainer()
     container.wire(app)
+    # Kick off git update check in the background — never blocks startup.
+    # Surfaces via GET /v1/system/update-available so the UI can show a banner.
+    try:
+        from backend.App.integrations.infrastructure.update_check import (
+            run_update_check_in_background,
+        )
+        run_update_check_in_background()
+    except Exception:  # pragma: no cover — defensive; never block lifespan
+        pass
     try:
         yield
     finally:
@@ -95,7 +103,6 @@ app.include_router(_router_task_endpoints)
 app.include_router(_router_schedules)
 app.include_router(_router_ui)
 app.include_router(_router_shell)
-app.include_router(_router_observability)
 app.include_router(_router_workspace)
 app.include_router(_router_wiki)
 app.include_router(_router_pipelines)

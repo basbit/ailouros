@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+import os
+import re
 from collections.abc import Callable, Generator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from backend.App.orchestration.application.pipeline_runtime_support import (
     deliverable_write_mapping as _deliverable_write_mapping,
@@ -27,35 +29,84 @@ logger = logging.getLogger(__name__)
 
 _CRITICAL_REVIEW_STEP_TO_OUTPUT_KEY: dict[str, str] = {
     "review_pm": "pm_review_output",
+    "review_ba": "ba_review_output",
     "review_arch": "arch_review_output",
     "review_stack": "stack_review_output",
     "review_spec": "spec_review_output",
     "review_dev_lead": "dev_lead_review_output",
     "review_pm_tasks": "dev_lead_review_output",
+    "review_devops": "devops_review_output",
 }
 _PLANNING_REVIEW_RESUME_STEP: dict[str, str] = {
     "review_pm": "human_pm",
+    "review_ba": "human_ba",
     "review_stack": "human_arch",
     "review_arch": "human_arch",
     "review_dev_lead": "human_dev_lead",
     "review_pm_tasks": "human_dev_lead",
+    "review_devops": "human_devops",
 }
+# review_* → the agent step whose output is being reviewed. On NEEDS_WORK this
+# is the step the enforcement loop re-runs with the reviewer's feedback.
+# Missing entries here used to make the reviewer's NEEDS_WORK verdict
+# effectively a no-op (fixed 2026-04-16: review_ba, review_devops).
 _PLANNING_REVIEW_TARGET_STEP: dict[str, str] = {
     "review_pm": "pm",
+    "review_ba": "ba",
     "review_stack": "architect",
     "review_arch": "architect",
     "review_dev_lead": "dev_lead",
     "review_pm_tasks": "dev_lead",
+    "review_devops": "devops",
 }
 
+# Minimum characters in a review output to be considered "real" content
+# (review-rules §2: fail fast by default). A local 9B model that replies
+# just "VERDICT: NEEDS_WORK" with no analysis does not warrant another
+# round of retries — we escalate instead. Configurable for tests.
+_MIN_REVIEW_CONTENT_CHARS: int = int(os.getenv("SWARM_MIN_REVIEW_CONTENT_CHARS", "120"))
 
-def sync_pipeline_machine(state: PipelineState, machine: PipelineMachine) -> None:
+
+def _max_planning_review_retries() -> int:
+    """Planning-review-specific retry cap, falling back to step-wide default.
+
+    Resolution order:
+      1. ``SWARM_MAX_PLANNING_RETRIES`` (non-negative int) — specific.
+      2. ``SWARM_MAX_STEP_RETRIES`` (non-negative int) — project-wide.
+      3. ``2`` — safe default for reasoning-heavy local models.
+    """
+    for var in ("SWARM_MAX_PLANNING_RETRIES", "SWARM_MAX_STEP_RETRIES"):
+        raw = os.getenv(var, "").strip()
+        if not raw:
+            continue
+        try:
+            val = int(raw)
+        except ValueError:
+            logger.warning("%s=%r is not an int, ignoring", var, raw)
+            continue
+        return max(0, val)
+    return 2
+
+
+def _is_empty_review(review_output: str | None) -> bool:
+    """Return True if reviewer output is too short to carry meaningful feedback.
+
+    Threshold is ``_MIN_REVIEW_CONTENT_CHARS`` — anything shorter is
+    treated as a non-review (e.g. bare "VERDICT: NEEDS_WORK" with no
+    analysis). Used to short-circuit the retry loop.
+    """
+    if not review_output:
+        return True
+    return len(review_output.strip()) < _MIN_REVIEW_CONTENT_CHARS
+
+
+def sync_pipeline_machine(state: Any, machine: PipelineMachine) -> None:
     state["pipeline_phase"] = machine.phase.value
     state["pipeline_machine"] = machine.to_dict()
 
 
 def transition_pipeline_phase(
-    state: PipelineState,
+    state: Any,
     machine: PipelineMachine,
     phase: PipelinePhase,
     *,
@@ -141,7 +192,7 @@ def enforce_planning_review_gate(
     # Only block for human approval when the human gate step is actually in
     # the user's pipeline.  If they chose not to include human_dev_lead (etc.),
     # forcing a human pause is unexpected — log a warning and continue.
-    pipeline_step_ids: list[str] = state.get("_pipeline_step_ids") or []
+    pipeline_step_ids = cast(list[str], state.get("_pipeline_step_ids") or [])
     if resume_step not in pipeline_step_ids:
         logger.warning(
             "Planning gate: %s returned NEEDS_WORK but human gate %r is NOT in "
@@ -169,7 +220,7 @@ def enforce_planning_review_gate(
 
 def _should_block_for_human(state: PipelineState, human_step: str) -> bool:
     """Return True only when the human gate is actually in the user's pipeline."""
-    pipeline_step_ids: list[str] = state.get("_pipeline_step_ids") or []
+    pipeline_step_ids = cast(list[str], state.get("_pipeline_step_ids") or [])
     return human_step in pipeline_step_ids
 
 
@@ -225,12 +276,17 @@ def run_post_dev_verification_gates(state: PipelineState) -> list[dict[str, Any]
     from backend.App.orchestration.domain.gates import (
         DevManifest,
         TRUSTED_VERIFICATION_COMMANDS,
-        gates_passed,
         parse_dev_manifest,
+    )
+    from backend.App.orchestration.application.gate_runner import (
+        gates_passed,
         run_all_gates,
     )
     from backend.App.workspace.infrastructure.patch_parser import apply_from_devops_and_dev_outputs
 
+    # §ADR Phase 2 — cast once for ephemeral-key writes (workspace_writes,
+    # dev_workspace_diff, _post_write_issues, verification_gate_warnings).
+    state_d = cast(dict[str, Any], state)
     workspace_root = str(state.get("workspace_root") or "").strip()
     if not workspace_root:
         return []
@@ -249,17 +305,72 @@ def run_post_dev_verification_gates(state: PipelineState) -> list[dict[str, Any]
             workspace_path,
             run_shell=False,
         )
-        state["workspace_writes"] = workspace_writes
+        state_d["workspace_writes"] = workspace_writes
         # Capture diff for human review gate display
         from backend.App.workspace.infrastructure.workspace_diff import capture_workspace_diff
         written = list(workspace_writes.get("written") or [])
         patched = list(workspace_writes.get("patched") or [])
         udiff_applied = list(workspace_writes.get("udiff_applied") or [])
         all_changed = sorted(set(written + patched + udiff_applied))
-        state["dev_workspace_diff"] = capture_workspace_diff(workspace_path, all_changed)
+        state_d["dev_workspace_diff"] = capture_workspace_diff(workspace_path, all_changed)
+
+        # ── Post-write integrity checks ──────────────────────────────
+        write_errors = list(workspace_writes.get("errors") or [])
+        if write_errors:
+            logger.warning(
+                "Post-dev verification: %d write error(s): %s",
+                len(write_errors), write_errors,
+            )
+            state_d.setdefault("_post_write_issues", []).append(
+                f"file_write_integrity: {write_errors}"
+            )
+
+        # Healed swarm_patch → swarm_file promotions are informational only
+        # (the file was still created). Surface them so the dev retry prompt
+        # can teach the model the correct tag on the next round.
+        healed_patches = list(workspace_writes.get("healed_patches") or [])
+        if healed_patches:
+            logger.info(
+                "Post-dev verification: %d swarm_patch block(s) auto-healed to "
+                "swarm_file creates: %s", len(healed_patches), healed_patches,
+            )
+            state_d["_swarm_patch_healed_files"] = healed_patches
+
+        # Binary assets the dev tried to author as text cannot be fixed by
+        # re-prompting — they need the asset pipeline (see future-plan §23).
+        # Emit a distinct signal so the retry loop does not flood the model
+        # with "no ======= separator" errors for a .png file.
+        binary_assets = list(workspace_writes.get("binary_assets_requested") or [])
+        if binary_assets:
+            logger.warning(
+                "Post-dev verification: %d binary asset(s) requested via text tag — "
+                "asset pipeline not yet implemented, see future-plan §23: %s",
+                len(binary_assets), binary_assets,
+            )
+            state_d.setdefault("_post_write_issues", []).append(
+                f"binary_asset_requested: {binary_assets}"
+            )
+            state_d["_binary_assets_needed"] = binary_assets
+
+        # Verify written files actually exist on disk
+        missing_after_write = []
+        for rel_path in written:
+            full_path = workspace_path / rel_path
+            if not full_path.is_file():
+                missing_after_write.append(rel_path)
+        if missing_after_write:
+            logger.error(
+                "Post-dev verification: %d file(s) missing after write: %s",
+                len(missing_after_write), missing_after_write,
+            )
+            state_d.setdefault("_post_write_issues", []).append(
+                f"file_existence_check: {missing_after_write}"
+            )
+        # ── End post-write integrity checks ──────────────────────────
+
         if (
             workspace_writes.get("parsed", 0) == 0
-            and int(state.get("dev_mcp_write_count") or 0) == 0
+            and int(cast(Any, state.get("dev_mcp_write_count")) or 0) == 0
         ):
             logger.warning(
                 "verification gate: dev step produced no detected workspace writes "
@@ -332,7 +443,7 @@ def run_post_dev_verification_gates(state: PipelineState) -> list[dict[str, Any]
         must_exist_files=must_exist_files,
         spec_symbols=spec_symbols,
         production_paths=production_paths,
-        stub_allow_list=placeholder_allow_list,
+        stub_allow_list=cast(Any, placeholder_allow_list),
         workspace_writes=workspace_writes,
     )
     gate_names_run = [result.gate_name for result in results]
@@ -344,14 +455,26 @@ def run_post_dev_verification_gates(state: PipelineState) -> list[dict[str, Any]
             "verification contract: trusted verification commands declared but not run: %s — continuing",
             [entry["command"] for entry in missing_trusted],
         )
-    state["verification_gates"] = [result.to_dict() for result in results]
-    state["dev_manifest"] = manifest.to_dict()
-    state["verification_contract"] = {
+    state_d["verification_gates"] = [result.to_dict() for result in results]
+    state_d["dev_manifest"] = manifest.to_dict()
+    state_d["verification_contract"] = {
         "expected_trusted_commands": expected_trusted_commands,
         "manifest_trusted_commands": list(manifest.trusted_verification_commands),
         "gates_run": gate_names_run,
     }
-    state["deliverable_write_mapping"] = _deliverable_write_mapping(state)
+    state_d["deliverable_write_mapping"] = _deliverable_write_mapping(state)
+
+    # Append post-write integrity issues to gate warnings
+    post_write_issues = state_d.pop("_post_write_issues", None)
+    if post_write_issues:
+        existing_warnings = state_d.get("verification_gate_warnings", "")
+        integrity_summary = "; ".join(post_write_issues)
+        state_d["verification_gate_warnings"] = (
+            f"{existing_warnings}; {integrity_summary}" if existing_warnings
+            else integrity_summary
+        )
+        logger.warning("Post-write integrity issues added to gate warnings: %s", integrity_summary)
+
     if not gates_passed(results):
         failed = [result for result in results if not result.passed]
         summary = "; ".join(
@@ -362,12 +485,94 @@ def run_post_dev_verification_gates(state: PipelineState) -> list[dict[str, Any]
             "verification gates failed before QA: %s — continuing to QA so it can report on failures",
             summary,
         )
-        state["verification_gate_warnings"] = summary
+        existing = state_d.get("verification_gate_warnings", "")
+        state_d["verification_gate_warnings"] = (
+            f"{existing}; {summary}" if existing else summary
+        )
     return [result.to_dict() for result in results]
 
 
+_SWARM_FILE_MIN_LINES = int(os.getenv("SWARM_FILE_TAG_MIN_LINES", "20"))
+_CODE_FENCE_RE = re.compile(
+    r"```(?P<lang>[a-zA-Z0-9_.+-]*)\n(?P<body>.*?)```",
+    re.DOTALL,
+)
+_SWARM_FILE_TAG_RE = re.compile(r"<swarm_file\s+path=", re.IGNORECASE)
+
+
+def _output_has_unwrapped_code(dev_output: str) -> bool:
+    """Return True when dev_output has code fences > _SWARM_FILE_MIN_LINES lines
+    that are NOT preceded by a ``<swarm_file path=…>`` tag on a nearby line.
+
+    Enabled only when SWARM_ENFORCE_SWARM_FILE_TAGS=1 (env, default: 0).
+    """
+    if os.getenv("SWARM_ENFORCE_SWARM_FILE_TAGS", "0").strip() not in ("1", "true", "yes"):
+        return False
+    # Quick bypass: if swarm_file tags cover all large code blocks, trust the agent
+    swarm_tag_count = len(_SWARM_FILE_TAG_RE.findall(dev_output))
+    if swarm_tag_count > 0:
+        # Count large code blocks; if all are wrapped, skip detailed check
+        large_blocks = sum(
+            1 for m in _CODE_FENCE_RE.finditer(dev_output)
+            if (m.group("body") or "").count("\n") >= _SWARM_FILE_MIN_LINES
+        )
+        if swarm_tag_count >= large_blocks:
+            return False
+    for m in _CODE_FENCE_RE.finditer(dev_output):
+        body = m.group("body") or ""
+        if body.count("\n") >= _SWARM_FILE_MIN_LINES:
+            return True
+    return False
+
+
+def _enforce_swarm_file_tags(
+    state: "PipelineState",
+    *,
+    resolve_step: Callable,
+    base_agent_config: dict,
+    run_step_with_stream_progress: Callable,
+    emit_completed: Callable,
+) -> "Generator[dict, None, None]":
+    """§10.4 — Yield enforcement events; re-prompt Dev once if code fences lack <swarm_file> wrappers."""
+    dev_output = str(state.get("dev_output") or "")
+    if not _output_has_unwrapped_code(dev_output):
+        return
+
+    logger.warning(
+        "§10.4 swarm_file enforcement: dev_output contains code fences > %d lines "
+        "without <swarm_file> wrappers — re-prompting Dev once.",
+        _SWARM_FILE_MIN_LINES,
+    )
+    yield {
+        "agent": "orchestrator",
+        "status": "progress",
+        "message": (
+            "⚠ Dev output contains code blocks without <swarm_file path='...'> wrappers. "
+            "Re-prompting Dev to wrap all file content correctly."
+        ),
+    }
+    # Inject re-prompt instruction into state so the dev node picks it up
+    cast(dict[str, Any], state)["_swarm_file_reprompt"] = (
+        "Your previous output contained code blocks that were NOT wrapped in "
+        "<swarm_file path='relative/path'> tags. "
+        "This is required for the workspace artifact tracker to record which files you changed. "
+        "Please re-output EVERY file you intend to write, each wrapped in "
+        "<swarm_file path='path/relative/to/workspace'>…content…</swarm_file>. "
+        "Do not repeat unchanged files. Only include files that require changes."
+    )
+    try:
+        _, dev_func = resolve_step("dev", base_agent_config)
+    except Exception as exc:
+        logger.warning("swarm_file enforcement: could not resolve dev step: %s", exc)
+        return
+    yield {"agent": "dev", "status": "in_progress", "message": "dev (swarm_file re-wrap)"}
+    yield from run_step_with_stream_progress("dev", dev_func, state)
+    yield emit_completed("dev", state)
+    cast(dict[str, Any], state).pop("_swarm_file_reprompt", None)
+
+
 def prepare_pipeline_machine_for_step(
-    state: PipelineState,
+    state: Any,
     machine: PipelineMachine,
     step_id: str,
 ) -> None:
@@ -378,7 +583,7 @@ def prepare_pipeline_machine_for_step(
 
 
 def run_post_step_enforcement(
-    state: PipelineState,
+    state: Any,
     machine: PipelineMachine,
     step_id: str,
     base_agent_config: dict[str, Any],
@@ -387,13 +592,18 @@ def run_post_step_enforcement(
     emit_completed: Callable[..., dict[str, Any]],
 ) -> Generator[dict[str, Any], None, None]:
     if step_id in _PLANNING_REVIEW_TARGET_STEP:
-        from backend.App.orchestration.application.graph_builder import _max_step_retries_env
         from backend.App.orchestration.application.pipeline_state_helpers import get_step_retries
         from backend.App.orchestration.domain.quality_gate_policy import (
             extract_verdict as _qg_extract_verdict,
             should_retry as _qg_should_retry,
         )
-        import os
+        # NOTE: ``os`` is already imported at module level. Do NOT re-import
+        # inside the function — Python would then treat ``os`` as a local in
+        # the entire function body, and every branch that uses ``os.getenv``
+        # but does not hit this ``if step_id in _PLANNING_REVIEW_TARGET_STEP``
+        # path (e.g. the ``review_dev`` branch at the stale-review similarity
+        # check) would raise ``UnboundLocalError: local variable 'os'
+        # referenced before assignment``.
 
         review_output_key = _CRITICAL_REVIEW_STEP_TO_OUTPUT_KEY.get(step_id, f"{step_id}_output")
         review_output = str(state.get(review_output_key) or "")
@@ -406,8 +616,30 @@ def run_post_step_enforcement(
         }
         target_step = _PLANNING_REVIEW_TARGET_STEP[step_id]
         retries = get_step_retries(state, target_step)
-        max_retries = _max_step_retries_env()
+        max_retries = _max_planning_review_retries()
         decision = _qg_should_retry(verdict, retries, max_retries) if auto_retry_enabled else "escalate"
+
+        # §3 Empty-review short-circuit: a bare "VERDICT: NEEDS_WORK" with
+        # no analysis is not actionable — escalate without spending another
+        # round of LLM budget on a retry. See bug aec02899 (108k tokens burned
+        # because local 9B kept emitting canned near-empty reviews).
+        if verdict == "NEEDS_WORK" and _is_empty_review(review_output):
+            logger.warning(
+                "Planning gate: %s returned NEEDS_WORK with empty/short review "
+                "(%d chars < %d threshold) — escalating without retry (task_id=%s)",
+                step_id, len(review_output.strip()), _MIN_REVIEW_CONTENT_CHARS,
+                (state.get("task_id") or "")[:36],
+            )
+            yield {
+                "agent": "orchestrator",
+                "status": "progress",
+                "message": (
+                    f"Planning gate: {step_id} returned NEEDS_WORK but review is "
+                    f"empty/too short ({len(review_output.strip())} chars). "
+                    "Escalating without retry — check reviewer prompt/model."
+                ),
+            }
+            decision = "escalate"
 
         prev_review_text = review_output
 
@@ -423,6 +655,17 @@ def run_post_step_enforcement(
             step_retries = dict(state.get("step_retries") or {})
             step_retries[target_step] = retries + 1
             state["step_retries"] = step_retries
+
+            # Ensure reviewer feedback is stored in state BEFORE re-running the target step.
+            # This allows pm_node/arch_node to pick it up via state["planning_review_feedback"].
+            feedback = dict(state.get("planning_review_feedback") or {})
+            if target_step and review_output:
+                feedback[target_step] = review_output
+                state["planning_review_feedback"] = feedback
+                logger.info(
+                    "Planning gate: injected %d chars of reviewer feedback for %s retry",
+                    len(review_output), target_step,
+                )
 
             _, target_func = resolve_step(target_step, base_agent_config)
             yield {"agent": target_step, "status": "in_progress", "message": f"{target_step} (planning retry)"}
@@ -456,6 +699,26 @@ def run_post_step_enforcement(
                         (state.get("task_id") or "")[:36],
                     )
                     verdict = "OK"
+            # Empty-review short-circuit inside the loop too: if a retry
+            # produced a one-liner verdict we treat it like the initial
+            # empty case and escalate instead of continuing to burn tokens.
+            if verdict == "NEEDS_WORK" and _is_empty_review(review_output):
+                logger.warning(
+                    "Planning gate: %s retry produced empty/short review "
+                    "(%d chars) — escalating task_id=%s",
+                    step_id, len(review_output.strip()),
+                    (state.get("task_id") or "")[:36],
+                )
+                yield {
+                    "agent": "orchestrator",
+                    "status": "progress",
+                    "message": (
+                        f"Planning gate: {step_id} retry returned empty/short review "
+                        f"({len(review_output.strip())} chars). Escalating."
+                    ),
+                }
+                break
+
             prev_review_text = review_output
 
             retries = get_step_retries(state, target_step)
@@ -474,6 +737,18 @@ def run_post_step_enforcement(
         enforce_planning_review_gate(state, step_id=step_id, review_output=review_output)
 
     if step_id == "dev":
+        # §10.4 — Enforce <swarm_file> tagging for all file writes.
+        # If the Dev output contains large code fences that lack <swarm_file> wrappers,
+        # re-prompt once with an explicit instruction to add them.
+        _yield_from_swarm_file_enforcement = _enforce_swarm_file_tags(
+            state,
+            resolve_step=resolve_step,
+            base_agent_config=base_agent_config,
+            run_step_with_stream_progress=run_step_with_stream_progress,
+            emit_completed=emit_completed,
+        )
+        yield from _yield_from_swarm_file_enforcement
+
         gate_results = run_post_dev_verification_gates(state)
         transition_pipeline_phase(state, machine, PipelinePhase.VERIFY, source="verification_layer")
         if gate_results:
@@ -679,7 +954,7 @@ def run_post_step_enforcement(
                 )
 
 
-def finalize_pipeline_machine(state: PipelineState, machine: PipelineMachine) -> None:
+def finalize_pipeline_machine(state: Any, machine: PipelineMachine) -> None:
     if machine.phase in (PipelinePhase.VERIFY, PipelinePhase.QA) and not (state.get("open_defects") or []):
         transition_pipeline_phase(state, machine, PipelinePhase.DONE, source="verification_layer")
     _finalize_pipeline_metrics(state)

@@ -102,20 +102,32 @@ def _local_llm_serialize_lock_acquire_timeout_sec() -> Optional[float]:
 def _local_llm_request_timeout_sec(resolved_base_url: str) -> Optional[float]:
     """Return per-request HTTP timeout (seconds) for local LLM calls.
 
+    Resolution order:
+      1. ``SWARM_LOCAL_LLM_TIMEOUT_SEC``  — local-only override, wins when set
+      2. ``SWARM_LLM_CALL_TIMEOUT_SEC``   — global per-call timeout
+      3. default: 600 s (10 min) — prevents runaway reasoning models from
+         hanging the pipeline forever. Set the env var to "0" or "none" to
+         disable the timeout explicitly (review-rules §2: fail fast by
+         default, opt-out must be explicit).
+
     Only applied when the target is a local URL (LM Studio / Ollama).
-    Set ``SWARM_LOCAL_LLM_TIMEOUT_SEC`` to cap runaway reasoning models.
-    Default: no timeout (None).
     """
     if not _is_local_openai_compat_base_url(resolved_base_url):
         return None
-    env_value = os.getenv("SWARM_LOCAL_LLM_TIMEOUT_SEC", "").strip()
-    if not env_value:
-        return None
-    try:
-        parsed = float(env_value)
-        return parsed if parsed > 0 else None
-    except ValueError:
-        return None
+    for var in ("SWARM_LOCAL_LLM_TIMEOUT_SEC", "SWARM_LLM_CALL_TIMEOUT_SEC"):
+        env_value = os.getenv(var, "").strip().lower()
+        if not env_value:
+            continue
+        if env_value in {"0", "none", "off", "disabled"}:
+            return None
+        try:
+            parsed = float(env_value)
+            if parsed > 0:
+                return parsed
+        except ValueError:
+            logger.warning("%s=%r is not a number, falling back to default", var, env_value)
+    # Default — 10 min, enough for long-context reasoning but bounded.
+    return 600.0
 
 
 _REASONING_MODEL_KEYWORDS = frozenset(
@@ -129,24 +141,86 @@ def _is_reasoning_model(model: str) -> bool:
     return any(kw in lowered for kw in _REASONING_MODEL_KEYWORDS)
 
 
+_DEFAULT_REASONING_BUDGET_TOKENS: int = 4096
+
+
 def _local_llm_reasoning_budget(model: str, resolved_base_url: str) -> Optional[int]:
     """Return ``thinking_budget_tokens`` cap for local reasoning models, or None.
 
-    Set ``SWARM_LOCAL_LLM_REASONING_BUDGET=1024`` to cap reasoning token usage.
-    Default: no cap (None).  Only applied to local URLs and known reasoning models.
+    Bug aec02899 root cause: ``qwen3.5-9b-ud-mlx`` entered an unbounded
+    thinking loop after prompt processing reached 99.9% — LM Studio kept
+    the connection open but produced no output tokens for 3+ hours. The
+    fix is to **always apply a reasoning cap for known reasoning models**
+    instead of defaulting to "unlimited". Without the cap the model can
+    spend arbitrarily many tokens inside ``<thinking>`` blocks.
+
+    Resolution order:
+      1. ``SWARM_LOCAL_LLM_REASONING_BUDGET`` (positive int)  — global env override.
+      2. ``"off"`` / ``"none"`` / ``"0"``  — explicit opt-out (no cap).
+      3. ContextBudget.reasoning_budget_tokens for the **current pipeline step**
+         (pinned by :mod:`current_step` — see ``step_decorator``). This is how
+         Dev/QA get 1024 while Architect/Judge keep 4096 without per-call
+         plumbing.
+      4. default: 4096  — enough for structured review/plan, bounded.
+
+    Only applied to local URLs and reasoning models (``qwen3``, ``deepseek-r1``, …).
+    Cloud calls (Anthropic/OpenAI) are untouched; they have their own budget controls.
     """
     if not _is_local_openai_compat_base_url(resolved_base_url):
         return None
     if not _is_reasoning_model(model):
         return None
-    env_value = os.getenv("SWARM_LOCAL_LLM_REASONING_BUDGET", "").strip()
-    if not env_value:
+    env_value = os.getenv("SWARM_LOCAL_LLM_REASONING_BUDGET", "").strip().lower()
+    if env_value in {"off", "none", "0", "disabled", "unlimited"}:
+        return None  # explicit opt-out — user knows the risk
+    if env_value:
+        try:
+            cap = int(env_value)
+            if cap > 0:
+                return cap
+            return None
+        except ValueError:
+            logger.warning(
+                "SWARM_LOCAL_LLM_REASONING_BUDGET=%r is not an int, falling back to step budget",
+                env_value,
+            )
+
+    # Per-step budget via ContextBudget — honours role-aware tuning
+    # (Dev/QA=1024, review_*=2048, Architect/Judge=4096) without forcing
+    # every call site to thread a step_id kwarg through ``ask_model``.
+    step_budget = _step_context_reasoning_budget()
+    if step_budget is not None:
+        return step_budget if step_budget > 0 else None
+
+    return _DEFAULT_REASONING_BUDGET_TOKENS
+
+
+def _step_context_reasoning_budget() -> Optional[int]:
+    """Look up ``reasoning_budget_tokens`` for the currently active step.
+
+    Returns the value resolved by :func:`get_context_budget` when a step
+    is pinned via :func:`~backend.App.orchestration.application.current_step.current_step`;
+    ``None`` when no step is active or the module isn't importable (e.g.
+    some unit tests stub out the orchestration layer).
+    """
+    try:
+        from backend.App.orchestration.application.current_step import (
+            get_current_agent_config,
+            get_current_step_id,
+        )
+        from backend.App.orchestration.application.context_budget import get_context_budget
+    except ImportError:
+        return None
+
+    step_id = get_current_step_id()
+    if not step_id:
         return None
     try:
-        cap = int(env_value)
-        return cap if cap > 0 else None
-    except ValueError:
+        budget = get_context_budget(step_id, get_current_agent_config())
+    except Exception as exc:  # defensive — don't break LLM calls if profiles malformed
+        logger.debug("_step_context_reasoning_budget: resolution failed (%s)", exc)
         return None
+    return int(getattr(budget, "reasoning_budget_tokens", 0) or 0) or None
 
 
 class LLMRouter:
@@ -285,8 +359,8 @@ class LLMRouter:
         if not resolved_base_url:
             resolved_base_url = OLLAMA_BASE_URL
 
-        eff_base_url_for_pool = base_url or os.getenv("OPENAI_BASE_URL", OLLAMA_BASE_URL)
-        eff_api_key_for_pool = api_key or os.getenv("OPENAI_API_KEY", "ollama")
+        eff_base_url_for_pool = base_url or os.getenv("OPENAI_BASE_URL", OLLAMA_BASE_URL) or ""
+        eff_api_key_for_pool = api_key or os.getenv("OPENAI_API_KEY", "ollama") or ""
         client = self._pool.get(eff_base_url_for_pool, eff_api_key_for_pool)
 
         create_kwargs = merge_openai_compat_max_tokens(
@@ -351,7 +425,7 @@ class LLMRouter:
             raise ValueError(f"LLM returned empty choices list (model={model})")
         text = response.choices[0].message.content or ""
         usage_obj = response.usage
-        usage: dict[str, Any] = {
+        usage = {
             "input_tokens": (getattr(usage_obj, "prompt_tokens", None) or 0),
             "output_tokens": (getattr(usage_obj, "completion_tokens", None) or 0),
             "model": model,

@@ -93,7 +93,7 @@ class PipelineRunner:
             compiled = PipelineGraphBuilder().build_for_topology(topology, agent_config)
             init = _initial_pipeline_state(
                 user_input,
-                agent_config,
+                agent_config or {},
                 workspace_root=workspace_root,
                 workspace_apply_writes=workspace_apply_writes,
                 task_id=task_id,
@@ -108,7 +108,7 @@ class PipelineRunner:
         validate_pipeline_steps(pipeline_steps, agent_config)
         state = _initial_pipeline_state(
             user_input,
-            agent_config,
+            agent_config or {},
             workspace_root=workspace_root,
             workspace_apply_writes=workspace_apply_writes,
             task_id=task_id,
@@ -118,7 +118,7 @@ class PipelineRunner:
         for step_id in pipeline_steps:
             _, step_func = _resolve_pipeline_step(step_id, agent_config)
             try:
-                state.update(step_func(state))
+                cast(dict, state).update(step_func(state))
             except HumanApprovalRequired as exc:
                 exc.partial_state = _state_snapshot(state)
                 exc.resume_pipeline_step = step_id

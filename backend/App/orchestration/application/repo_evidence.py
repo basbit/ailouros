@@ -8,7 +8,7 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from backend.App.orchestration.domain.contract_validator import normalize_evidence
 
@@ -262,7 +262,7 @@ def validate_repo_evidence_against_workspace(
             normalized["excerpt_repaired"] = True
         normalized["excerpt_sha256"] = excerpt_sha256
         normalized["excerpt"] = actual_excerpt
-        normalized_transport = normalize_evidence(_repo_entry_to_transport_evidence(normalized))
+        normalized_transport = normalize_evidence(cast(Any, _repo_entry_to_transport_evidence(normalized)))
         normalized["transport_evidence"] = normalized_transport
         normalized["hash"] = normalized_transport.get("hash", excerpt_sha256)
         normalized["preview"] = normalized_transport.get("preview", actual_excerpt[:120].replace("\n", " "))
@@ -304,6 +304,36 @@ def enforce_repo_evidence_policy(
     return validated
 
 
+def _repo_evidence_max_retries() -> int:
+    """Upper bound on extra LLM calls inside ``ensure_validated_repo_evidence``.
+
+    0 — validate only, no retry.
+    1 — one full-answer correction pass.
+    2 (default) — full-answer correction + artifact-only repair.
+    """
+    raw = os.getenv("SWARM_REPO_EVIDENCE_MAX_RETRIES", "2").strip()
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"SWARM_REPO_EVIDENCE_MAX_RETRIES must be an integer, got {raw!r}"
+        ) from exc
+    if value < 0 or value > 2:
+        raise RuntimeError(
+            f"SWARM_REPO_EVIDENCE_MAX_RETRIES must be 0, 1, or 2 (got {value})"
+        )
+    return value
+
+
+def _empty_unverified_result(raw_output: str) -> tuple[str, dict[str, Any]]:
+    return (raw_output or ""), {
+        "repo_evidence": [],
+        "unverified_claims": [],
+        "has_artifact": False,
+        "repair_failed": True,
+    }
+
+
 def ensure_validated_repo_evidence(
     *,
     raw_output: str,
@@ -319,7 +349,10 @@ def ensure_validated_repo_evidence(
     2. If needed, retry once with a normal full-answer correction prompt.
     3. If that still fails, do one artifact-only repair pass that requests only the
        canonical JSON block and then append it to the last narrative answer.
+
+    The number of retry LLM calls is capped by ``SWARM_REPO_EVIDENCE_MAX_RETRIES``.
     """
+    max_retries = _repo_evidence_max_retries()
     current_output = raw_output
     artifact = parse_repo_evidence_artifact(current_output)
     error_message = ""
@@ -335,6 +368,14 @@ def ensure_validated_repo_evidence(
             )
         except RuntimeError as exc:
             error_message = str(exc)
+
+    if max_retries < 1:
+        logger.warning(
+            "%s: repo_evidence validation failed and retries are disabled "
+            "(SWARM_REPO_EVIDENCE_MAX_RETRIES=0) — continuing with empty evidence",
+            step_id,
+        )
+        return _empty_unverified_result(raw_output)
 
     retry_prompt = _retry_prompt_for_repo_evidence_failure(
         base_prompt=base_prompt,
@@ -357,6 +398,15 @@ def ensure_validated_repo_evidence(
     else:
         error_message = "missing canonical repo_evidence JSON artifact after retry"
 
+    if max_retries < 2:
+        logger.warning(
+            "%s: repo_evidence still invalid after one retry and artifact-only "
+            "repair is disabled (SWARM_REPO_EVIDENCE_MAX_RETRIES=1) — continuing "
+            "with empty evidence",
+            step_id,
+        )
+        return _empty_unverified_result(current_output or raw_output)
+
     artifact_only_prompt = _artifact_only_retry_prompt_for_repo_evidence_failure(
         raw_output=current_output or raw_output,
         step_id=step_id,
@@ -370,12 +420,7 @@ def ensure_validated_repo_evidence(
             "continuing with empty evidence; downstream steps will use unverified claims only",
             step_id,
         )
-        return (current_output or raw_output or ""), {
-            "repo_evidence": [],
-            "unverified_claims": [],
-            "has_artifact": False,
-            "repair_failed": True,
-        }
+        return _empty_unverified_result(current_output or raw_output)
     try:
         validated = enforce_repo_evidence_policy(
             repaired_artifact,
@@ -388,12 +433,7 @@ def ensure_validated_repo_evidence(
             "continuing with empty evidence",
             step_id, exc,
         )
-        return (current_output or raw_output or ""), {
-            "repo_evidence": [],
-            "unverified_claims": [],
-            "has_artifact": False,
-            "repair_failed": True,
-        }
+        return _empty_unverified_result(current_output or raw_output)
 
     final_output = (current_output or raw_output or "").strip()
     repaired_block = artifact_only_output.strip()

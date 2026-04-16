@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 from anthropic import Anthropic
 
@@ -16,6 +16,9 @@ from backend.App.integrations.infrastructure.llm.prompt_size import (
     estimate_chat_request_size,
     log_request_size,
     maybe_warn_context_limit,
+)
+from backend.App.integrations.infrastructure.llm.prompt_cache import (
+    apply_anthropic_cache_control,
 )
 
 logger = logging.getLogger(__name__)
@@ -100,11 +103,13 @@ def _ask_anthropic(
     )
     client = _build_anthropic_client(anthropic_api_key, anthropic_base_url)
     model_name = model.replace("anthropic/", "", 1)
+    # M-8: apply prompt caching (cache_control on system + first user message)
+    system_param, chat_messages = apply_anthropic_cache_control(system_prompt, chat_messages)
     logger.info("Anthropic API messages.create: model=%r", model_name)
     response = client.messages.create(
         model=model_name,
-        system=system_prompt,
-        messages=chat_messages,
+        system=cast(Any, system_param),
+        messages=cast(Any, chat_messages),
         temperature=temperature,
         max_tokens=resolved_max_tokens,
         **kwargs,

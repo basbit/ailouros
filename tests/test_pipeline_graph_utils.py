@@ -211,7 +211,8 @@ def test_dev_review_router_needs_work_exhausted():
         return_value=2,
     ):
         result = _dev_review_router(state)
-    assert result == "continue"  # exhausted retries → continue
+    assert result == "escalate"  # exhausted retries → escalate to human
+    assert "escalation_warning" in state
 
 
 def test_dev_review_router_empty_review():

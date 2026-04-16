@@ -54,7 +54,8 @@ def e2e_node(state: PipelineState) -> dict[str, Any]:
         )
         from backend.App.testing.application.use_cases.run_e2e_suite import RunE2ESuite
 
-        artifacts_root = os.path.abspath(os.getenv("SWARM_ARTIFACTS_DIR", "var/artifacts"))
+        from backend.App.paths import artifacts_root as _anchored_artifacts_root
+        artifacts_root = str(_anchored_artifacts_root())
         runner = PlaywrightRunner()
         artifact_store = LocalArtifactStore(base_dir=artifacts_root)
         use_case = RunE2ESuite(runner=runner, artifact_store=artifact_store)

@@ -50,6 +50,21 @@ def test_direct_agent_run_is_confined_to_canonical_helper_and_human_nodes() -> N
         "backend/App/orchestration/application/nodes/qa.py": [
             'return {"qa_human_output": agent.run(bundle)}',
         ],
+        "backend/App/orchestration/application/nodes/marketing.py": [
+            'return {"seo_specialist_human_output": agent.run(bundle)}',
+            'return {"ai_citation_strategist_human_output": agent.run(bundle)}',
+            'return {"app_store_optimizer_human_output": agent.run(bundle)}',
+        ],
+        "backend/App/orchestration/application/nodes/design.py": [
+            'return {"ux_researcher_human_output": agent.run(bundle)}',
+            'return {"ux_architect_human_output": agent.run(bundle)}',
+            'return {"ui_designer_human_output": agent.run(bundle)}',
+        ],
+        # QuarantineAgent is a read-only summarizer with no tools — intentionally
+        # calls agent.run() outside the canonical helper as an isolation buffer.
+        "backend/App/orchestration/application/untrusted_content.py": [
+            "summary = agent.run(prompt)",
+        ],
     }
 
     violations: list[str] = []

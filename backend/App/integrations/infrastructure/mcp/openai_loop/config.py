@@ -28,7 +28,14 @@ class MCPLoopConfig:
     def from_env(cls) -> "MCPLoopConfig":
         """Read all knobs from environment variables and return a frozen config."""
         return cls(
-            max_rounds=int(os.getenv("SWARM_MCP_MAX_ROUNDS", "8")),
+            # Default 5 rounds (was 8). On a local reasoning model with a
+            # 20 KB prompt, each tool round re-prefills the accumulating
+            # conversation (~3–6 s/round prefill). Rounds 6–8 typically just
+            # repeat previous tool calls; the final format-enforcement retry
+            # at the end of the subtask catches the rare legitimate case.
+            # Operators can still bump SWARM_MCP_MAX_ROUNDS for complex
+            # cloud workflows where prefill is effectively free.
+            max_rounds=int(os.getenv("SWARM_MCP_MAX_ROUNDS", "5")),
             tool_result_max_chars=_mcp_tool_result_max_chars(),
             max_context_chars=_mcp_max_context_chars(),
             retry_on_overflow=_mcp_retry_on_context_overflow(),

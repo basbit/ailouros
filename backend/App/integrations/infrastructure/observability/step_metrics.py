@@ -28,6 +28,7 @@ _task_step_token_totals: dict[str, dict[str, dict[str, int]]] = defaultdict(
         lambda: {
             "input_tokens": 0, "output_tokens": 0,
             "retrieved_tokens": 0, "tool_calls_count": 0,
+            "file_read_cache_hits": 0, "file_read_cache_misses": 0,
         }
     )
 )
@@ -36,6 +37,7 @@ _task_role_model_counts: dict[str, dict[tuple[str, str], int]] = defaultdict(lam
 _step_token_totals: dict[str, dict[str, int]] = defaultdict(lambda: {
     "input_tokens": 0, "output_tokens": 0,
     "retrieved_tokens": 0, "tool_calls_count": 0,
+    "file_read_cache_hits": 0, "file_read_cache_misses": 0,
 })
 
 # Ключи токенов в step_delta (записывают ноды, если хотят emit usage).
@@ -44,6 +46,8 @@ _TOKEN_KEY_OUTPUT = "_step_output_tokens"
 _TOKEN_KEY_RETRIEVED = "_step_retrieved_tokens"
 _TOKEN_KEY_RETRIEVED_BYTES = "_step_retrieved_bytes"
 _TOKEN_KEY_TOOL_CALLS = "_step_tool_calls_count"
+_TOKEN_KEY_FILE_READ_CACHE_HITS = "_step_file_read_cache_hits"
+_TOKEN_KEY_FILE_READ_CACHE_MISSES = "_step_file_read_cache_misses"
 
 
 def _guess_model(delta: Mapping[str, Any]) -> str:
@@ -70,6 +74,8 @@ def _extract_token_metrics(delta: Mapping[str, Any]) -> dict[str, Any]:
         "retrieved_tokens": _int_or_none(_TOKEN_KEY_RETRIEVED),
         "retrieved_bytes": _int_or_none(_TOKEN_KEY_RETRIEVED_BYTES),
         "tool_calls_count": _int_or_none(_TOKEN_KEY_TOOL_CALLS),
+        "file_read_cache_hits": _int_or_none(_TOKEN_KEY_FILE_READ_CACHE_HITS),
+        "file_read_cache_misses": _int_or_none(_TOKEN_KEY_FILE_READ_CACHE_MISSES),
     }
 
 
@@ -100,7 +106,10 @@ def record_step(
             _role_model_counts[(step_id, model)] += 1
             if task_id:
                 _task_role_model_counts[task_id][(step_id, model)] += 1
-        for k in ("input_tokens", "output_tokens", "retrieved_tokens", "tool_calls_count"):
+        for k in (
+            "input_tokens", "output_tokens", "retrieved_tokens", "tool_calls_count",
+            "file_read_cache_hits", "file_read_cache_misses",
+        ):
             v = tokens.get(k)
             if v:
                 _step_token_totals[step_id][k] += v

@@ -30,7 +30,7 @@ from backend.App.orchestration.application.nodes._shared import (
     _remote_api_client_kwargs_for_role,
     _reviewer_cfg,
     _skills_extra_for_role_cfg,
-    _stream_progress_emit,
+    _stream_automation_emit,
     _swarm_prompt_prefix,
     embedded_pipeline_input_for_review,
     embedded_review_artifact,
@@ -40,27 +40,21 @@ from backend.App.orchestration.application.nodes._shared import (
 _log = logging.getLogger(__name__)
 _CACHE_TTL_SECONDS = int(os.environ.get("SWARM_CLARIFY_CACHE_TTL_SEC", str(24 * 3600)))
 _CLARIFY_CACHE_VERSION = "2026-04-09.v2"
-_WEB_RESEARCH_HINTS = (
-    "internet",
-    "web",
-    "website",
-    "websites",
-    "google",
-    "search",
-    "browse",
-    "latest",
-    "current",
-    "recent",
-    "найди",
-    "найти",
-    "поищи",
-    "поиск",
-    "интернет",
-    "сайт",
-    "сайты",
-    "актуальн",
-    "свеж",
+# Default markers that suggest the task may need fresh web data.  These are
+# starting-point heuristics ONLY — operators override per project via
+# SWARM_CLARIFY_FRESHNESS_MARKERS (comma-separated, lowercased on read).
+# Set to an empty string to disable freshness inference entirely.
+_DEFAULT_CLARIFY_FRESHNESS_MARKERS = (
+    "internet,web,website,websites,google,search,browse,latest,current,recent,"
+    "найди,найти,поищи,поиск,интернет,сайт,сайты,актуальн,свеж"
 )
+
+
+def _clarify_freshness_markers() -> tuple[str, ...]:
+    raw = os.environ.get("SWARM_CLARIFY_FRESHNESS_MARKERS")
+    if raw is None:
+        raw = _DEFAULT_CLARIFY_FRESHNESS_MARKERS
+    return tuple(item.strip().lower() for item in raw.split(",") if item.strip())
 
 
 def _sha256_text(value: str) -> str:
@@ -87,13 +81,14 @@ def _clarify_cache_key(identity: dict[str, str]) -> str:
 
 
 def _clarify_cache_dir() -> Path:
-    artifacts_dir = os.getenv("SWARM_ARTIFACTS_DIR", "var/artifacts")
-    return Path(artifacts_dir) / "cache"
+    from backend.App.paths import artifacts_root as _anchored_artifacts_root
+    return _anchored_artifacts_root() / "cache"
 
 
 def _clarify_requires_fresh_research(state: PipelineState, task_text: str) -> bool:
     task_lower = str(task_text or "").lower()
-    if any(marker in task_lower for marker in _WEB_RESEARCH_HINTS):
+    markers = _clarify_freshness_markers()
+    if markers and any(marker in task_lower for marker in markers):
         return True
     agent_config = state.get("agent_config") or {}
     mcp_cfg = agent_config.get("mcp")
@@ -177,10 +172,6 @@ _CLARIFY_INPUT_PROMPT_PATH = str(
     else Path(__file__).resolve().parents[5] / "var" / "prompts" / "specialized" / "clarify-input.md"
 )
 
-_PM_STACK_RULE = (
-    ""
-)
-
 # Valid output prefixes for clarify_input step (single source of truth).
 _CLARIFY_VALID_PREFIXES = (CLARIFY_READY, CLARIFY_NEEDS_CLARIFICATION, CLARIFY_SIMPLE_ANSWER)
 
@@ -247,7 +238,7 @@ def clarify_input_node(state: PipelineState) -> dict[str, Any]:
         state["clarify_input_provider"] = "cache"
         state["clarify_input_cache"] = {
             "hit": True,
-            "cache_key": cache_key,
+            "cache_key": cache_key or "",
             "identity": dict(cached.get("identity") or {}),
         }
         if clarify_output.strip().startswith(CLARIFY_SIMPLE_ANSWER):
@@ -261,8 +252,27 @@ def clarify_input_node(state: PipelineState) -> dict[str, Any]:
         # P0-1a: Cached NEEDS_CLARIFICATION must also pause the pipeline,
         # not silently continue to PM without user answers.
         # But only if the cached output actually contains real questions.
-        if cached_output.strip().startswith(CLARIFY_NEEDS_CLARIFICATION):
-            _cached_body = cached_output.strip()[len(CLARIFY_NEEDS_CLARIFICATION):].strip()
+        _cached_stripped = cached_output.strip()
+        _has_needs_clarification_prefix = _cached_stripped.startswith(CLARIFY_NEEDS_CLARIFICATION)
+        # Also detect questions without the proper routing prefix — the model
+        # may have produced a natural-language response with questions (e.g.
+        # "I need a bit more detail...  1. What genre?  2. What art style?").
+        _has_questions_without_prefix = (
+            not _has_needs_clarification_prefix
+            and not _cached_stripped.startswith(CLARIFY_READY)
+            and not _cached_stripped.startswith(CLARIFY_SIMPLE_ANSWER)
+            and "?" in _cached_stripped
+            and len(_cached_stripped) >= 50
+        )
+        if _has_needs_clarification_prefix or _has_questions_without_prefix:
+            if _has_needs_clarification_prefix:
+                _cached_body = _cached_stripped[len(CLARIFY_NEEDS_CLARIFICATION):].strip()
+            else:
+                _cached_body = _cached_stripped
+                _log.warning(
+                    "clarify_input: cached output contains questions but lacks "
+                    "NEEDS_CLARIFICATION prefix — treating as clarification request."
+                )
             if len(_cached_body) >= 50 and "?" in _cached_body:
                 from backend.App.orchestration.domain.exceptions import HumanApprovalRequired
                 raise HumanApprovalRequired(
@@ -569,7 +579,13 @@ def _collect_pm_evidence_packet(workspace_root: str, task_text: str, *, max_char
             w.lower() for w in task_text.replace("_", " ").split()
             if len(w) > 3 and w.isalpha()
         )
-        _src_exts = {".php", ".py", ".ts", ".js", ".go", ".rb", ".java", ".cs", ".rs"}
+        _src_exts = {
+            ".php", ".py", ".ts", ".js", ".go", ".rb", ".java", ".cs", ".rs",
+            # Game engines
+            ".gd", ".gdscript", ".lua", ".cpp", ".hpp", ".h", ".c",
+            # Mobile / cross-platform
+            ".swift", ".kt", ".dart",
+        }
         _ignored = {"node_modules", ".git", "__pycache__", ".venv", "venv", "vendor",
                     "dist", "build", ".next", ".nuxt", "coverage", ".mypy_cache"}
         relevant_paths: list[str] = []
@@ -626,10 +642,13 @@ def _collect_pm_evidence_packet(workspace_root: str, task_text: str, *, max_char
 
 
 def pm_node(state: PipelineState) -> dict[str, Any]:
+    from backend.App.orchestration.application.context_budget import get_context_budget
+
     plan_ctx = planning_pipeline_user_context(state)
-    mem = format_pattern_memory_block(state, plan_ctx)
+    _budget = get_context_budget("pm", state.get("agent_config") if isinstance(state.get("agent_config"), dict) else None)
+    mem = format_pattern_memory_block(state, plan_ctx, max_chars=_budget.pattern_memory_chars)
     xmem = format_cross_task_memory_block(
-        state, plan_ctx, current_step="pm"
+        state, plan_ctx, current_step="pm", max_chars=_budget.cross_task_memory_chars,
     )
     ctx = _pipeline_context_block(state, "pm")
     clarify_human = (state.get("clarify_input_human_output") or "").strip()
@@ -679,29 +698,50 @@ def pm_node(state: PipelineState) -> dict[str, Any]:
         + ctx
         + _swarm_prompt_prefix(state)
         + planning_mcp_tool_instruction(state)
-        + _PM_STACK_RULE
         + _ca_block
         + _evidence_block
         + planning_retry_block
         + raw_input
     )
+    # Resolve PM config early — needed for deep planning credentials and below.
+    cfg = (state.get("agent_config") or {}).get("pm") or {}
+
     # Deep planning: run 5-stage analysis before PM if SWARM_DEEP_PLANNING=1
     if os.getenv("SWARM_DEEP_PLANNING", "0") == "1":
         try:
             from backend.App.orchestration.application.deep_planning import DeepPlanner
+            from backend.App.orchestration.infrastructure.agents.llm_backend_selector import (
+                LLMBackendSelector,
+            )
             task_id = os.getenv("SWARM_CURRENT_TASK_ID", "unknown")
             workspace_root = str(state.get("workspace_root") or os.getenv("SWARM_WORKSPACE_ROOT", ""))
-            _stream_progress_emit(state, "Deep planning: scanning workspace…")
+            # Forward PM's configured API credentials so DeepPlanner reaches the
+            # same LLM backend (Anthropic / OpenAI-compat) as the PM agent itself.
+            _remote_kw = _remote_api_client_kwargs_for_role(state, cfg)
+            _deep_selector = LLMBackendSelector()
+            _deep_cfg = _deep_selector.select(
+                role="pm",
+                model=os.getenv("SWARM_DEEP_PLANNING_MODEL", ""),
+                environment=str(cfg.get("environment") or ""),
+                remote_provider=_remote_kw.get("remote_provider"),
+                remote_api_key=_remote_kw.get("remote_api_key"),
+                remote_base_url=_remote_kw.get("remote_base_url"),
+            )
+            _deep_llm_kwargs = _deep_selector.ask_kwargs(_deep_cfg)
+            _stream_automation_emit(state, "deep_planning", "deep_planning: scanning workspace (stage 1/5)…")
             plan = DeepPlanner().analyze(
                 task_id=task_id,
                 task_spec=user_input,
                 workspace_root=workspace_root,
+                llm_kwargs=_deep_llm_kwargs,
             )
             if not plan.error:
-                _stream_progress_emit(
-                    state,
-                    f"Deep planning complete — {len(plan.risks)} risks, {len(plan.alternatives)} alternatives, "
-                    f"{len(plan.milestones)} milestones. Recommended: {plan.recommended_alternative or 'n/a'}",
+                _stream_automation_emit(
+                    state, "deep_planning",
+                    f"deep_planning complete — {len(plan.risks)} risks, "
+                    f"{len(plan.alternatives)} alternatives, "
+                    f"{len(plan.milestones)} milestones. "
+                    f"Recommended: {plan.recommended_alternative or 'n/a'}",
                 )
                 summary = (
                     f"## Deep Planning Analysis\n\n"
@@ -714,13 +754,23 @@ def pm_node(state: PipelineState) -> dict[str, Any]:
                 user_input = summary + user_input
                 _log.info("pm_node: deep planning prepended (task=%s)", task_id)  # INV-1
             else:
-                _stream_progress_emit(state, f"Deep planning failed: {plan.error} — proceeding without it")
+                _stream_automation_emit(
+                    state, "deep_planning",
+                    f"⚠ deep_planning failed: {plan.error} — proceeding without deep analysis. "
+                    "PM output may lack workspace-aware context."
+                )
                 _log.warning("pm_node: deep planning failed (%s)", plan.error)  # INV-1
+                # Store the failure so downstream agents/QA are aware
+                cast(dict[str, Any], state)["deep_planning_error"] = str(plan.error)
         except Exception as exc:
-            _stream_progress_emit(state, f"Deep planning exception ({exc}) — proceeding without it")
+            _stream_automation_emit(
+                state, "deep_planning",
+                f"⚠ deep_planning exception: {exc} — proceeding without deep analysis. "
+                "PM output may lack workspace-aware context."
+            )
             _log.warning("pm_node: deep planning exception (%s)", exc)  # INV-1
+            cast(dict[str, Any], state)["deep_planning_error"] = str(exc)
 
-    cfg = (state.get("agent_config") or {}).get("pm") or {}
     # SWARM_PM_MODEL: model override for pm step (env var fallback when not set in config).
     # Useful for routing PM to a tool-free or cheaper model after deterministic evidence prefetch.
     agent = PMAgent(
@@ -788,7 +838,9 @@ def review_pm_node(state: PipelineState) -> dict[str, Any]:
     prompt = (
         "Step: pm (Project Manager).\n"
         "Checklist — issue VERDICT: NEEDS_WORK if ANY item fails:\n"
-        "[ ] No specific technology stack chosen (stack belongs to Architect only)\n"
+        "[ ] PM did not introduce a NEW technology stack — PM may reference or confirm a stack "
+        "already present in the workspace (e.g. existing project files, wiki, code_analysis, "
+        "or a previous Architecture ADR); only an unsupported NEW choice by PM is a violation\n"
         "[ ] Tasks are decomposed into concrete subtasks with priorities\n"
         "[ ] Each task has clear acceptance/readiness criteria\n"
         "[ ] Scope is realistic (not a copy of raw user input)\n\n"

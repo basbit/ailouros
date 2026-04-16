@@ -140,15 +140,49 @@ def run_with_self_verify(
 
     # Inject issues into the first string argument (user_input), not as a kwarg
     augmented_args = list(args)
-    if augmented_args and isinstance(augmented_args[0], str):
-        augmented_args[0] = augmented_args[0] + f"\n\nPrevious attempt issues:\n{issues_text}"
-        rerun_output = agent_fn(*augmented_args, **kwargs)
-    else:
+    if not (augmented_args and isinstance(augmented_args[0], str)):
         # Cannot inject issues safely — log and return original output
         logger.warning(
             "SelfVerifier: cannot inject issues (first arg is not str), returning original output"
         )  # INV-1
         return output
+
+    original_prompt = augmented_args[0]
+
+    # H-2 delta prompting (§17): on retry, avoid re-sending the full 10-20 KB
+    # prompt that already won prefill on the first attempt. Send the issues
+    # block plus compact artifact refs to the original task + first attempt.
+    # LM Studio's slot cache keeps the shared prefix warm, so the retry pays
+    # for only the *new* tail. Disable with SWARM_DELTA_PROMPTING=0.
+    from backend.App.orchestration.application.delta_prompt import (
+        artifact_header,
+        delta_prompting_enabled,
+    )
+
+    if delta_prompting_enabled() and len(original_prompt) > 2000:
+        task_ref = artifact_header(task_spec, max_preview=400) if task_spec else ""
+        prev_ref = artifact_header(output, max_preview=300)
+        delta_suffix = (
+            "\n\n## Self-verify retry — address the issues below\n"
+            + (f"## Original task (compact ref)\n{task_ref}\n\n" if task_ref else "")
+            + f"## Your previous attempt (compact ref)\n{prev_ref}\n\n"
+            + "## Issues found\n"
+            + issues_text
+            + "\n\n## Action\n"
+            + "Produce the corrected output. Do NOT re-state the task — reuse the compact "
+            + "refs above and fix every issue listed."
+        )
+        augmented_args[0] = original_prompt + delta_suffix
+        logger.info(
+            "SelfVerifier: H-2 delta retry prompt (+%d chars) appended to %d-char prompt",
+            len(delta_suffix), len(original_prompt),
+        )
+    else:
+        # Pre-H-2 legacy path — kept as fallback when delta prompting is off
+        # or the original prompt is already compact.
+        augmented_args[0] = original_prompt + f"\n\nPrevious attempt issues:\n{issues_text}"
+
+    rerun_output = agent_fn(*augmented_args, **kwargs)
 
     logger.info("SelfVerifier: re-run complete, length=%d", len(rerun_output))  # INV-1
     return rerun_output

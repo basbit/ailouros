@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import logging
 import os
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Iterable, Iterator
 from typing import Any, Literal, Optional, Union
 
 from backend.App.workspace.domain.ports import (
@@ -119,6 +122,93 @@ def _shell_allowlist() -> frozenset[str]:
     return frozenset(x.strip().lower() for x in env_value.replace(";", ",").split(",") if x.strip())
 
 
+# Per-task runtime extension to the shell allowlist. Populated by the SSE
+# handler after the user explicitly approves a batch of shell commands whose
+# binaries are not in ``SWARM_SHELL_ALLOWLIST``. Scoped via a ContextVar so
+# concurrent tasks cannot leak into each other.
+#
+# Design rationale (2026-04-16): the old behaviour silently dropped any
+# command whose binary wasn't in the static env allowlist, even after the
+# user approved it. That made it impossible for devops to bootstrap a
+# project with engine-specific tooling (e.g. ``godot``, ``flutter``) without
+# the operator editing env vars. The runtime extension makes the approval
+# UI the authoritative source of "yes, run this binary for this task".
+_RUNTIME_SHELL_ALLOWLIST: contextvars.ContextVar[frozenset[str]] = contextvars.ContextVar(
+    "swarm.shell.runtime_allowlist",
+    default=frozenset(),
+)
+
+
+def _runtime_shell_allowlist() -> frozenset[str]:
+    return _RUNTIME_SHELL_ALLOWLIST.get()
+
+
+def extend_runtime_shell_allowlist(binaries: Iterable[str]) -> frozenset[str]:
+    """Add binaries to the current task's runtime shell allowlist.
+
+    Binaries are normalised to lowercase and ``.exe`` stripped so the probe
+    in ``_shell_command_allowed`` matches regardless of how the command was
+    written. Returns the resulting (union) allowlist.
+
+    Must be called inside a ``scoped_runtime_shell_allowlist`` context so the
+    extension stays scoped to a single task. Outside of a scope, the call is
+    a no-op so production code can't accidentally grow a global allowlist.
+    """
+    current = _RUNTIME_SHELL_ALLOWLIST.get()
+    extra: set[str] = set()
+    for raw in binaries:
+        if not raw:
+            continue
+        name = Path(raw).name.lower()
+        if name.endswith(".exe"):
+            name = name[:-4]
+        if name:
+            extra.add(name)
+    merged = frozenset(current | extra)
+    _RUNTIME_SHELL_ALLOWLIST.set(merged)
+    return merged
+
+
+@contextlib.contextmanager
+def scoped_runtime_shell_allowlist(
+    initial: Optional[Iterable[str]] = None,
+) -> Iterator[None]:
+    """Enter a fresh per-task runtime allowlist scope.
+
+    Anything set via :func:`extend_runtime_shell_allowlist` inside the
+    ``with`` block is discarded on exit, so a misbehaving task cannot extend
+    the allowlist for later tasks that share the process.
+    """
+    token = _RUNTIME_SHELL_ALLOWLIST.set(
+        frozenset()
+        if initial is None
+        else frozenset(Path(x).name.lower().removesuffix(".exe") for x in initial if x)
+    )
+    try:
+        yield
+    finally:
+        _RUNTIME_SHELL_ALLOWLIST.reset(token)
+
+
+def extract_command_binary(line: str) -> Optional[str]:
+    """Return the lowercased binary name for *line* (or None on parse error).
+
+    Useful for UIs that want to show the user *which* binaries the agent is
+    asking to add to the allowlist.
+    """
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return None
+    try:
+        parts = shlex.split(stripped, posix=os.name != "nt")
+    except ValueError:
+        return None
+    if not parts:
+        return None
+    name = Path(parts[0]).name.lower()
+    return name[:-4] if name.endswith(".exe") else name
+
+
 def _shell_command_allowed(line: str) -> tuple[bool, str]:
     command_line = line.strip()
     if not command_line or command_line.startswith("#"):
@@ -132,9 +222,14 @@ def _shell_command_allowed(line: str) -> tuple[bool, str]:
     executable_name = Path(parts[0]).name.lower()
     if executable_name.endswith(".exe"):
         executable_name = executable_name[:-4]
-    if executable_name not in _shell_allowlist():
-        return False, f"not in allowlist: {executable_name!r} (set SWARM_SHELL_ALLOWLIST)"
-    return True, ""
+    if executable_name in _shell_allowlist():
+        return True, ""
+    if executable_name in _runtime_shell_allowlist():
+        return True, ""
+    return False, (
+        f"not in allowlist: {executable_name!r} "
+        "(user approval can extend the per-task allowlist)"
+    )
 
 
 def _command_timeout_sec() -> int:

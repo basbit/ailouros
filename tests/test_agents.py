@@ -41,9 +41,11 @@ def test_prompt_loader_reads_file():
         "fallback-prompt",
     )
     # YAML frontmatter (SKILL-style) убирается из текста для LLM
-    assert "SeniorProjectManager" in loaded
-    assert "# Project Manager Agent Personality" in loaded
     assert loaded != "fallback-prompt"
+    # Title and required sections must be present after frontmatter strip
+    assert "# Senior Project Manager" in loaded
+    assert "Scope compression" in loaded
+    assert "Forbidden sections" in loaded
 
 
 def test_ba_default_prompt_from_prompts_dir():

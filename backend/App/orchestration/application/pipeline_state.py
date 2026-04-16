@@ -101,6 +101,8 @@ class PipelineState(TypedDict, total=False):
     workspace_root_resolved: str
     workspace_identity: WorkspaceIdentityState
     workspace_apply_writes: bool
+    # Wiki context loaded from <workspace_root>/.swarm/wiki/ (markdown index + articles)
+    wiki_context: str
     # Идентификатор задачи оркестратора (артефакты artifacts/<task_id>/)
     task_id: str
     # Результат analyze_workspace (swarm_code_analysis/v1)

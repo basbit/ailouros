@@ -65,6 +65,7 @@ def _stream_chat_chunks(
     artifacts_root: Path,
     agent_config: Optional[dict[str, Any]] = None,
     pipeline_steps: Optional[list[str]] = None,
+    pipeline_stages: Optional[list[list[str]]] = None,
     workspace_root_str: str = "",
     workspace_apply_writes: bool = False,
     workspace_meta: Optional[dict[str, Any]] = None,
@@ -95,6 +96,34 @@ def _stream_chat_chunks(
         "pipeline_steps": _effective_pipeline_steps,
         "workspace": workspace_meta or {},
     }
+
+    # §10.6 UI↔Backend contract integrity — persist the exact request
+    # the orchestrator received so post-mortem can compare wire payload
+    # vs what the UI claims the user selected. Separate from pipeline.json
+    # (which is the running snapshot and gets mutated by enforcement).
+    try:
+        import json as _json
+        (task_dir / "request.json").write_text(
+            _json.dumps(
+                {
+                    "received_at": now,
+                    "task_id": task_id,
+                    "user_prompt": original_prompt,
+                    "pipeline_steps": pipeline_steps,
+                    "pipeline_stages": pipeline_stages,
+                    "pipeline_steps_effective": _effective_pipeline_steps,
+                    "agent_config": agent_config or {},
+                    "workspace_root": workspace_root_str,
+                    "workspace_apply_writes": workspace_apply_writes,
+                },
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            ),
+            encoding="utf-8",
+        )
+    except OSError as _req_exc:
+        logger.warning("request.json persistence failed: %s", _req_exc)
 
     append_task_run_log(
         task_dir,
@@ -165,17 +194,43 @@ def _stream_chat_chunks(
             )
             return
 
-    events_gen = run_pipeline_stream(
-        effective_prompt,
-        agent_config=agent_config,
-        pipeline_steps=pipeline_steps,
-        workspace_root=workspace_root_str,
-        workspace_apply_writes=workspace_apply_writes,
-        task_id=task_id,
-        cancel_event=cancel_event,
-        pipeline_workspace_parts=pipeline_workspace_parts_from_meta(wmeta),
-        pipeline_step_ids=pipeline_steps,
+    # Route to staged runner when the UI declared explicit stages (parallel
+    # fan-out inside stages).  Otherwise fall back to the sequential runner
+    # which preserves the user's step order.  Backend does not decide which
+    # topology maps to which stages — the UI already did that (§3 of
+    # docs/review-rules.md: code is execution, decisions are in configuration).
+    _has_stages = (
+        isinstance(pipeline_stages, list)
+        and len(pipeline_stages) > 0
+        and all(isinstance(stage, list) and stage for stage in pipeline_stages)
+        and any(len(stage) > 1 for stage in pipeline_stages)
     )
+    if _has_stages:
+        from backend.App.orchestration.application.pipeline_runners import (
+            run_pipeline_stream_staged,
+        )
+        events_gen = run_pipeline_stream_staged(
+            effective_prompt,
+            pipeline_stages=pipeline_stages,  # type: ignore[arg-type]
+            agent_config=agent_config,
+            workspace_root=workspace_root_str,
+            workspace_apply_writes=workspace_apply_writes,
+            task_id=task_id,
+            cancel_event=cancel_event,
+            pipeline_workspace_parts=pipeline_workspace_parts_from_meta(wmeta),
+        )
+    else:
+        events_gen = run_pipeline_stream(
+            effective_prompt,
+            agent_config=agent_config,
+            pipeline_steps=pipeline_steps,
+            workspace_root=workspace_root_str,
+            workspace_apply_writes=workspace_apply_writes,
+            task_id=task_id,
+            cancel_event=cancel_event,
+            pipeline_workspace_parts=pipeline_workspace_parts_from_meta(wmeta),
+            pipeline_step_ids=pipeline_steps,
+        )
 
     handler = PipelineSSEHandler(task_store=task_store)
     yield from handler.handle_events(

@@ -2,6 +2,12 @@
 
 Extracted from dev.py: _review_dev_output_max_chars, _review_spec_max_chars,
 review_dev_node, human_dev_node.
+
+M-9 (output compression): after review_dev_node produces output the full
+prose is stored as an artifact and a compact JSON summary
+(``dev_review_compressed``) is added to the result.  human_dev_node uses the
+compact form so the human-gate bundle stays small even after multi-round
+review cycles.
 """
 from __future__ import annotations
 
@@ -13,6 +19,13 @@ from typing import Any
 from backend.App.orchestration.application.review_moa import run_reviewer_or_moa
 from backend.App.orchestration.application.pipeline_state import PipelineState
 from backend.App.orchestration.domain.defect import parse_defect_report
+from backend.App.orchestration.application.output_contracts import (
+    compress_reviewer_output,
+    format_compressed_reviewer,
+    output_compression_enabled,
+    reviewer_compact_for_prompt,
+    CompressedReviewerOutput,
+)
 
 from backend.App.orchestration.application.nodes._shared import (
     _effective_spec_for_build,
@@ -132,11 +145,51 @@ def review_dev_node(state: PipelineState) -> dict[str, Any]:
         agent_factory=lambda: _make_reviewer_agent(state),
         require_json_defect_report=True,
     )
-    result["dev_defect_report"] = parse_defect_report(str(result.get("dev_review_output") or "")).to_dict()
+    review_text = str(result.get("dev_review_output") or "")
+    result["dev_defect_report"] = parse_defect_report(review_text).to_dict()
+
+    # M-9: compress reviewer output — store prose as artifact, keep compact
+    # structured form in state.  Downstream prompts (human_dev, re-prompts)
+    # use the compact form to avoid re-embedding 10-60 KB of reviewer prose.
+    if output_compression_enabled() and review_text:
+        compressed = compress_reviewer_output(review_text)
+        result["dev_review_compressed"] = format_compressed_reviewer(compressed)
+        logger.debug(
+            "review_dev_node: compressed reviewer output %d chars → %d chars compact "
+            "(artifact_ref=%s…)",
+            compressed.char_count,
+            len(result["dev_review_compressed"]),
+            compressed.artifact_ref[-12:],
+        )
+
     return result
 
 
 def human_dev_node(state: PipelineState) -> dict[str, Any]:
-    bundle = f"Dev:\n{state['dev_output']}\n\nReview:\n{state['dev_review_output']}"
+    # M-9: prefer compressed review summary for the human-gate bundle.
+    # The full prose is in the artifact store; the compact form gives the
+    # human agent the verdict, top defects, and a brief summary — sufficient
+    # for human-readable review without re-embedding the full 10-60 KB review.
+    compressed_review = state.get("dev_review_compressed")
+    if isinstance(compressed_review, str) and compressed_review and output_compression_enabled():
+        import json as _json
+        try:
+            c_data = _json.loads(compressed_review)
+            _c = CompressedReviewerOutput(
+                verdict=c_data["verdict"],
+                defects=c_data["defects"],
+                defect_count=c_data["defect_count"],
+                summary=c_data["summary"],
+                char_count=c_data["char_count"],
+                artifact_ref=c_data["artifact_ref"],
+            )
+            review_for_human = reviewer_compact_for_prompt(_c)
+        except (_json.JSONDecodeError, KeyError) as exc:
+            logger.warning("human_dev_node: failed to parse compressed review: %s", exc)
+            review_for_human = str(state.get("dev_review_output") or "")
+    else:
+        review_for_human = str(state.get("dev_review_output") or "")
+
+    bundle = f"Dev:\n{state.get('dev_output', '')}\n\nReview:\n{review_for_human}"
     agent = _make_human_agent(state, "dev")
     return {"dev_human_output": agent.run(bundle)}

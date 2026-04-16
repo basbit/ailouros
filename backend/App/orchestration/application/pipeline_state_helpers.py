@@ -11,6 +11,7 @@ import logging
 import os
 import threading
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any, Optional
 from typing import cast
 
@@ -289,7 +290,7 @@ HUMAN_PIPELINE_STEP_TO_STATE_KEY["human_pm_tasks"] = "dev_lead_human_output"
 _RUNTIME_STATE_KEYS = ("_pipeline_cancel_event", "_current_step_id")
 
 
-def _state_snapshot(state: dict[str, Any]) -> dict[str, Any]:
+def _state_snapshot(state: Any) -> dict[str, Any]:
     """Return a deep copy of *state* with unpicklable runtime keys stripped."""
     clean = {k: v for k, v in state.items() if k not in _RUNTIME_STATE_KEYS}
     return copy.deepcopy(clean)
@@ -299,17 +300,40 @@ def _state_snapshot(state: dict[str, Any]) -> dict[str, Any]:
 # State size compaction
 # ---------------------------------------------------------------------------
 
-def _state_max_chars() -> int:
+def _state_max_chars(
+    step_id: Optional[str] = None,
+    agent_config: Optional[dict[str, Any]] = None,
+) -> int:
+    """Return the per-state-compaction character ceiling.
+
+    With *step_id* this resolves through :mod:`context_budget` so each
+    role can have its own ceiling (review_/human_ tiers in particular
+    are tighter than the planning roles). Without *step_id* we keep the
+    legacy SWARM_STATE_MAX_CHARS env path so older callers (and the
+    public re-export from ``pipeline_graph``) keep working.
+
+    The minimum of 10_000 chars is preserved in both paths to prevent
+    a misconfigured per-step ceiling from triggering pathological
+    re-compaction loops.
+    """
+    if step_id:
+        from backend.App.orchestration.application.context_budget import (
+            get_context_budget,
+        )
+        return max(10_000, get_context_budget(step_id, agent_config).state_max_chars)
+
     raw = os.getenv("SWARM_STATE_MAX_CHARS", "").strip()
     if raw:
         try:
-            return max(10000, int(raw))
+            return max(10_000, int(raw))
         except ValueError:
             pass
     return 200_000
 
 
-# Keys to preserve during compaction (planning / task spec essentials).
+# L-6: Step-aware compaction keep-keys.
+#
+# Base set: always preserved regardless of which step is compacting.
 _COMPACTION_KEEP_KEYS: frozenset[str] = frozenset({
     "input", "user_task", "project_manifest", "workspace_context_mode",
     "workspace_section_title", "workspace_context_mcp_fallback",
@@ -322,6 +346,34 @@ _COMPACTION_KEEP_KEYS: frozenset[str] = frozenset({
     "dev_output", "dev_qa_tasks", "dev_task_outputs", "qa_task_outputs",
 })
 
+# Extra keys to preserve per step prefix (stacked on top of _COMPACTION_KEEP_KEYS).
+# Maps step_id prefix → frozenset of additional keys that must not be compacted
+# when a step whose id starts with that prefix is running.
+_COMPACTION_KEEP_EXTRA: dict[str, frozenset[str]] = {
+    # Dev subtasks need the full dev_lead plan (currently summarised if large).
+    "dev": frozenset({"dev_lead_output"}),
+    # Human-dev gate needs the full reviewer output to make a decision.
+    "human_dev": frozenset({"dev_review_output"}),
+    # review_dev needs the full dev output to produce a verdict.
+    "review_dev": frozenset({"dev_output"}),
+}
+
+
+def _compaction_extra_keep(step_id: str) -> frozenset[str]:
+    """Return step-specific keys that must not be compacted for *step_id*.
+
+    Stacked on top of :data:`_COMPACTION_KEEP_KEYS`; never removes from it.
+    Uses longest-prefix matching so ``"human_dev"`` wins over ``"human_"``.
+    """
+    result: frozenset[str] = frozenset()
+    # Sort descending by prefix length so longer/more-specific prefixes win
+    for prefix in sorted(_COMPACTION_KEEP_EXTRA, key=len, reverse=True):
+        if step_id == prefix or step_id.startswith(prefix):
+            result = result | _COMPACTION_KEEP_EXTRA[prefix]
+            break  # first (longest) match only
+    return result
+
+
 # Keys containing large outputs from review/human steps that are safe to summarise.
 _COMPACTION_SUMMARISE_KEYS: frozenset[str] = frozenset(
     key for _, key in ARTIFACT_AGENT_OUTPUT_KEYS
@@ -329,18 +381,52 @@ _COMPACTION_SUMMARISE_KEYS: frozenset[str] = frozenset(
 )
 
 
+def _bulletpoint_compact(text: str, max_chars: int = 400) -> str:
+    """Extract key sentences as bullet points — cheap non-LLM compaction (L-6).
+
+    Replaces the previous ``val[:200] + " … [compacted]"`` approach with a
+    structured bullet list that preserves more meaning per character.
+    Falls back to a plain slice when no sentences can be extracted.
+    """
+    import re as _re
+    sentences = _re.split(r"(?<=[.!?])\s+", text.strip())
+    bullets: list[str] = []
+    budget = max(50, max_chars - 15)  # leave room for the trailing marker
+    used = 0
+    for s in sentences[:8]:
+        s = s.strip()
+        if not s:
+            continue
+        b = f"• {s[:120]}"
+        if used + len(b) + 1 > budget:
+            break
+        bullets.append(b)
+        used += len(b) + 1
+    base = "\n".join(bullets) if bullets else text[:budget]
+    return base + "\n… [compacted]"
+
+
 def _compact_state_if_needed(
-    state: dict[str, Any],
+    state: Any,
     current_step: str,
 ) -> Optional[dict[str, Any]]:
-    """Compact state if it exceeds SWARM_STATE_MAX_CHARS.
+    """Compact state if it exceeds the per-step ceiling.
+
+    The ceiling is resolved per-step via
+    :func:`context_budget.get_context_budget` so review_ / human_ tiers
+    compact earlier than planning roles. Falls back to the legacy
+    ``SWARM_STATE_MAX_CHARS`` env value when no agent_config is present
+    on state.
 
     Returns a dict suitable for yielding as a pipeline event, or None if
     no compaction was needed.
     """
     import json as _json_mod
 
-    limit = _state_max_chars()
+    _agent_config = (
+        state.get("agent_config") if isinstance(state.get("agent_config"), dict) else None
+    )
+    limit = _state_max_chars(current_step, _agent_config)
     try:
         serialised = _json_mod.dumps(
             {k: v for k, v in state.items() if k not in _RUNTIME_STATE_KEYS},
@@ -356,21 +442,25 @@ def _compact_state_if_needed(
         return None
 
     dropped: list[str] = []
-    # Try LLM summarization if enabled, otherwise plain truncation
+    # L-6: step-aware keep — combine base keep with step-specific extras.
+    _step_keep = _COMPACTION_KEEP_KEYS | _compaction_extra_keep(current_step)
+
+    # Try LLM summarization if enabled, otherwise structured bulletpoint compaction.
     from backend.App.orchestration.application.state_summarizer import (
         state_summarize_enabled,
         summarize_text,
     )
     _use_llm_summary = state_summarize_enabled()
-    _agent_config = state.get("agent_config") if isinstance(state.get("agent_config"), dict) else None
 
     for key in sorted(_COMPACTION_SUMMARISE_KEYS):
+        if key in _step_keep:
+            continue  # L-6: step-aware — preserve for this step
         val = state.get(key)
         if isinstance(val, str) and len(val) > 200:
             if _use_llm_summary:
                 state[key] = summarize_text(val, role_hint=key, agent_config=_agent_config)
             else:
-                state[key] = val[:200] + " … [compacted]"
+                state[key] = _bulletpoint_compact(val)  # L-6: structured bullets
             dropped.append(key)
 
     # Second pass: if still over limit, truncate large keep-keys too
@@ -482,7 +572,7 @@ def increment_step_retry(state: dict, step_id: str) -> dict:
     return {**state, "step_retries": retries}
 
 
-def get_step_retries(state: dict, step_id: str) -> int:
+def get_step_retries(state: Mapping[str, Any], step_id: str) -> int:
     """Return current retry count for a step."""
     return int((state.get("step_retries") or {}).get(step_id, 0))
 

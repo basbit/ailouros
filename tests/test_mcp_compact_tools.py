@@ -18,8 +18,24 @@ def _make_pool(tool_defs: list) -> MCPPool:
     return pool
 
 
-def test_compact_tools_disabled_by_default(monkeypatch):
+def test_compact_tools_auto_enabled_for_local_route(monkeypatch):
+    """Compact tools are auto-enabled when SWARM_ROUTE_DEFAULT=local (default)."""
     monkeypatch.delenv("SWARM_MCP_COMPACT_TOOLS", raising=False)
+    monkeypatch.setenv("SWARM_ROUTE_DEFAULT", "local")
+    assert _mcp_compact_tools_enabled() is True
+
+
+def test_compact_tools_disabled_for_cloud_route(monkeypatch):
+    """Compact tools are disabled for cloud models by default."""
+    monkeypatch.delenv("SWARM_MCP_COMPACT_TOOLS", raising=False)
+    monkeypatch.setenv("SWARM_ROUTE_DEFAULT", "cloud")
+    assert _mcp_compact_tools_enabled() is False
+
+
+def test_compact_tools_explicit_off_overrides_local(monkeypatch):
+    """Explicit SWARM_MCP_COMPACT_TOOLS=0 overrides auto-enable for local."""
+    monkeypatch.setenv("SWARM_MCP_COMPACT_TOOLS", "0")
+    monkeypatch.setenv("SWARM_ROUTE_DEFAULT", "local")
     assert _mcp_compact_tools_enabled() is False
 
 
@@ -67,6 +83,7 @@ def test_openai_tools_compact_truncates_description(monkeypatch):
 
 def test_openai_tools_no_compact_keeps_full_description(monkeypatch):
     monkeypatch.delenv("SWARM_MCP_COMPACT_TOOLS", raising=False)
+    monkeypatch.setenv("SWARM_ROUTE_DEFAULT", "cloud")  # cloud route disables auto-compact
 
     long_description = "y" * 300
     pool = _make_pool([{

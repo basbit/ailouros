@@ -14,11 +14,21 @@ from typing import Any, Optional, TypeVar
 from backend.App.orchestration.application.agent_runner import run_agent_with_boundary
 from backend.App.orchestration.application.parallel_limits import swarm_max_parallel_tasks
 from backend.App.orchestration.domain.defect import parse_defect_report
-from backend.App.orchestration.domain.quality_gate_policy import extract_defect_report, extract_verdict
+from backend.App.orchestration.domain.quality_gate_policy import (
+    VERDICT_RE as _DOMAIN_VERDICT_RE,
+    extract_defect_report,
+    extract_verdict,
+)
 
 _log = logging.getLogger(__name__)
 
-_VERDICT_RE = re.compile(r"VERDICT\s*:", re.IGNORECASE)
+# Keep this gate regex in lockstep with ``quality_gate_policy.VERDICT_RE`` so the
+# upstream "has verdict" check and the downstream "parse verdict" call agree on
+# what counts as a valid marker. If the domain regex accepts markdown-wrapped
+# verdicts (``**Verdict:** NEEDS_WORK``), so must this one — otherwise a malformed
+# response passes the gate but extracts as OK, silently bypassing the dev-rework
+# loop (historical bug fixed 2026-04-16).
+_VERDICT_RE = _DOMAIN_VERDICT_RE
 _DEFECT_REPORT_RE = re.compile(r"<defect_report>.*?</defect_report>", re.IGNORECASE | re.DOTALL)
 
 # Telemetry counters (process-level, reset on restart)

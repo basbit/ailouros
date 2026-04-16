@@ -55,7 +55,7 @@ class McpToolsAdapter(ToolsRuntimePort):
         from backend.App.integrations.infrastructure.mcp.stdio.session import MCPPool
 
         with MCPPool(self._servers) as pool:
-            raw_result = pool.call_tool(name, args)
+            raw_result = pool.call_tool(name, args)  # type: ignore[attr-defined]
 
         content = raw_result if isinstance(raw_result, str) else str(raw_result)
         is_error = isinstance(raw_result, dict) and bool(raw_result.get("isError"))

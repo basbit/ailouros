@@ -36,7 +36,7 @@ class LocalExecutionEnvironment(ExecutionEnvironmentPort):
         timeout_sec: int = 300,
     ) -> ExecutionResult:
         import time
-        from backend.App.orchestration.infrastructure.sandbox_exec import run_in_sandbox
+        from backend.App.orchestration.infrastructure.sandbox_exec import run_in_sandbox  # type: ignore[attr-defined]
 
         env_id = str(uuid.uuid4())[:8]
 

@@ -6,10 +6,43 @@ _bare_repo_scaffold_instruction and path-hints helper.
 from __future__ import annotations
 
 import logging
+import os
+from typing import Any
 
 from backend.App.orchestration.application.pipeline_state import PipelineState
+from backend.App.workspace.infrastructure.workspace_io import command_exec_allowed
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Test-path detection — configurable, no hardcoded conventions
+# ---------------------------------------------------------------------------
+#
+# Defaults below cover the most common test layouts as a starting point only.
+# Operators MUST override via env vars or agent_config when their project uses
+# a non-standard layout (§1: no hardcoded conventions).  Defaults are
+# documented and overrideable, not embedded knowledge.
+#
+# Env vars (comma-separated):
+#   SWARM_TEST_PATH_SUBSTRINGS   — substrings searched anywhere in path
+#   SWARM_TEST_PATH_SEGMENTS     — exact path segments (between slashes)
+#   SWARM_TEST_PATH_NAME_PREFIXES — basename prefixes
+#   SWARM_TEST_PATH_STEM_SUFFIXES — basename-without-ext suffixes
+#
+# An empty value disables that category entirely.
+
+_DEFAULT_TEST_SUBSTRINGS = ".test.,.spec."
+_DEFAULT_TEST_SEGMENTS = "__tests__,tests,spec,specs"
+_DEFAULT_TEST_NAME_PREFIXES = "test_"
+_DEFAULT_TEST_STEM_SUFFIXES = "_test"
+
+
+def _csv_env(name: str, default: str) -> tuple[str, ...]:
+    raw = os.environ.get(name)
+    if raw is None:
+        raw = default
+    return tuple(item.strip().lower() for item in raw.split(",") if item.strip())
 
 
 def _workspace_root_str(state: PipelineState) -> str:
@@ -17,16 +50,30 @@ def _workspace_root_str(state: PipelineState) -> str:
 
 
 def _path_hints_automated_tests(rel_path: str) -> bool:
-    """Грубая эвристика: путь похож на тесты/спеки — без привязки к npm/eslint и т.д."""
+    """Heuristic: does *rel_path* look like a test/spec file?
+
+    Patterns are read from env vars at call time so operators can tune the
+    detection per project without editing code.  See module docstring for
+    the env var names.  Defaults are a starting point, not project policy.
+    """
     p = rel_path.lower().replace("\\", "/")
-    if ".test." in p or ".spec." in p:
+
+    substrings = _csv_env("SWARM_TEST_PATH_SUBSTRINGS", _DEFAULT_TEST_SUBSTRINGS)
+    if any(s in p for s in substrings):
         return True
+
     parts = [x for x in p.split("/") if x]
-    if any(seg in ("__tests__", "tests", "spec", "specs") for seg in parts):
+    segments = _csv_env("SWARM_TEST_PATH_SEGMENTS", _DEFAULT_TEST_SEGMENTS)
+    if any(seg in segments for seg in parts):
         return True
+
     name = parts[-1] if parts else p
     base = name.rsplit(".", 1)[0] if "." in name else name
-    if name.startswith("test_") or base.endswith("_test"):
+    name_prefixes = _csv_env("SWARM_TEST_PATH_NAME_PREFIXES", _DEFAULT_TEST_NAME_PREFIXES)
+    stem_suffixes = _csv_env("SWARM_TEST_PATH_STEM_SUFFIXES", _DEFAULT_TEST_STEM_SUFFIXES)
+    if any(name.startswith(pref) for pref in name_prefixes):
+        return True
+    if any(base.endswith(suf) for suf in stem_suffixes):
         return True
     return False
 
@@ -37,7 +84,8 @@ def _bare_repo_scaffold_instruction(state: PipelineState) -> str:
         return ""
     if not bool(state.get("workspace_apply_writes")):
         return ""
-    ca = state.get("code_analysis") if isinstance(state.get("code_analysis"), dict) else {}
+    _ca_raw = state.get("code_analysis")
+    ca: dict[str, Any] = _ca_raw if isinstance(_ca_raw, dict) else {}
     files = ca.get("files")
     if not isinstance(files, list) or not files:
         return ""
@@ -98,11 +146,7 @@ def _dev_workspace_instructions(state: PipelineState) -> str:
         "see docs/AIlourOS.md.\n"
     )
     apply_writes = bool(state.get("workspace_apply_writes"))
-    try:
-        from backend.App.workspace.infrastructure.workspace_io import command_exec_allowed
-        cmd_exec = command_exec_allowed()
-    except Exception:
-        cmd_exec = False
+    cmd_exec = command_exec_allowed()
 
     if apply_writes:
         part += (
@@ -142,11 +186,7 @@ def _qa_workspace_verification_instructions(state: PipelineState) -> str:
         return ""
     bare = _bare_repo_scaffold_instruction(state)
     apply_writes = bool(state.get("workspace_apply_writes"))
-    try:
-        from backend.App.workspace.infrastructure.workspace_io import command_exec_allowed
-        cmd_exec = command_exec_allowed()
-    except Exception:
-        cmd_exec = False
+    cmd_exec = command_exec_allowed()
     part = (
         bare
         + "\n\n[Workspace verification]\n"

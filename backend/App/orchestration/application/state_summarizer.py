@@ -41,7 +41,7 @@ def summarize_text(text: str, role_hint: str = "", agent_config: dict[str, Any] 
     try:
         from backend.App.integrations.infrastructure.llm.client import ask_model
 
-        reviewer_cfg = {}
+        reviewer_cfg: dict[str, Any] = {}
         if isinstance(agent_config, dict):
             reviewer_cfg = agent_config.get("reviewer") or {}
 
@@ -69,12 +69,14 @@ def summarize_text(text: str, role_hint: str = "", agent_config: dict[str, Any] 
             },
         ]
 
-        result = ask_model(
+        result_tuple = ask_model(
             messages=messages,
             model=model,
             temperature=0.1,
         )
-        summary = (result or "").strip()
+        # ask_model returns (text, usage_dict)
+        result_text = result_tuple[0] if isinstance(result_tuple, tuple) else str(result_tuple)
+        summary = (result_text or "").strip()
         if summary and len(summary) < len(text):
             logger.info(
                 "state_summarizer: %s summarized %d → %d chars (model=%s)",

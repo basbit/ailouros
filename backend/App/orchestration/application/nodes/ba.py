@@ -67,9 +67,12 @@ def _ba_memory_artifact(ba_output: str, repo_evidence_artifact: Mapping[str, Any
 
 
 def ba_node(state: PipelineState) -> dict[str, Any]:
+    from backend.App.orchestration.application.context_budget import get_context_budget
+
     plan_ctx = planning_pipeline_user_context(state)
+    _budget = get_context_budget("ba", state.get("agent_config") if isinstance(state.get("agent_config"), dict) else None)
     xmem = format_cross_task_memory_block(
-        state, plan_ctx, current_step="ba"
+        state, plan_ctx, current_step="ba", max_chars=_budget.cross_task_memory_chars,
     )
     ctx = _pipeline_context_block(state, "ba")
     pm_output = state.get("pm_output") or ""
@@ -78,15 +81,16 @@ def ba_node(state: PipelineState) -> dict[str, Any]:
         + ctx
         + _swarm_prompt_prefix(state)
         + planning_mcp_tool_instruction(state)
-        + _project_knowledge_block(state)
+        + _project_knowledge_block(state, step_id="ba")
         + "User task:\n"
         f"{plan_ctx}\n\n"
         "PM decomposition:\n"
         f"{pm_output}\n\n"
-        "IMPORTANT: Before writing your evidence, use workspace tools to verify your claims:\n"
-        "- Use workspace__list_directory to explore the project structure.\n"
-        "- Use workspace__read_text_file to read key files (composer.json, config, src/ structure).\n"
-        "- Only claim repo_evidence for things you have actually read and confirmed.\n\n"
+        "IMPORTANT: Before writing your evidence, verify your claims against the workspace snapshot "
+        "and project context provided above:\n"
+        "- Review the file tree and project structure from the context block.\n"
+        "- Only claim repo_evidence for things you can confirm from the provided context.\n"
+        "- If no workspace snapshot is available, state that repo_evidence is empty.\n\n"
         "Evidence contract:\n"
         "If you claim that the current repository or existing product already contains a module, "
         "entity, workflow, endpoint, or business constraint, add a final ```json``` block with:\n"
@@ -146,7 +150,9 @@ def review_ba_node(state: PipelineState) -> dict[str, Any]:
     prompt = (
         "Step: ba (Business Analyst).\n"
         "Checklist — issue VERDICT: NEEDS_WORK if ANY item fails:\n"
-        "[ ] No stack/technology decisions made (stack belongs to Architect)\n"
+        "[ ] BA did not introduce NEW stack/technology decisions — BA may reference or label "
+        "a stack already confirmed in the workspace (existing files, wiki, code_analysis, or "
+        "previous Architecture ADR); only an unsupported new decision by BA is a violation\n"
         "[ ] Existing-product or repository claims are backed by validated repo_evidence or explicitly marked unverified\n"
         "[ ] User stories have explicit acceptance criteria (Given/When/Then or equivalent)\n"
         "[ ] No full PRD produced for a small (XS/S) scope — output must match scope size\n"

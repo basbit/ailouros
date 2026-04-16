@@ -319,6 +319,37 @@ def ask_model(
         base_url=resolved_base_url,
     )
 
+    # Per-call timeout (review-rules §2 — fail fast by default).
+    # Mirrors router.py `_local_llm_request_timeout_sec`; kept local here
+    # to avoid a cyclic import router → client → router.
+    if "timeout" not in create_kwargs:
+        from backend.App.integrations.infrastructure.llm.router import (
+            _local_llm_request_timeout_sec as _resolve_timeout,
+        )
+        _t = _resolve_timeout(resolved_base_url)
+        if _t is not None:
+            create_kwargs["timeout"] = _t
+
+    # Reasoning-budget cap for local thinking models (bug aec02899).
+    # Without this cap qwen3-* / deepseek-r1 / *-ud-mlx can enter an
+    # unbounded <thinking> loop and burn 3+ hours of wall-clock per call.
+    # ``LLMRouter.ask`` applies this already; ``ask_model`` used by every
+    # ``BaseAgent`` did NOT — so every agent that ran through ``BaseAgent``
+    # had reasoning *effectively unbounded*. Mirror the router's logic here
+    # (kept local to avoid a cyclic import router → client → router).
+    if "extra_body" not in create_kwargs:
+        from backend.App.integrations.infrastructure.llm.router import (
+            _local_llm_reasoning_budget as _resolve_reasoning_budget,
+        )
+        _budget = _resolve_reasoning_budget(model, resolved_base_url)
+        if _budget is not None:
+            create_kwargs["extra_body"] = {"thinking_budget_tokens": _budget}
+            logger.info(
+                "ask_model: local reasoning budget cap: thinking_budget_tokens=%d model=%r",
+                _budget,
+                model,
+            )
+
     def _chat_create():  # return type is openai ChatCompletion — omit to avoid import cycle
         return client.chat.completions.create(**create_kwargs)
 
@@ -351,7 +382,7 @@ def ask_model(
         raise ValueError(f"LLM returned empty choices list (model={model})")
     text = response.choices[0].message.content or ""
     usage_obj = response.usage
-    usage: dict[str, Any] = {
+    usage = {
         "input_tokens": (getattr(usage_obj, "prompt_tokens", None) or 0),
         "output_tokens": (getattr(usage_obj, "completion_tokens", None) or 0),
         "model": model,

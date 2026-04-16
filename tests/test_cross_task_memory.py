@@ -283,7 +283,12 @@ def test_append_episode_with_redis(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_search_episodes_disabled(monkeypatch):
-    monkeypatch.delenv("SWARM_CROSS_TASK_MEMORY", raising=False)
+    # Default for the layer is "enabled"; we have to opt out explicitly
+    # to verify the disabled path. (The previous version of this test
+    # only deleted the env var and passed by accident because the legacy
+    # token scorer happened to return 0 for the body left behind by other
+    # tests in this module.)
+    monkeypatch.setenv("SWARM_CROSS_TASK_MEMORY", "0")
     assert search_episodes({}, "query") == []
 
 
@@ -449,3 +454,124 @@ def test_render_structured_memory_uses_sections():
     assert "- fact a" in rendered
     assert "## Decisions" in rendered
     assert "## Constraints" in rendered
+
+
+# ---------------------------------------------------------------------------
+# Semantic layer (stub provider) — real-model variants live in
+# tests/smoke/test_cross_task_memory_smoke.py.
+# ---------------------------------------------------------------------------
+
+
+class _StubEmbedderCT:
+    """Hand-crafted provider — orthogonal axes for distinct topic groups."""
+
+    name = "stub"
+    dim = 4
+    _AXES = ("auth", "deploy", "design", "memory")
+
+    def embed(self, texts):
+        out = []
+        for text in texts:
+            lowered = text.lower()
+            vec = [1.0 if axis in lowered else 0.0 for axis in self._AXES]
+            norm = sum(v * v for v in vec) ** 0.5
+            if norm:
+                vec = [v / norm for v in vec]
+            out.append(vec)
+        return out
+
+
+@pytest.fixture
+def _semantic_provider_ct(monkeypatch):
+    from backend.App.integrations.infrastructure import embedding_service
+    embedding_service.reset_embedding_provider()
+    stub = _StubEmbedderCT()
+    monkeypatch.setattr(embedding_service, "_provider_singleton", stub)
+    monkeypatch.delenv("SWARM_CROSS_TASK_MEMORY_SEMANTIC", raising=False)
+    monkeypatch.delenv("SWARM_CROSS_TASK_MEMORY_SEMANTIC_WEIGHT", raising=False)
+    monkeypatch.setenv("SWARM_CROSS_TASK_MEMORY", "1")
+    _LOCAL_EPISODES.clear()
+    yield stub
+    embedding_service.reset_embedding_provider()
+    _LOCAL_EPISODES.clear()
+
+
+def test_episode_payload_includes_embedding_when_provider_available(_semantic_provider_ct):
+    payload = _build_episode_payload(
+        step_id="pm",
+        body="auth and login flow notes",
+        task_id="t1",
+    )
+    assert "embedding" in payload
+    assert isinstance(payload["embedding"], list)
+    assert len(payload["embedding"]) == _StubEmbedderCT.dim
+
+
+def test_episode_payload_skips_embedding_when_disabled(monkeypatch):
+    monkeypatch.setenv("SWARM_CROSS_TASK_MEMORY_SEMANTIC", "0")
+    payload = _build_episode_payload(
+        step_id="pm",
+        body="auth and login flow notes",
+        task_id="t1",
+    )
+    assert "embedding" not in payload
+
+
+def test_search_uses_hybrid_score_to_pick_semantically_close_episode(_semantic_provider_ct):
+    """Two episodes share zero useful tokens with the query; only the one
+    on the same semantic axis ('auth') should win."""
+    state = _state()
+    with patch(
+        "backend.App.integrations.infrastructure.cross_task_memory._redis",
+        side_effect=lambda: None,
+    ):
+        append_episode(state, step_id="pm", body="auth handshake notes", task_id="t1")
+        append_episode(state, step_id="pm", body="deploy CI rollout", task_id="t2")
+        results = search_episodes(state, "auth login flow", limit=2)
+    assert results
+    top_body = results[0][0]["body"]
+    assert "auth" in top_body, f"expected auth episode to win, got {top_body!r}"
+
+
+def test_search_handles_episodes_without_embedding(monkeypatch):
+    """Episodes written before the semantic layer have no 'embedding'
+    field. Search must not crash and should fall back to token score."""
+    monkeypatch.setenv("SWARM_CROSS_TASK_MEMORY", "1")
+    monkeypatch.setenv("SWARM_CROSS_TASK_MEMORY_SEMANTIC", "0")
+    _LOCAL_EPISODES.clear()
+    _LOCAL_EPISODES["default"] = [
+        {"step": "pm", "task_id": "t1", "body": "authentication and JWT keys"},
+    ]
+    with patch(
+        "backend.App.integrations.infrastructure.cross_task_memory._redis",
+        side_effect=lambda: None,
+    ):
+        results = search_episodes({}, "authentication", limit=2)
+    assert results and "authentication" in results[0][0]["body"]
+
+
+def test_search_ignores_vector_with_wrong_dim(_semantic_provider_ct):
+    """Stored vectors with the wrong dim must be ignored, not crash."""
+    state = _state()
+    _LOCAL_EPISODES["default"] = [
+        {
+            "step": "pm",
+            "task_id": "t1",
+            "body": "auth notes",
+            "embedding": [0.1] * 999,  # wrong dim
+        },
+    ]
+    with patch(
+        "backend.App.integrations.infrastructure.cross_task_memory._redis",
+        side_effect=lambda: None,
+    ):
+        results = search_episodes(state, "auth", limit=2)
+    # Token 'auth' overlaps so we still get a hit even though the vector
+    # was rejected. The important thing is no exception was raised.
+    assert results
+
+
+def test_score_episode_legacy_alias_still_works():
+    """Keep the legacy name; it's used by external scripts."""
+    score = _score_episode("authentication", "user authentication flow")
+    assert score > 0

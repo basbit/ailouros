@@ -188,6 +188,8 @@ class ApprovalPolicy:
         artifacts = state.get("step_artifacts", {})
         artifact = artifacts.get(step.get("step_id", ""), {})
         score = artifact.get("confidence_score")
+        if score is None:
+            return False
         try:
             return float(score) > 0.9
         except (TypeError, ValueError):

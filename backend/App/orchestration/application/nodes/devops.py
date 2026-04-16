@@ -50,7 +50,8 @@ def devops_node(state: PipelineState) -> dict[str, Any]:
     )
     ws = _dev_workspace_instructions(state)
     ctx = _pipeline_context_block(state, "devops")
-    code_analysis = state.get("code_analysis") if isinstance(state.get("code_analysis"), dict) else {}
+    _ca_raw = state.get("code_analysis")
+    code_analysis: dict[str, Any] = _ca_raw if isinstance(_ca_raw, dict) else {}
     use_mcp = _should_use_mcp_for_workspace(state)
     ca_block = ""
     if not use_mcp and not _code_analysis_is_weak(code_analysis):
@@ -59,7 +60,7 @@ def devops_node(state: PipelineState) -> dict[str, Any]:
         ctx
         + _swarm_prompt_prefix(state)
         + planning_mcp_tool_instruction(state)
-        + _project_knowledge_block(state)
+        + _project_knowledge_block(state, step_id="devops")
         + "[Pipeline rule] Based on the **approved specification** (below), prepare the "
         "**bootstrap**: dependency installation, project initialization if needed, "
         "operator command runbook. The stack comes from the Architect section.\n"

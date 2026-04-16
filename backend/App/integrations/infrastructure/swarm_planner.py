@@ -30,8 +30,10 @@ def plan_pipeline_steps(
 ) -> dict[str, Any]:
     """Вызов LLM: вернуть JSON с pipeline_steps и rationale."""
     ac = agent_config or {}
-    pm = ac.get("pm") if isinstance(ac.get("pm"), dict) else {}
-    planner_cfg = ac.get("swarm_planner") if isinstance(ac.get("swarm_planner"), dict) else {}
+    _pm_raw = ac.get("pm")
+    pm: dict[str, Any] = _pm_raw if isinstance(_pm_raw, dict) else {}
+    _planner_raw = ac.get("swarm_planner")
+    planner_cfg: dict[str, Any] = _planner_raw if isinstance(_planner_raw, dict) else {}
     env = str(planner_cfg.get("environment") or pm.get("environment") or "ollama")
     model = str(
         planner_cfg.get("model")

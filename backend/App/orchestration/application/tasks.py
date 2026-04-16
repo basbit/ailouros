@@ -191,9 +191,7 @@ def prepare_workspace(
         meta["assembled_input_chars"] = len(effective)
         return effective, None, meta
 
-    snap: str
     nfiles: int
-    section_title: str
     if mode == WORKSPACE_CONTEXT_MODE_TOOLS_ONLY:
         snap = tools_only_workspace_placeholder(str(root_for_paths))
         nfiles = 0
@@ -203,7 +201,8 @@ def prepare_workspace(
             copy.deepcopy(agent_config or {}),
             workspace_root=str(root_for_paths),
         )
-        mcp = merged.get("mcp") if isinstance(merged.get("mcp"), dict) else {}
+        _mcp_raw = merged.get("mcp")
+        mcp: dict[str, Any] = _mcp_raw if isinstance(_mcp_raw, dict) else {}
         if mcp.get("servers"):
             snap = tools_only_workspace_placeholder(str(root_for_paths))
             nfiles = 0
@@ -423,7 +422,8 @@ def start_pipeline_run(
             run_shell=run_sh,
         )
         # EC-1: Hard fail if dev produced 0 workspace writes
-        _ws_result = snapshot.get("workspace_writes") or {}
+        _ws_raw = snapshot.get("workspace_writes") or {}
+        _ws_result: dict[str, Any] = _ws_raw if isinstance(_ws_raw, dict) else {}
         _require_writes = os.getenv("SWARM_REQUIRE_DEV_WRITES", "1").strip() in ("1", "true", "yes")
         _mcp_wc = snapshot.get("dev_mcp_write_count", 0)
         _zero_writes = (

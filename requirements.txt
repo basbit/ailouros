@@ -22,3 +22,10 @@ prometheus-client>=0.21.0,<1
 duckduckgo-search>=6.0.0,<8
 # Optional: litellm for unified 200+ provider routing (enable via SWARM_USE_LITELLM=1)
 litellm>=1.0.0,<2; extra == "litellm"
+
+# Optional: local embeddings for semantic wiki search and semantic memory.
+# Pulls torch + transformers (~500 MB), so it's not in the base image.
+# Install on demand:   make install-embeddings
+# Also installed automatically by:   make smoke-fast / make smoke
+# See backend.App.integrations.infrastructure.embedding_service for runtime
+# selection (SWARM_EMBEDDING_PROVIDER=local|openai|null).

@@ -41,10 +41,12 @@ def get_session_store() -> Any:
             return _session_store
         if _redis_available():
             try:
+                import redis  # type: ignore[import-not-found]
                 from backend.App.orchestration.infrastructure.redis_session_store import (
                     RedisSessionStore,
                 )
-                _session_store = RedisSessionStore()
+                _redis_client = redis.Redis.from_url(os.environ["REDIS_URL"])
+                _session_store = RedisSessionStore(_redis_client)
                 logger.info("Singletons: using RedisSessionStore")
             except Exception as exc:
                 logger.warning("RedisSessionStore unavailable (%s), falling back to in-memory", exc)
@@ -71,10 +73,12 @@ def get_trace_collector() -> Any:
             return _trace_collector
         if _redis_available():
             try:
+                import redis  # type: ignore[import-not-found]
                 from backend.App.orchestration.infrastructure.redis_trace_collector import (
                     RedisTraceCollector,
                 )
-                _trace_collector = RedisTraceCollector()
+                _redis_client = redis.Redis.from_url(os.environ["REDIS_URL"])
+                _trace_collector = RedisTraceCollector(_redis_client)
                 logger.info("Singletons: using RedisTraceCollector")
             except Exception as exc:
                 logger.warning("RedisTraceCollector unavailable (%s), falling back to in-memory", exc)

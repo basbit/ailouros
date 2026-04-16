@@ -72,7 +72,7 @@ def _call_llm(event_type: str, path: str) -> dict[str, str]:
     prompt = _build_prompt(event_type, path)
     raw = ""
     try:
-        from backend.App.integrations.infrastructure.llm.client import (
+        from backend.App.integrations.infrastructure.llm.client import (  # type: ignore[attr-defined]
             AnthropicClient,
         )
 

@@ -368,6 +368,117 @@ def test_ask_model_empty_choices_raises(monkeypatch):
             )
 
 
+def test_ask_model_applies_reasoning_budget_for_local_reasoning_model(monkeypatch):
+    """Regression: bug aec02899 — ``ask_model`` (the BaseAgent path) must apply
+    the same ``thinking_budget_tokens`` cap that ``LLMRouter.ask`` applies.
+
+    Without the cap, local reasoning models (``qwen3``, ``deepseek-r1``,
+    ``*-ud-mlx``) can enter an unbounded ``<thinking>`` loop and hold the HTTP
+    connection open for 3+ hours. Every agent in the pipeline runs through
+    ``BaseAgent.run`` → ``ask_model`` → here, so this cap is critical.
+    """
+    monkeypatch.setenv("SWARM_LLM_CACHE_TTL", "0")
+    monkeypatch.delenv("SWARM_LOCAL_LLM_REASONING_BUDGET", raising=False)
+
+    mock_choice = MagicMock()
+    mock_choice.message.content = "ok"
+    mock_usage = MagicMock()
+    mock_usage.prompt_tokens = 5
+    mock_usage.completion_tokens = 1
+
+    mock_response = MagicMock()
+    mock_response.choices = [mock_choice]
+    mock_response.usage = mock_usage
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = mock_response
+
+    with patch(
+        "backend.App.integrations.infrastructure.llm.client._litellm_enabled",
+        return_value=False,
+    ), patch(
+        "backend.App.integrations.infrastructure.llm.client._use_anthropic_backend",
+        return_value=False,
+    ), patch(
+        "backend.App.integrations.infrastructure.llm.client.cache_enabled",
+        return_value=False,
+    ), patch(
+        "backend.App.integrations.infrastructure.llm.client._build_client",
+        return_value=mock_client,
+    ), patch(
+        "backend.App.integrations.infrastructure.llm.client._local_llm_serialize_http_enabled",
+        return_value=False,
+    ):
+        from backend.App.integrations.infrastructure.llm.client import ask_model
+        ask_model(
+            messages=[{"role": "user", "content": "hi"}],
+            model="qwen3.5-9b-ud-mlx",  # matches _REASONING_MODEL_KEYWORDS
+            base_url="http://localhost:1234/v1",  # LM Studio, matches local url
+            api_key="lm-studio",
+        )
+
+    # ``chat.completions.create`` must receive ``extra_body.thinking_budget_tokens``.
+    create_kwargs = mock_client.chat.completions.create.call_args.kwargs
+    assert "extra_body" in create_kwargs, (
+        "ask_model must inject thinking_budget_tokens for local reasoning models"
+    )
+    assert "thinking_budget_tokens" in create_kwargs["extra_body"]
+    assert create_kwargs["extra_body"]["thinking_budget_tokens"] > 0
+
+
+def test_ask_model_skips_reasoning_budget_for_non_reasoning_model(monkeypatch):
+    """Only known reasoning-model keywords should get the budget cap.
+
+    Models like ``openai/gpt-oss-20b`` (used for PM/BA/Architect) don't use
+    chain-of-thought tokens and must not get an ``extra_body`` injection —
+    LM Studio returns 400 on unknown keys for some loaders.
+    """
+    monkeypatch.setenv("SWARM_LLM_CACHE_TTL", "0")
+
+    mock_choice = MagicMock()
+    mock_choice.message.content = "ok"
+    mock_usage = MagicMock()
+    mock_usage.prompt_tokens = 5
+    mock_usage.completion_tokens = 1
+
+    mock_response = MagicMock()
+    mock_response.choices = [mock_choice]
+    mock_response.usage = mock_usage
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = mock_response
+
+    with patch(
+        "backend.App.integrations.infrastructure.llm.client._litellm_enabled",
+        return_value=False,
+    ), patch(
+        "backend.App.integrations.infrastructure.llm.client._use_anthropic_backend",
+        return_value=False,
+    ), patch(
+        "backend.App.integrations.infrastructure.llm.client.cache_enabled",
+        return_value=False,
+    ), patch(
+        "backend.App.integrations.infrastructure.llm.client._build_client",
+        return_value=mock_client,
+    ), patch(
+        "backend.App.integrations.infrastructure.llm.client._local_llm_serialize_http_enabled",
+        return_value=False,
+    ):
+        from backend.App.integrations.infrastructure.llm.client import ask_model
+        ask_model(
+            messages=[{"role": "user", "content": "hi"}],
+            model="openai/gpt-oss-20b",
+            base_url="http://localhost:1234/v1",
+            api_key="lm-studio",
+        )
+
+    create_kwargs = mock_client.chat.completions.create.call_args.kwargs
+    assert "extra_body" not in create_kwargs, (
+        "Non-reasoning models must NOT get thinking_budget_tokens injected "
+        "(some LM Studio loaders 400 on unknown keys)."
+    )
+
+
 # ---------------------------------------------------------------------------
 # _make_openai_client_uncached — timeout branches
 # ---------------------------------------------------------------------------

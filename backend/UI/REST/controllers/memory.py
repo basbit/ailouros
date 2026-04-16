@@ -1,4 +1,4 @@
-"""Memory routes: /v1/pattern-memory/*, /v1/memory/notes, /v1/memory/consolidate."""
+"""Memory routes: /v1/memory/notes, /v1/memory/consolidate."""
 
 from __future__ import annotations
 
@@ -11,65 +11,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from backend.UI.REST.schemas import PatternMemoryStoreRequest
-
 router = APIRouter()
-
-
-@router.post("/v1/pattern-memory/store")
-async def pattern_memory_store(body: PatternMemoryStoreRequest) -> JSONResponse:
-    from backend.App.integrations.infrastructure.pattern_memory import store_pattern
-
-    if body.path and str(body.path).strip():
-        memory_file_path = Path(str(body.path).strip()).expanduser().resolve()
-    else:
-        env_path_str = os.getenv("SWARM_PATTERN_MEMORY_PATH", "").strip()
-        if env_path_str:
-            memory_file_path = Path(env_path_str).expanduser().resolve()
-        else:
-            memory_file_path = (Path.cwd() / ".swarm" / "pattern_memory.json").resolve()
-    try:
-        store_pattern(
-            memory_file_path,
-            body.namespace,
-            body.key,
-            body.value,
-            merge=body.merge,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return JSONResponse({"ok": True, "path": str(memory_file_path)})
-
-
-@router.get("/v1/pattern-memory/list")
-async def pattern_memory_list(namespace: str = "default", limit: int = 50) -> JSONResponse:
-    """Return entries from the pattern memory JSON file, optionally filtered by namespace."""
-    from backend.App.integrations.infrastructure.pattern_memory import (
-        pattern_memory_path_for_state,
-    )
-
-    path = pattern_memory_path_for_state({})
-    if not path.is_file():
-        return JSONResponse(content={"entries": []})
-
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return JSONResponse(content={"entries": [], "error": str(exc)})
-
-    entries: list[dict[str, Any]] = []
-    if isinstance(raw, dict):
-        ns_data = raw.get(namespace) if namespace else raw
-        if isinstance(ns_data, dict):
-            for key, value in ns_data.items():
-                entries.append({"namespace": namespace, "key": key, "text": str(value)})
-        elif isinstance(raw, dict):
-            for ns_key, ns_val in raw.items():
-                if isinstance(ns_val, dict):
-                    for k, v in ns_val.items():
-                        entries.append({"namespace": ns_key, "key": k, "text": str(v)})
-
-    return JSONResponse(content={"entries": entries[:limit]})
 
 
 @router.get("/v1/memory/notes")

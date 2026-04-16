@@ -158,6 +158,6 @@ def make_openai_client(*, base_url: str, api_key: str) -> OpenAI:
 
 
 def _build_client(base_url: Optional[str] = None, api_key: Optional[str] = None) -> OpenAI:
-    base_url_final = base_url or os.getenv("OPENAI_BASE_URL", OLLAMA_BASE_URL)
-    api_key_final = api_key or os.getenv("OPENAI_API_KEY", "ollama")
+    base_url_final = base_url or os.getenv("OPENAI_BASE_URL", OLLAMA_BASE_URL) or ""
+    api_key_final = api_key or os.getenv("OPENAI_API_KEY", "ollama") or ""
     return make_openai_client(base_url=base_url_final, api_key=api_key_final)

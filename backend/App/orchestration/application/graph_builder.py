@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 from backend.App.orchestration.application.pipeline_state import PipelineState
 from backend.App.orchestration.application.pipeline_runtime_support import (
@@ -26,7 +26,7 @@ from backend.App.orchestration.application.pipeline_runners import (
     _sync_pipeline_machine,
     _transition_pipeline_phase,
 )
-from backend.App.orchestration.application.step_decorator import hook_wrap
+from backend.App.orchestration.application.step_decorator import hook_wrap as _raw_hook_wrap
 from backend.App.orchestration.domain.graph_runtime import ConditionalEdgeDef, EdgeDef, GraphDefinition, NodeDef
 from backend.App.orchestration.domain.quality_gate_policy import extract_verdict, should_retry as _qg_should_retry
 from backend.App.orchestration.domain.pipeline_machine import PipelineMachine, PipelinePhase
@@ -57,7 +57,7 @@ def _max_step_retries_env() -> int:
 _approval_policy = load_approval_policy_from_env()
 
 
-def _quality_gate_enabled(state: dict) -> bool:
+def _quality_gate_enabled(state: Any) -> bool:
     """Return whether the quality gate is active for this run.
 
     Checks agent_config.swarm.quality_gate_enabled first (UI toggle),
@@ -83,15 +83,33 @@ def _with_approval_gate(step_id: str, node_fn: Callable) -> Callable:
     """Wrap a human-gate node with ApprovalPolicy check (K-5/M-9).
 
     If the policy auto-approves, returns {} immediately (skips human wait).
+    Auto-approval events are emitted into the SSE stream (§10.8).
     """
     def _wrapped(state: PipelineState) -> dict[str, Any]:
-        decision = _approval_policy.evaluate({"step_id": step_id}, dict(state))
+        import json as _json
+        import queue as _q
+        import datetime as _dt
+
+        decision = _approval_policy.evaluate({"step_id": step_id}, cast(Any, dict(state)))
         if decision.approved:
             logger.info(
                 "AutoApproval: step=%s skipping human gate (rule=%s)",
                 step_id, decision.rule_matched,
             )
-            auto_approvals: list[dict[str, Any]] = list(state.get("auto_approvals") or [])
+            # §10.8 — emit auto_approved SSE event via the step's progress queue
+            _pq = state.get("_stream_progress_queue")
+            if isinstance(_pq, _q.Queue):
+                try:
+                    _pq.put(_json.dumps({
+                        "_event_type": "auto_approved",
+                        "step": step_id,
+                        "rule": decision.rule_matched,
+                        "timestamp": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+                        "content_hash": (decision.audit or {}).get("content_hash", ""),
+                    }))
+                except Exception:
+                    pass
+            auto_approvals: list[dict[str, Any]] = list(cast(list[dict[str, Any]], state.get("auto_approvals") or []))
             auto_approvals.append({"step": step_id, "audit": decision.audit})
             return {"auto_approvals": auto_approvals}
         return node_fn(state)
@@ -119,10 +137,15 @@ def _dev_review_router(state: dict) -> str:
         )
         return "retry"
     if decision == "escalate":
-        logger.info(
-            "QualityGate: dev verdict=NEEDS_WORK retries=%d/%d exhausted → continue",
+        logger.warning(
+            "QualityGate: dev verdict=NEEDS_WORK retries=%d/%d exhausted → escalating to human review",
             retries, _max_retries,
         )
+        state["escalation_warning"] = (
+            f"Dev review returned NEEDS_WORK after {retries} retries (max {_max_retries}). "
+            "Retries exhausted — requires human review before proceeding."
+        )
+        return "escalate"
     return "continue"
 
 
@@ -133,7 +156,7 @@ def _dev_retry_gate_node(state: PipelineState) -> dict[str, Any]:
     machine = PipelineMachine.from_dict(state.get("pipeline_machine") or {})
     report = _load_defect_report(state, "dev_defect_report")
     open_defects = [d.to_dict() for d in report.open_p0 + report.open_p1]
-    state["open_defects"] = open_defects
+    cast(dict[str, Any], state)["open_defects"] = open_defects
     _enter_fix_cycle_or_escalate(state, machine, report, step_id="review_dev")
     retries = get_step_retries(state, "dev")
     step_retries = dict(state.get("step_retries") or {})
@@ -156,7 +179,7 @@ def _qa_retry_gate_node(state: PipelineState) -> dict[str, Any]:
     qa_review_report = _load_defect_report(state, "qa_review_defect_report")
     report = _merge_defect_reports(qa_report, qa_review_report)
     open_defects = [d.to_dict() for d in report.open_p0 + report.open_p1]
-    state["open_defects"] = open_defects
+    cast(dict[str, Any], state)["open_defects"] = open_defects
     _enter_fix_cycle_or_escalate(state, machine, report, step_id="review_qa")
     retries = get_step_retries(state, "qa")
     step_retries = dict(state.get("step_retries") or {})
@@ -190,10 +213,15 @@ def _qa_review_router(state: dict) -> str:
         )
         return "retry"
     if decision == "escalate":
-        logger.info(
-            "QualityGate: qa verdict=NEEDS_WORK retries=%d/%d exhausted → continue",
+        logger.warning(
+            "QualityGate: qa verdict=NEEDS_WORK retries=%d/%d exhausted → escalating to human review",
             retries, _max_retries,
         )
+        state["escalation_warning"] = (
+            f"QA review returned NEEDS_WORK after {retries} retries (max {_max_retries}). "
+            "Retries exhausted — requires human review before proceeding."
+        )
+        return "escalate"
     return "continue"
 
 
@@ -251,6 +279,49 @@ def _planning_review_gate_wrapper(
     return _wrapped
 
 
+def hook_wrap(step_id: str, node_fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Apply the step gate **and** the standard observability hook wrap.
+
+    Every NodeDef in this module goes through this function (84+ call
+    sites). Keeping it as a drop-in replacement for the imported
+    ``_raw_hook_wrap`` means the fix from bug aec02899 applies uniformly
+    without touching each NodeDef.
+    """
+    return _wrap_with_step_gate(step_id, _raw_hook_wrap(step_id, node_fn))
+
+
+def _wrap_with_step_gate(
+    step_id: str,
+    node_fn: Callable[[Any], dict[str, Any]],
+) -> Callable[[Any], dict[str, Any]]:
+    """Skip *node_fn* when ``step_id`` is not in ``state['_pipeline_step_ids']``.
+
+    Bug aec02899: LangGraph executes every node in the static DAG,
+    ignoring the user's ``pipeline_step_ids``. This wrapper enforces the
+    user's selection — any node whose step_id is not in the list returns
+    an empty delta and the DAG skips forward via its static edges.
+
+    Gate behaviour:
+      * missing / ``None`` / empty list  → treated as "no filter" → node runs
+        (preserves legacy behaviour when nobody threads step_ids through)
+      * non-empty list                   → node runs iff step_id is present
+      * matching is case-sensitive       → ids are canonicalised upstream
+
+    Review-rules §2: fail fast → we prefer "skip silently with a log"
+    over "run anyway" because the latter is the actual production bug.
+    """
+    def _gated(state: Any) -> dict[str, Any]:
+        selected = state.get("_pipeline_step_ids") if hasattr(state, "get") else None
+        if isinstance(selected, list) and selected and step_id not in selected:
+            logger.info(
+                "graph: skipping %r — not in user's pipeline_step_ids=%s",
+                step_id, selected,
+            )
+            return {}
+        return node_fn(state)
+    return _gated
+
+
 def _verification_layer_node(state: PipelineState) -> dict[str, Any]:
     machine = PipelineMachine.from_dict(state.get("pipeline_machine") or {})
     gate_results = _run_post_dev_verification_gates(state)
@@ -265,7 +336,7 @@ def _verification_layer_node(state: PipelineState) -> dict[str, Any]:
         "pipeline_machine": state.get("pipeline_machine", machine.to_dict()),
     }
     if "workspace_writes" in state:
-        updates["workspace_writes"] = state["workspace_writes"]
+        updates["workspace_writes"] = cast(dict[str, Any], state)["workspace_writes"]
     if gate_results:
         updates["verification_gate_summary"] = ", ".join(
             result["gate_name"] for result in gate_results
@@ -398,12 +469,12 @@ class PipelineGraphBuilder:
                 ConditionalEdgeDef(
                     from_node="REVIEW_DEV",
                     router=_dev_review_router,
-                    route_map={"retry": "DEV_RETRY_GATE", "continue": "HUMAN_DEV"},
+                    route_map={"retry": "DEV_RETRY_GATE", "continue": "HUMAN_DEV", "escalate": "HUMAN_DEV"},
                 ),
                 ConditionalEdgeDef(
                     from_node="REVIEW_QA",
                     router=_qa_review_router,
-                    route_map={"retry": "QA_RETRY_GATE", "continue": "HUMAN_QA"},
+                    route_map={"retry": "QA_RETRY_GATE", "continue": "HUMAN_QA", "escalate": "HUMAN_QA"},
                 ),
             ],
         )
@@ -413,8 +484,11 @@ class PipelineGraphBuilder:
         """Build and compile a topology-specific pipeline graph.
 
         Args:
-            topology: One of ``""``, ``"parallel"``, ``"default"``, ``"hierarchical"``,
-                ``"ring"``, or ``"mesh"``.
+            topology: One of ``""``, ``"linear"``, ``"parallel"``, ``"default"``,
+                ``"hierarchical"``, ``"ring"``, or ``"mesh"``.
+                ``"linear"`` is an explicit synonym for the default graph and
+                exists so that the UI can offer a "plain list" layout choice
+                without forking into a separate config field.
             agent_config: Agent configuration dict forwarded to nodes that inspect it
                 (e.g. mesh parallelism detection in dev/qa nodes).
 
@@ -424,7 +498,7 @@ class PipelineGraphBuilder:
         Raises:
             ValueError: If an unrecognised topology string is provided (no fallbacks).
         """
-        if topology in ("", "parallel", "default"):
+        if topology in ("", "linear", "parallel", "default"):
             return self.build()
 
         if topology == "hierarchical":
@@ -438,7 +512,8 @@ class PipelineGraphBuilder:
 
         raise ValueError(
             f"Unknown topology {topology!r}. "
-            "Valid values: '', 'parallel', 'default', 'hierarchical', 'ring', 'mesh'."
+            "Valid values: '', 'linear', 'parallel', 'default', 'hierarchical', "
+            "'ring', 'mesh'."
         )
 
     def _build_hierarchical(self):
@@ -492,12 +567,12 @@ class PipelineGraphBuilder:
                 ConditionalEdgeDef(
                     from_node="REVIEW_DEV",
                     router=_dev_review_router,
-                    route_map={"retry": "DEV_RETRY_GATE", "continue": "HUMAN_DEV"},
+                    route_map={"retry": "DEV_RETRY_GATE", "continue": "HUMAN_DEV", "escalate": "HUMAN_DEV"},
                 ),
                 ConditionalEdgeDef(
                     from_node="REVIEW_QA",
                     router=_qa_review_router,
-                    route_map={"retry": "QA_RETRY_GATE", "continue": "HUMAN_QA"},
+                    route_map={"retry": "QA_RETRY_GATE", "continue": "HUMAN_QA", "escalate": "HUMAN_QA"},
                 ),
             ],
         )
@@ -606,12 +681,12 @@ class PipelineGraphBuilder:
                 ConditionalEdgeDef(
                     from_node="REVIEW_DEV",
                     router=_dev_review_router,
-                    route_map={"retry": "DEV_RETRY_GATE", "continue": "HUMAN_DEV"},
+                    route_map={"retry": "DEV_RETRY_GATE", "continue": "HUMAN_DEV", "escalate": "HUMAN_DEV"},
                 ),
                 ConditionalEdgeDef(
                     from_node="REVIEW_QA",
                     router=_qa_review_router,
-                    route_map={"retry": "QA_RETRY_GATE", "continue": "HUMAN_QA"},
+                    route_map={"retry": "QA_RETRY_GATE", "continue": "HUMAN_QA", "escalate": "HUMAN_QA"},
                 ),
             ],
         )

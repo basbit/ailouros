@@ -41,6 +41,7 @@ class OtelObservabilityAdapter(ObservabilityPort):
         exceptions from the body (e.g. HumanApprovalRequired) propagate
         normally without a second yield causing RuntimeError.
         """
+        span_ctx: Any
         try:
             from backend.App.integrations.infrastructure.observability.otel_tracing import step_span
             span_ctx = step_span(step_id, state)

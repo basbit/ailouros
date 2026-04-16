@@ -25,6 +25,18 @@ router = APIRouter()
 # Health
 # ---------------------------------------------------------------------------
 
+@router.get("/v1/system/update-available")
+async def system_update_available() -> JSONResponse:
+    """Return the cached git-update-check status for the UI banner.
+
+    The check itself runs once on lifespan startup; this endpoint is a
+    pure read of the cached dataclass. Never blocks, never triggers a
+    new fetch. See `update_check.py` for the full contract.
+    """
+    from backend.App.integrations.infrastructure.update_check import status_as_dict
+    return JSONResponse(status_as_dict())
+
+
 @router.get("/health")
 async def health() -> JSONResponse:
     checks: dict[str, Any] = {"status": "ok"}
@@ -218,56 +230,6 @@ async def get_mcp_cache_stats(request: Request) -> JSONResponse:
 
     cache: ToolResultCache = getattr(request.app.state, "mcp_tool_cache", None) or ToolResultCache()
     return JSONResponse(content=cache.stats())
-
-
-# ---------------------------------------------------------------------------
-# Circuit breakers / failure types
-# ---------------------------------------------------------------------------
-
-@router.get("/v1/circuit-breakers")
-async def get_circuit_breakers() -> JSONResponse:
-    """Return current circuit breaker states for all tracked MCP tools."""
-    from backend.App.integrations.infrastructure.mcp.circuit_breaker import get_registry
-    states = get_registry().get_all_states()
-    return JSONResponse(content={"circuit_breakers": states})
-
-
-@router.get("/v1/failure-types")
-async def get_failure_types() -> JSONResponse:
-    """Return all FailureType values with descriptions and retry hints."""
-    from backend.App.orchestration.domain.failure_types import FailureType
-
-    _descriptions: dict[str, dict[str, str]] = {
-        FailureType.TIMEOUT.value: {
-            "description": "Operation timed out",
-            "mitigation": "Retry with increased timeout (SWARM_RETRY_TIMEOUT_MULTIPLIER=1.5)",
-        },
-        FailureType.CONTEXT_OVERFLOW.value: {
-            "description": "Context window or token limit exceeded",
-            "mitigation": "Retry with reduced context (drop low-priority sections or use index_only mode)",
-        },
-        FailureType.LOGIC_ERROR.value: {
-            "description": "Python exception or structured output parse failure",
-            "mitigation": "Retry with error feedback prepended to prompt",
-        },
-        FailureType.EXTERNAL_API.value: {
-            "description": "HTTP / external API error (5xx, rate limit, connection drop)",
-            "mitigation": "Exponential backoff then retry (1s, 2s, 4s); circuit breaker applies",
-        },
-        FailureType.MODEL_REFUSAL.value: {
-            "description": "Model returned a refusal or empty completion",
-            "mitigation": "Switch to alternative fallback model",
-        },
-        FailureType.MCP_FAILURE.value: {
-            "description": "MCP tool-layer error (stdio, tools/call)",
-            "mitigation": "Retry without MCP tools (tools_off=True)",
-        },
-        FailureType.UNKNOWN.value: {
-            "description": "Unrecognised failure pattern",
-            "mitigation": "Manual investigation required",
-        },
-    }
-    return JSONResponse(content={"failure_types": _descriptions})
 
 
 # ---------------------------------------------------------------------------

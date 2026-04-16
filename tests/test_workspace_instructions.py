@@ -107,7 +107,7 @@ def test_dev_workspace_instructions_no_root():
 def test_dev_workspace_instructions_with_root_writes_disabled():
     state = _state(workspace_root="/proj", workspace_apply_writes=False)
     with patch(
-        "backend.App.workspace.infrastructure.workspace_io.command_exec_allowed",
+        "backend.App.orchestration.application.nodes._workspace_instructions.command_exec_allowed",
         return_value=False,
     ):
         result = _dev_workspace_instructions(state)
@@ -118,7 +118,7 @@ def test_dev_workspace_instructions_with_root_writes_disabled():
 def test_dev_workspace_instructions_writes_enabled():
     state = _state(workspace_root="/proj", workspace_apply_writes=True)
     with patch(
-        "backend.App.workspace.infrastructure.workspace_io.command_exec_allowed",
+        "backend.App.orchestration.application.nodes._workspace_instructions.command_exec_allowed",
         return_value=False,
     ):
         result = _dev_workspace_instructions(state)
@@ -129,7 +129,7 @@ def test_dev_workspace_instructions_writes_enabled():
 def test_dev_workspace_instructions_cmd_exec_enabled():
     state = _state(workspace_root="/proj", workspace_apply_writes=True)
     with patch(
-        "backend.App.workspace.infrastructure.workspace_io.command_exec_allowed",
+        "backend.App.orchestration.application.nodes._workspace_instructions.command_exec_allowed",
         return_value=True,
     ):
         result = _dev_workspace_instructions(state)
@@ -139,23 +139,26 @@ def test_dev_workspace_instructions_cmd_exec_enabled():
 def test_dev_workspace_instructions_cmd_exec_disabled():
     state = _state(workspace_root="/proj", workspace_apply_writes=False)
     with patch(
-        "backend.App.workspace.infrastructure.workspace_io.command_exec_allowed",
+        "backend.App.orchestration.application.nodes._workspace_instructions.command_exec_allowed",
         return_value=False,
     ):
         result = _dev_workspace_instructions(state)
     assert "DISABLED" in result
 
 
-def test_dev_workspace_instructions_import_error_for_command_exec():
+def test_dev_workspace_instructions_propagates_command_exec_error():
+    """If command_exec_allowed() raises, the error must propagate (§2 fail-fast).
+
+    Previously the function caught broad ``Exception`` and silently degraded
+    to ``cmd_exec=False`` — a violation of docs/review-rules.md §2.
+    """
     state = _state(workspace_root="/proj", workspace_apply_writes=False)
-    # Simulate exception during command_exec_allowed import
     with patch(
-        "backend.App.workspace.infrastructure.workspace_io.command_exec_allowed",
-        side_effect=Exception("no module"),
+        "backend.App.orchestration.application.nodes._workspace_instructions.command_exec_allowed",
+        side_effect=RuntimeError("simulated env failure"),
     ):
-        result = _dev_workspace_instructions(state)
-    # Should still work, cmd_exec defaults to False
-    assert "/proj" in result
+        with pytest.raises(RuntimeError, match="simulated env failure"):
+            _dev_workspace_instructions(state)
 
 
 # ---------------------------------------------------------------------------
@@ -170,7 +173,7 @@ def test_qa_workspace_instructions_no_root():
 def test_qa_workspace_instructions_disabled():
     state = _state(workspace_root="/proj", workspace_apply_writes=False)
     with patch(
-        "backend.App.workspace.infrastructure.workspace_io.command_exec_allowed",
+        "backend.App.orchestration.application.nodes._workspace_instructions.command_exec_allowed",
         return_value=False,
     ):
         result = _qa_workspace_verification_instructions(state)
@@ -181,7 +184,7 @@ def test_qa_workspace_instructions_disabled():
 def test_qa_workspace_instructions_writes_only():
     state = _state(workspace_root="/proj", workspace_apply_writes=True)
     with patch(
-        "backend.App.workspace.infrastructure.workspace_io.command_exec_allowed",
+        "backend.App.orchestration.application.nodes._workspace_instructions.command_exec_allowed",
         return_value=False,
     ):
         result = _qa_workspace_verification_instructions(state)
@@ -191,7 +194,7 @@ def test_qa_workspace_instructions_writes_only():
 def test_qa_workspace_instructions_writes_and_cmd_exec():
     state = _state(workspace_root="/proj", workspace_apply_writes=True)
     with patch(
-        "backend.App.workspace.infrastructure.workspace_io.command_exec_allowed",
+        "backend.App.orchestration.application.nodes._workspace_instructions.command_exec_allowed",
         return_value=True,
     ):
         result = _qa_workspace_verification_instructions(state)

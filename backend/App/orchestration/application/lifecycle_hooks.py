@@ -27,16 +27,25 @@ def build_preflight_recommendations(
     context_mode: str,
     *,
     mcp_config: Optional[dict[str, Any]] = None,
+    search_api_keys: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
-    """Return transparent capability/server recommendations for preflight UI."""
+    """Return transparent capability/server recommendations for preflight UI.
+
+    ``search_api_keys`` — keys supplied by the user via UI settings
+    (tavily, exa, scrapingdog).  Takes precedence over env vars so that
+    keys entered in the app but not set in the shell environment are
+    correctly reflected in the "green/not-green" indicator.
+    """
     servers = list((mcp_config or {}).get("servers") or []) if isinstance(mcp_config, dict) else []
     server_names = {
         str(item.get("name") or "").strip()
         for item in servers
         if isinstance(item, dict) and item.get("enabled", True)
     }
+    _keys = search_api_keys or {}
     search_key_available = bool(
-        os.getenv("SWARM_TAVILY_API_KEY", "")
+        _keys.get("tavily") or _keys.get("exa") or _keys.get("scrapingdog")
+        or os.getenv("SWARM_TAVILY_API_KEY", "")
         or os.getenv("SWARM_EXA_API_KEY", "")
         or os.getenv("SWARM_SCRAPINGDOG_API_KEY", "")
     )
@@ -69,6 +78,7 @@ def build_preflight_recommendations(
         },
     ]
 
+    _known_server_names = {"filesystem", "git", "web_search"}
     recommended_servers = [
         {
             "name": "filesystem",
@@ -89,6 +99,18 @@ def build_preflight_recommendations(
             "reason": "Recommended when tasks require internet/web search or current fact verification.",
         },
     ]
+    # Include any extra servers declared in mcp_config that aren't already listed
+    for item in servers:
+        if not isinstance(item, dict):
+            continue
+        sname = str(item.get("name") or "").strip()
+        if sname and sname not in _known_server_names:
+            recommended_servers.append({
+                "name": sname,
+                "recommended": False,
+                "enabled": bool(item.get("enabled", True)),
+                "reason": item.get("reason", "Configured via mcp_config."),
+            })
     return {
         "recommended_capabilities": recommended_capabilities,
         "recommended_servers": recommended_servers,

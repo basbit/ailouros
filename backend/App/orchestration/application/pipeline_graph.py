@@ -112,9 +112,7 @@ from backend.App.orchestration.application.pipeline_runner import (
     run_pipeline as _run_pipeline_impl,
 )
 from backend.App.orchestration.application.pipeline_step_runner import (
-    _emit_completed,
     _format_elapsed_wall,
-    _run_step_with_stream_progress,
     _stream_progress_heartbeat_seconds,
     final_pipeline_user_message,
     primary_output_for_step,
@@ -286,9 +284,7 @@ __all__ = [
     "_PipelineRunner",
     "_run_pipeline_impl",
     # From pipeline_step_runner
-    "_emit_completed",
     "_format_elapsed_wall",
-    "_run_step_with_stream_progress",
     "_stream_progress_heartbeat_seconds",
     "final_pipeline_user_message",
     "primary_output_for_step",

@@ -1,4 +1,4 @@
-"""Cross-task memory (episodes): Redis or in-process memory, token-overlap search.
+"""Cross-task memory (episodes): Redis or in-process memory, hybrid search.
 
 Enable via: ``SWARM_CROSS_TASK_MEMORY=1`` or ``agent_config.swarm.cross_task_memory.enabled``.
 
@@ -10,7 +10,22 @@ Policy (``agent_config.swarm.cross_task_memory``):
 - ``max_list_items`` — maximum episodes to keep in Redis (LPUSH+LTRIM).
 - ``retrieve_limit``, ``max_inject_chars`` — search pool size and block size limit for PM (and BA on inject).
 
-Search vector: no heavy dependencies — same token-intersection scoring as pattern_memory.
+Search ranking is a hybrid of:
+
+* token overlap (cheap, no external dependency, always available);
+* cosine similarity over an embedding produced via :mod:`embedding_service`
+  when a provider is configured (``SWARM_EMBEDDING_PROVIDER``).
+
+Toggles:
+
+- ``SWARM_CROSS_TASK_MEMORY_SEMANTIC=1`` (default) enables the embedding
+  layer. Set to ``0`` to fall back to the legacy pure-token search.
+- ``SWARM_CROSS_TASK_MEMORY_SEMANTIC_WEIGHT`` — weight α for the cosine
+  contribution in ``α·cos·5 + (1-α)·tok`` (default ``0.7``).
+
+Episodes carry their embedding as a top-level ``embedding`` field. Old
+episodes written before this layer existed have no embedding and degrade
+gracefully to token-only ranking.
 """
 
 from __future__ import annotations
@@ -18,6 +33,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -34,9 +50,10 @@ _DEFAULT_INJECT_AT_STEPS: frozenset[str] = frozenset(
 )
 
 try:
-    import redis
+    import redis as _redis_module
 except ImportError:  # pragma: no cover
-    redis = None
+    _redis_module = None  # type: ignore[assignment]
+redis = _redis_module
 
 _REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 _MEM_LIST_MAX = 400
@@ -172,7 +189,7 @@ def normalize_memory_artifact(raw: Any) -> dict[str, Any]:
         for item in _sanitize_memory_items(raw.get(key), category=key):
             if item not in facts:
                 facts.append(item)
-    normalized = {
+    normalized: dict[str, Any] = {
         "facts": facts,
         "hypotheses": _sanitize_memory_items(raw.get("hypotheses"), category="hypotheses"),
         "decisions": _sanitize_memory_items(raw.get("decisions"), category="decisions"),
@@ -216,7 +233,7 @@ def _parse_structured_memory_body(body: str) -> dict[str, Any]:
             continue
         if not isinstance(data, dict):
             continue
-        normalized = {
+        normalized: dict[str, Any] = {
             key: _normalize_memory_items(data.get(key))
             for key in _STRUCTURED_MEMORY_KEYS
         }
@@ -240,6 +257,71 @@ def _render_structured_memory(structured: Mapping[str, Any]) -> str:
     return "\n".join(parts).strip()
 
 
+def _semantic_enabled() -> bool:
+    raw = os.getenv("SWARM_CROSS_TASK_MEMORY_SEMANTIC")
+    if raw is None:
+        return True
+    return _truthy(raw)
+
+
+def _semantic_weight() -> float:
+    raw = os.getenv("SWARM_CROSS_TASK_MEMORY_SEMANTIC_WEIGHT", "0.7")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 0.7
+    return max(0.0, min(1.0, value))
+
+
+def _get_embedding_provider() -> Optional[Any]:
+    if not _semantic_enabled():
+        return None
+    try:
+        from backend.App.integrations.infrastructure.embedding_service import (
+            get_embedding_provider,
+        )
+    except ImportError:
+        return None
+    provider = get_embedding_provider()
+    if getattr(provider, "name", "") == "null":
+        return None
+    return provider
+
+
+def _embed_episode_body(provider: Any, step_id: str, body: str) -> list[float]:
+    text = f"{step_id}\n{body}".strip()
+    if not text:
+        return []
+    try:
+        vectors = provider.embed([text[:4000]])
+    except Exception as exc:
+        logger.warning("cross_task_memory: embed failed (%s); episode stored without vector", exc)
+        return []
+    return list(vectors[0]) if vectors else []
+
+
+def _embed_query(provider: Any, query: str) -> list[float]:
+    if not query.strip():
+        return []
+    try:
+        vectors = provider.embed([query[:4000]])
+    except Exception as exc:
+        logger.warning("cross_task_memory: query embed failed (%s)", exc)
+        return []
+    return list(vectors[0]) if vectors else []
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    return dot / (norm_a * norm_b)
+
+
 def _build_episode_payload(
     *,
     step_id: str,
@@ -253,7 +335,7 @@ def _build_episode_payload(
     rendered_body = _render_structured_memory(structured)
     if not rendered_body:
         rendered_body = (body or "").strip()
-    return {
+    payload: dict[str, Any] = {
         "ts": time.time(),
         "step": step_id,
         "task_id": (task_id or "").strip(),
@@ -266,6 +348,12 @@ def _build_episode_payload(
         "constraints": list(structured.get("constraints") or []),
         "structured": bool(structured.get("structured")),
     }
+    provider = _get_embedding_provider()
+    if provider is not None:
+        embedding = _embed_episode_body(provider, step_id, payload["body"])
+        if embedding:
+            payload["embedding"] = embedding
+    return payload
 
 
 def append_episode(
@@ -305,6 +393,7 @@ def persist_after_pipeline_step(
         return
     cfg = _mem_cfg(state)
     steps = cfg.get("persist_steps")
+    allowed: set[str] | frozenset[str]
     if isinstance(steps, list):
         allowed = {str(s).strip() for s in steps if str(s).strip()}
     else:
@@ -374,7 +463,7 @@ def _load_episodes(namespace: str, *, limit: int) -> list[dict[str, Any]]:
     return episodes
 
 
-def _score_episode(query: str, body: str) -> float:
+def _token_relevance(query: str, body: str) -> float:
     q_tokens = set(_normalize_token(query))
     if not q_tokens:
         q_tokens = set(_normalize_token(query[:200]))
@@ -386,6 +475,11 @@ def _score_episode(query: str, body: str) -> float:
     if ql and ql in bl:
         score += 4.0
     return score
+
+
+def _score_episode(query: str, body: str) -> float:
+    """Legacy entry point; semantic-aware ranking lives in :func:`search_episodes`."""
+    return _token_relevance(query, body)
 
 
 def search_episodes(
@@ -401,12 +495,26 @@ def search_episodes(
     pool_size = int(cfg.get("retrieve_pool") or 80)
     pool_size = max(20, min(500, pool_size))
     episodes = _load_episodes(ns, limit=pool_size)
+
+    provider = _get_embedding_provider()
+    query_vec: list[float] = _embed_query(provider, query) if provider else []
+    semantic_weight = _semantic_weight() if query_vec else 0.0
+
     scored: list[tuple[dict[str, Any], float]] = []
     for episode in episodes:
         body = str(episode.get("body") or "")
-        relevance_score = _score_episode(query, body)
-        if relevance_score > 0:
-            scored.append((episode, relevance_score))
+        token_part = _token_relevance(query, body)
+        cosine_part = 0.0
+        if query_vec:
+            stored_vec = episode.get("embedding")
+            if isinstance(stored_vec, list) and len(stored_vec) == len(query_vec):
+                cosine_part = max(0.0, _cosine(query_vec, [float(x) for x in stored_vec]))
+        # Same hybrid scaling as pattern_memory: cosine ∈ [0, 1] is
+        # multiplied by 5 so it lives in the same magnitude family as the
+        # token score (0–N matches + substring bonus).
+        hybrid = (semantic_weight * cosine_part * 5.0) + (1.0 - semantic_weight) * token_part
+        if hybrid > 0:
+            scored.append((episode, hybrid))
     scored.sort(key=lambda item: -item[1])
     lim = max(1, min(30, limit))
     return scored[:lim]
@@ -427,7 +535,15 @@ def format_cross_task_memory_block(
     query: str,
     *,
     current_step: str = "pm",
+    max_chars: Optional[int] = None,
 ) -> str:
+    """Render the cross-task memory block for *current_step*.
+
+    *max_chars* (optional) wins when supplied — used by per-step
+    :class:`ContextBudget` callers (H-1). When omitted we fall back to
+    the agent_config-driven ``max_inject_chars`` and finally the
+    historical 8000-char cap, so legacy callers keep working.
+    """
     if not should_inject_at_step(state, current_step):
         return ""
     cfg = _mem_cfg(state)
@@ -435,10 +551,13 @@ def format_cross_task_memory_block(
         retrieve_limit = int(cfg.get("retrieve_limit") or 6)
     except (TypeError, ValueError):
         retrieve_limit = 6
-    try:
-        max_chars = int(cfg.get("max_inject_chars") or 8000)
-    except (TypeError, ValueError):
-        max_chars = 8000
+    if max_chars is None:
+        try:
+            max_chars = int(cfg.get("max_inject_chars") or 8000)
+        except (TypeError, ValueError):
+            max_chars = 8000
+    if max_chars <= 0:
+        return ""
     hits = search_episodes(state, query, limit=retrieve_limit)
     if not hits:
         return ""

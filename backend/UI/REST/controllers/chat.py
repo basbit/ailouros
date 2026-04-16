@@ -7,7 +7,7 @@ Task CRUD (/tasks/{task_id}, cancel) → controllers/tasks.py.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -55,8 +55,19 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
 
     agent_config, eff_steps = _resolve_chat_request(req)
 
-    # Topology is in agent_config.swarm.topology — pipeline_runners reads it
-    # to choose linear vs graph-based execution. User's pipeline_steps always respected.
+    # Optional explicit parallel stages: e.g. [["pm"], ["ba","architect"], ["dev"]].
+    # UI derives them from the selected topology — backend only executes.
+    eff_stages: Optional[list[list[str]]] = getattr(req, "pipeline_stages", None)
+    if eff_stages is not None:
+        from backend.UI.REST.schemas import validate_pipeline_stages
+        try:
+            validate_pipeline_stages(eff_stages)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # User's pipeline_steps always respected when present; topology in
+    # agent_config.swarm.topology is still consulted by runners for auto-plan
+    # and by nodes that support declarative flags (e.g. mesh subtasks).
     if eff_steps is not None:
         try:
             validate_pipeline_steps(eff_steps, agent_config)
@@ -101,6 +112,7 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
                     artifacts_root=ARTIFACTS_ROOT,
                     agent_config=agent_config,
                     pipeline_steps=eff_steps,
+                    pipeline_stages=eff_stages,
                     workspace_root_str=workspace_root_str,
                     workspace_apply_writes=workspace_apply_writes,
                     workspace_meta=meta_ws,

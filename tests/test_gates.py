@@ -7,6 +7,8 @@ from pathlib import Path
 from backend.App.orchestration.domain.gates import (
     VERIFICATION_RULESET_VERSION,
     DevManifest,
+)
+from backend.App.orchestration.application.gate_runner import (
     run_consistency_gate,
     run_diff_risk_gate,
     run_spec_gate,

@@ -92,7 +92,7 @@ class StepOutputExtractor:
             )
         return _AGENT_STATE_KEYS.get(step_id, ("", "", ""))
 
-    def extract(self, step_id: str, state: PipelineState) -> StepOutput:
+    def extract(self, step_id: str, state: Any) -> StepOutput:
         """Build a :class:`StepOutput` from the current pipeline state.
 
         Args:
@@ -112,7 +112,7 @@ class StepOutputExtractor:
         provider = str(state.get(prov_k, "") or "") if prov_k else ""
         return StepOutput(message=msg, model=model, provider=provider)
 
-    def emit_completed(self, agent: str, state: PipelineState) -> dict[str, Any]:
+    def emit_completed(self, agent: str, state: Any) -> dict[str, Any]:
         """Build the completion event dict for *agent*.
 
         Args:

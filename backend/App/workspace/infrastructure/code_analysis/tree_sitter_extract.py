@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 _TS_DISABLED = os.getenv("SWARM_TREE_SITTER_DISABLE", "").strip().lower() in (
     "1",
@@ -147,7 +147,7 @@ def _extract_js_ts(source: bytes, rel: str, grammar: str) -> list[dict[str, Any]
     from tree_sitter import Query
     from tree_sitter_language_pack import get_language
 
-    lang = get_language(grammar)  # javascript | typescript | tsx
+    lang = get_language(cast(Any, grammar))  # javascript | typescript | tsx
     tree = __import__("tree_sitter").Parser(lang).parse(source)
     if grammar == "javascript":
         qsrc = """

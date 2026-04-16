@@ -22,6 +22,7 @@ from backend.App.orchestration.domain.exceptions import HumanApprovalRequired, P
 from backend.App.orchestration.application.pipeline_enforcement import (
     _CRITICAL_REVIEW_STEP_TO_OUTPUT_KEY,
     _PLANNING_REVIEW_RESUME_STEP,
+    _should_block_for_human,
     enter_fix_cycle_or_escalate as _enter_fix_cycle_or_escalate,
     finalize_pipeline_machine as _finalize_pipeline_machine,
     enforce_planning_review_gate as _enforce_planning_review_gate,
@@ -43,8 +44,13 @@ from backend.App.orchestration.domain.pipeline_machine import (
     get_pipeline_machine,
     reset_pipeline_machine,
 )
+from backend.App.orchestration.infrastructure.step_stream_executor import StepStreamExecutor
+from backend.App.orchestration.application.step_output_extractor import StepOutputExtractor
 
 _logger = logging.getLogger(__name__)
+
+_step_executor = StepStreamExecutor()
+_step_extractor = StepOutputExtractor()
 
 __all__ = (
     "run_pipeline_stream",
@@ -251,16 +257,33 @@ def _run_pipeline_stream_graph(
         pipeline_workspace_parts=pipeline_workspace_parts,
         pipeline_step_ids=pipeline_step_ids,
     )
+    # Bug aec02899: the static LangGraph DAG runs every node (PM → REVIEW_PM
+    # → HUMAN_PM → BA → …) regardless of the user's selection. We thread
+    # the user's step list into state so `_wrap_with_step_gate` can skip
+    # nodes that are not in the user's pipeline. See
+    # `docs/bug-plan-2026-04-ghost-review.md` §3.1.
+    if pipeline_step_ids:
+        cast(dict, init)["_pipeline_step_ids"] = list(pipeline_step_ids)
 
-    # Load wiki context for the workspace (reduces token usage in prompts)
+    # Load wiki context for the workspace (reduces token usage in prompts).
+    # Use the user task as the semantic query so the initial state already
+    # carries the most relevant wiki slice; per-step refresh in
+    # _prompt_builders.py narrows it further with the step-specific query.
     if workspace_root:
+        from backend.App.orchestration.application.wiki_context_loader import (
+            load_wiki_context,
+            query_for_pipeline_step,
+        )
         try:
-            from backend.App.orchestration.application.wiki_context_loader import load_wiki_context
-            wiki_ctx = load_wiki_context(workspace_root)
-            if wiki_ctx:
-                init["wiki_context"] = wiki_ctx  # type: ignore[index]
-        except Exception as _wc_exc:
-            _logger.debug("wiki context load skipped: %s", _wc_exc)
+            initial_query = query_for_pipeline_step(init, "pm")
+            wiki_ctx = load_wiki_context(workspace_root, query=initial_query or None)
+        except (OSError, ValueError, RuntimeError):
+            # Wiki is observability/context, not required for pipeline correctness.
+            # Specific exception types — programmer errors propagate.
+            _logger.exception("wiki context load failed for workspace %r", workspace_root)
+            wiki_ctx = ""
+        if wiki_ctx:
+            init["wiki_context"] = wiki_ctx
 
     final_state: PipelineState = cast(PipelineState, dict(init))
     prev_keys: set[str] = set(init.keys())
@@ -333,6 +356,21 @@ def _run_pipeline_stream_graph(
     return final_state
 
 
+def _ring_defect_context(open_defects: list[dict], pass_num: int) -> str:
+    """Build defect context block injected into user_input for ring restart passes."""
+    lines = [f"\n\n## Ring pass {pass_num} — unresolved defects from previous run\n"]
+    for d in open_defects[:10]:
+        sev = str(d.get("severity") or "?")
+        desc = str(d.get("description") or "?")
+        loc = str(d.get("location") or "")
+        lines.append(f"- [{sev}] {desc}" + (f" ({loc})" if loc else ""))
+    lines.append(
+        "\nAll above defects MUST be resolved in this pass before the pipeline can "
+        "be considered complete. Reviewers: verify each defect is addressed."
+    )
+    return "\n".join(lines)
+
+
 def run_pipeline_stream(
     user_input: str,
     agent_config: Optional[dict[str, Any]] = None,
@@ -344,6 +382,8 @@ def run_pipeline_stream(
     *,
     pipeline_workspace_parts: Optional[dict[str, Any]] = None,
     pipeline_step_ids: Optional[list[str]] = None,
+    _ring_pass: int = 0,
+    _ring_initial_state: Optional[Any] = None,
 ) -> Generator[dict[str, Any], None, PipelineState]:
     """Run pipeline step-by-step and yield agent progress events.
 
@@ -353,11 +393,9 @@ def run_pipeline_stream(
     from backend.App.orchestration.application.pipeline_graph import (
         DEFAULT_PIPELINE_STEP_IDS,
         _compact_state_if_needed,
-        _emit_completed,
         _initial_pipeline_state,
         _pipeline_should_cancel,
         _resolve_pipeline_step,
-        _run_step_with_stream_progress,
         _state_snapshot,
         validate_pipeline_steps,
     )
@@ -389,27 +427,39 @@ def run_pipeline_stream(
     # When user defined steps, always use linear runner (respects user's order).
     _topo = (base_agent_config.get("swarm") or {}).get("topology", "") if isinstance(base_agent_config, dict) else ""
     if _topo and _topo not in ("", "linear", "default") and pipeline_steps is None:
-        yield from _run_pipeline_stream_graph(
+        final_state: PipelineState = yield from _run_pipeline_stream_graph(
             user_input, base_agent_config, workspace_root, workspace_apply_writes,
             task_id, cancel_event, _topo,
             pipeline_workspace_parts=pipeline_workspace_parts,
             pipeline_step_ids=steps_ids,
         )
-        return
+        return final_state
+
     step_ids_for_warn = (
         pipeline_step_ids if pipeline_step_ids is not None else steps_ids
     )
-    state = _initial_pipeline_state(
-        user_input,
-        base_agent_config,
-        workspace_root=workspace_root,
-        workspace_apply_writes=workspace_apply_writes,
-        task_id=task_id,
-        cancel_event=cancel_event,
-        pipeline_workspace_parts=pipeline_workspace_parts,
-        pipeline_step_ids=step_ids_for_warn,
-    )
-    cast(dict, state)["_pipeline_step_ids"] = list(steps_ids)
+    if _ring_initial_state is not None:
+        # Ring restart: reuse previous-pass state so agents retain accumulated context
+        # (workspace analysis, previous outputs, etc.). Only reset defect tracking and
+        # update the augmented user_input so reviewers see what still needs fixing.
+        state = _ring_initial_state
+        cast(dict, state)["input"] = user_input
+        cast(dict, state)["_pipeline_step_ids"] = list(steps_ids)
+        cast(dict, state)["open_defects"] = []
+        cast(dict, state)["clustered_open_defects"] = []
+        cast(dict, state)["_needs_work_count"] = 0
+    else:
+        state = _initial_pipeline_state(
+            user_input,
+            base_agent_config,
+            workspace_root=workspace_root,
+            workspace_apply_writes=workspace_apply_writes,
+            task_id=task_id,
+            cancel_event=cancel_event,
+            pipeline_workspace_parts=pipeline_workspace_parts,
+            pipeline_step_ids=step_ids_for_warn,
+        )
+        cast(dict, state)["_pipeline_step_ids"] = list(steps_ids)
     _sync_pipeline_machine(state, machine)
 
     # R1.1 — create durable session; R1.4 — get trace collector
@@ -459,7 +509,7 @@ def run_pipeline_stream(
             try:
                 # Всегда в worker + heartbeat: иначе один next() синхронного SSE-генератора
                 # блокирует весь шаг (PM/BA/…) без промежуточных yield — клиент и ASGI «молчат».
-                yield from _run_step_with_stream_progress(step_id, step_func, state)
+                yield from _step_executor.run(step_id, step_func, state)
             except HumanApprovalRequired as exc:
                 exc.partial_state = _state_snapshot(state)
                 # Preserve resume_pipeline_step if the node already set it
@@ -496,7 +546,24 @@ def run_pipeline_stream(
                     except Exception:
                         pass
                 raise
-            yield _emit_completed(step_id, state)
+            yield _step_extractor.emit_completed(step_id, state)
+            # §12.5 — Re-index pipeline state for semantic search after each step
+            try:
+                from backend.App.orchestration.application.state_searcher import index_state as _index_state
+                _index_state(state)
+            except Exception:
+                pass
+            # §12.9 — Register workspace artifacts from dev step
+            if step_id == "dev":
+                try:
+                    from backend.App.workspace.application.artifact_registry import register_step_artifacts as _reg_artifacts
+                    _ws_writes_raw = state.get("workspace_writes") or {}
+                    _ws_writes: dict[str, Any] = _ws_writes_raw if isinstance(_ws_writes_raw, dict) else {}
+                    _written = list(_ws_writes.get("written") or []) + list(_ws_writes.get("patched") or [])
+                    if _written:
+                        _reg_artifacts(state, "dev", _written, purpose="dev output")
+                except Exception:
+                    pass
             # P0-10: mark step DONE
             if task_id:
                 from backend.App.orchestration.domain.contract_validator import get_validator as _get_cv
@@ -517,8 +584,8 @@ def run_pipeline_stream(
                 step_id,
                 base_agent_config,
                 _resolve_pipeline_step,
-                _run_step_with_stream_progress,
-                _emit_completed,
+                _step_executor.run,
+                _step_extractor.emit_completed,
             )
 
             # P0-1b: Gate after analyze_code — block pipeline on empty or too-large scope
@@ -590,7 +657,7 @@ def run_pipeline_stream(
                         ),
                     }
 
-            # Validate dev_lead output for required sections (observability only)
+            # Validate dev_lead output for required sections — retry once if missing (§10.7)
             if step_id == "dev_lead":
                 _dev_lead_out = str(state.get("dev_lead_output") or "")
                 _missing_sections = _validate_dev_lead_output(_dev_lead_out)
@@ -602,11 +669,44 @@ def run_pipeline_stream(
                         "status": "dev_lead_incomplete",
                         "message": (
                             f"⚠ [dev_lead] output is missing required sections: {_missing_sections}. "
-                            "Dev step may produce incomplete code. "
-                            "Consider: 1) a more capable model for dev_lead, "
-                            "2) remote_profile for this role."
+                            "Re-prompting dev_lead with explicit instruction to include them."
                         ),
                     }
+                    # §10.7 — Retry dev_lead once with explicit missing-section instruction
+                    cast(dict, state)["_dev_lead_missing_sections"] = _missing_sections
+                    try:
+                        _, _dl_func = _resolve_pipeline_step("dev_lead", base_agent_config)
+                        yield {"agent": "dev_lead", "status": "in_progress", "message": "dev_lead (deliverables retry)"}
+                        yield from _step_executor.run("dev_lead", _dl_func, state)
+                        yield _step_extractor.emit_completed("dev_lead", state)
+                    except Exception as _dl_exc:
+                        _logger.warning("[DEV_LEAD_VALIDATION] Retry failed: %s — continuing", _dl_exc)
+                    finally:
+                        cast(dict, state).pop("_dev_lead_missing_sections", None)
+                    _dev_lead_out_retry = str(state.get("dev_lead_output") or "")
+                    _still_missing = _validate_dev_lead_output(_dev_lead_out_retry)
+                    if _still_missing:
+                        _logger.warning(
+                            "[DEV_LEAD_VALIDATION] Still missing after retry: %s", _still_missing
+                        )
+                        if _should_block_for_human(state, "human_dev_lead"):
+                            raise HumanApprovalRequired(
+                                step="dev_lead",
+                                detail=(
+                                    f"dev_lead output is still missing required sections after retry: {_still_missing}. "
+                                    "Human clarification is required before Dev can proceed."
+                                ),
+                                partial_state={"dev_lead_output": _dev_lead_out_retry},
+                                resume_pipeline_step="human_dev_lead",
+                            )
+                        yield {
+                            "agent": "orchestrator",
+                            "status": "dev_lead_incomplete",
+                            "message": (
+                                f"⚠ [dev_lead] still missing {_still_missing} after retry — "
+                                "continuing but Dev step may produce incomplete code."
+                            ),
+                        }
 
             # CTX-2: cleanup intermediate outputs after they are no longer needed
             _STEP_CLEANUP: dict[str, list[str]] = {
@@ -679,7 +779,7 @@ def run_pipeline_stream(
                         ),
                     }
                     # Step 1.4: signal inline fallback for next planning step
-                    state["mcp_tool_call_suspected_failure"] = True
+                    cast(dict[str, Any], state)["mcp_tool_call_suspected_failure"] = True
 
             # Compute research advisory after planning steps so Dev Lead
             # is aware of external URLs / unknown APIs before it creates subtasks.
@@ -715,10 +815,10 @@ def run_pipeline_stream(
                 from backend.App.orchestration.application.pipeline_graph import (
                     _extract_verdict,
                 )
-                review_text = state.get(_CRITICAL_REVIEW_STEP_TO_OUTPUT_KEY[step_id]) or ""
+                review_text = str(state.get(_CRITICAL_REVIEW_STEP_TO_OUTPUT_KEY[step_id]) or "")
                 if _extract_verdict(review_text) == "NEEDS_WORK":
-                    nw = int(state.get("_needs_work_count") or 0) + 1
-                    state["_needs_work_count"] = nw
+                    nw = int(cast(Any, state.get("_needs_work_count")) or 0) + 1
+                    cast(dict[str, Any], state)["_needs_work_count"] = nw
                     if nw >= _NEEDS_WORK_WARNING_THRESHOLD:
                         yield {
                             "agent": "orchestrator",
@@ -760,6 +860,46 @@ def run_pipeline_stream(
 
     _finalize_pipeline_machine(state, machine)
 
+    # Ring topology wrap-around: when topology=ring is set with explicit pipeline_steps,
+    # restart the pipeline with defect context if open defects remain after all steps.
+    # Each restart inherits accumulated state (workspace analysis, prior agent outputs) so
+    # agents can improve their work without starting from scratch.
+    # Limit via SWARM_RING_MAX_RESTARTS (default 1) to prevent infinite loops.
+    _ring_max = int(os.getenv("SWARM_RING_MAX_RESTARTS", "1"))
+    _is_ring_topo = _topo == "ring"
+    _has_explicit_steps = pipeline_steps is not None
+    _open_defects = list(state.get("open_defects") or [])
+    if _is_ring_topo and _has_explicit_steps and _ring_pass < _ring_max and _open_defects:
+        defect_ctx = _ring_defect_context(_open_defects, _ring_pass + 1)
+        _logger.info(
+            "Ring pass %d/%d: %d open defect(s) — restarting pipeline with defect context",
+            _ring_pass + 1, _ring_max, len(_open_defects),
+        )
+        yield {
+            "agent": "orchestrator",
+            "status": "ring_restart",
+            "message": (
+                f"Ring pass {_ring_pass + 1}/{_ring_max}: "
+                f"{len(_open_defects)} open defect(s) — restarting pipeline with defect context"
+            ),
+            "restart_pass": _ring_pass + 1,
+            "defect_count": len(_open_defects),
+        }
+        ring_final: PipelineState = yield from run_pipeline_stream(
+            user_input + defect_ctx,
+            agent_config=base_agent_config,
+            pipeline_steps=list(steps_ids),
+            workspace_root=workspace_root,
+            workspace_apply_writes=workspace_apply_writes,
+            task_id=task_id,
+            cancel_event=cancel_event,
+            pipeline_workspace_parts=pipeline_workspace_parts,
+            pipeline_step_ids=list(steps_ids),
+            _ring_pass=_ring_pass + 1,
+            _ring_initial_state=dict(state),
+        )
+        return ring_final
+
     return state
 
 
@@ -773,11 +913,9 @@ def run_pipeline_stream_resume(
     """Продолжить линейный пайплайн после ручного human-шага (см. POST human-resume)."""
     from backend.App.orchestration.application.pipeline_graph import (
         HUMAN_PIPELINE_STEP_TO_STATE_KEY,
-        _emit_completed,
         _migrate_legacy_pm_tasks_state,
         _pipeline_should_cancel,
         _resolve_pipeline_step,
-        _run_step_with_stream_progress,
         _state_snapshot,
         format_human_resume_output,
         validate_pipeline_steps,
@@ -786,11 +924,8 @@ def run_pipeline_stream_resume(
         pipeline_step_in_progress_message,
     )
 
-    resume_agent_config = (
-        partial_state.get("agent_config")
-        if isinstance(partial_state.get("agent_config"), dict)
-        else {}
-    )
+    _rac_raw = partial_state.get("agent_config")
+    resume_agent_config: dict[str, Any] = _rac_raw if isinstance(_rac_raw, dict) else {}
     validate_pipeline_steps(pipeline_steps, resume_agent_config)
     out_key = HUMAN_PIPELINE_STEP_TO_STATE_KEY.get(resume_from_step)
     if not out_key:
@@ -823,7 +958,7 @@ def run_pipeline_stream_resume(
                 f"Шаг {resume_from_step!r} не найден в pipeline_steps"
             ) from exc
 
-    state: dict[str, Any] = copy.deepcopy(partial_state)
+    state: dict[str, Any] = copy.deepcopy(cast(dict[str, Any], partial_state))
     _migrate_legacy_pm_tasks_state(state)
     machine = PipelineMachine.from_dict(state.get("pipeline_machine") or {})
     if cancel_event is not None:
@@ -844,7 +979,7 @@ def run_pipeline_stream_resume(
         progress_message = pipeline_step_in_progress_message(step_id, state)
         yield {"agent": step_id, "status": "in_progress", "message": progress_message}
         try:
-            yield from _run_step_with_stream_progress(step_id, step_func, state)
+            yield from _step_executor.run(step_id, step_func, state)
         except HumanApprovalRequired as exc:
             exc.partial_state = _state_snapshot(state)
             if not exc.resume_pipeline_step:
@@ -856,19 +991,19 @@ def run_pipeline_stream_resume(
             setattr(exc, "_partial_state", _state_snapshot(state))
             setattr(exc, "_failed_step", step_id)
             raise
-        yield _emit_completed(step_id, state)
+        yield _step_extractor.emit_completed(step_id, state)
         yield from _run_post_step_enforcement(
             state,
             machine,
             step_id,
             resume_agent_config,
             _resolve_pipeline_step,
-            _run_step_with_stream_progress,
-            _emit_completed,
+            _step_executor.run,
+            _step_extractor.emit_completed,
         )
 
     _finalize_pipeline_machine(state, machine)
-    return state
+    return cast(PipelineState, state)
 
 
 def run_pipeline_stream_retry(
@@ -886,11 +1021,9 @@ def run_pipeline_stream_retry(
     switch to a different model) to re-run from that step without losing prior work.
     """
     from backend.App.orchestration.application.pipeline_graph import (
-        _emit_completed,
         _migrate_legacy_pm_tasks_state,
         _pipeline_should_cancel,
         _resolve_pipeline_step,
-        _run_step_with_stream_progress,
         _state_snapshot,
         validate_pipeline_steps,
     )
@@ -898,7 +1031,7 @@ def run_pipeline_stream_retry(
         pipeline_step_in_progress_message,
     )
 
-    state: dict[str, Any] = copy.deepcopy(partial_state)
+    state: dict[str, Any] = copy.deepcopy(cast(dict[str, Any], partial_state))
     _migrate_legacy_pm_tasks_state(state)
     machine = PipelineMachine.from_dict(state.get("pipeline_machine") or {})
     if cancel_event is not None:
@@ -938,7 +1071,7 @@ def run_pipeline_stream_retry(
         progress_message = pipeline_step_in_progress_message(step_id, state)
         yield {"agent": step_id, "status": "in_progress", "message": progress_message}
         try:
-            yield from _run_step_with_stream_progress(step_id, step_func, state)
+            yield from _step_executor.run(step_id, step_func, state)
         except HumanApprovalRequired as exc:
             exc.partial_state = _state_snapshot(state)
             if not exc.resume_pipeline_step:
@@ -950,19 +1083,19 @@ def run_pipeline_stream_retry(
             setattr(exc, "_partial_state", _state_snapshot(state))
             setattr(exc, "_failed_step", step_id)
             raise
-        yield _emit_completed(step_id, state)
+        yield _step_extractor.emit_completed(step_id, state)
         yield from _run_post_step_enforcement(
             state,
             machine,
             step_id,
             retry_agent_config,
             _resolve_pipeline_step,
-            _run_step_with_stream_progress,
-            _emit_completed,
+            _step_executor.run,
+            _step_extractor.emit_completed,
         )
 
     _finalize_pipeline_machine(state, machine)
-    return state
+    return cast(PipelineState, state)
 
 
 def run_pipeline_stream_staged(
@@ -984,11 +1117,9 @@ def run_pipeline_stream_staged(
     import concurrent.futures
     from backend.App.orchestration.application.pipeline_graph import (
         _compact_state_if_needed,
-        _emit_completed,
         _initial_pipeline_state,
         _pipeline_should_cancel,
         _resolve_pipeline_step,
-        _run_step_with_stream_progress,
         _state_snapshot,
     )
     from backend.App.orchestration.application.pipeline_display import (
@@ -1028,7 +1159,7 @@ def run_pipeline_stream_staged(
             progress_message = pipeline_step_in_progress_message(step_id, state)
             yield {"agent": step_id, "status": "in_progress", "message": progress_message}
             try:
-                yield from _run_step_with_stream_progress(step_id, step_func, state)
+                yield from _step_executor.run(step_id, step_func, state)
             except HumanApprovalRequired as exc:
                 exc.partial_state = _state_snapshot(state)
                 if not exc.resume_pipeline_step:
@@ -1040,15 +1171,15 @@ def run_pipeline_stream_staged(
                 setattr(exc, "_partial_state", _state_snapshot(state))
                 setattr(exc, "_failed_step", step_id)
                 raise
-            yield _emit_completed(step_id, state)
+            yield _step_extractor.emit_completed(step_id, state)
             yield from _run_post_step_enforcement(
                 state,
                 machine,
                 step_id,
                 base_agent_config,
                 _resolve_pipeline_step,
-                _run_step_with_stream_progress,
-                _emit_completed,
+                _step_executor.run,
+                _step_extractor.emit_completed,
             )
         else:
             active_steps = list(stage)
@@ -1094,7 +1225,7 @@ def run_pipeline_stream_staged(
             for sid in active_steps:
                 if sid in step_results:
                     cast(dict, state).update(step_results[sid])
-                    yield _emit_completed(sid, state)
+                    yield _step_extractor.emit_completed(sid, state)
 
             if step_errors:
                 first_err_step = next(iter(step_errors))

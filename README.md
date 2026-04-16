@@ -21,7 +21,6 @@ Multi-agent pipeline (Python · FastAPI · LangGraph) — runs fully locally wit
 - `backend/` — FastAPI app, orchestration engine, domain logic, integrations
 - `frontend/` — Vue 3 UI shipped as a git submodule
 - `tests/` — backend unit and security-oriented tests
-- `docs/` — architecture notes, env reference, project-context templates
 
 ---
 
@@ -298,14 +297,6 @@ Configure in the UI under **Autonomous Features** or via `agent_config.swarm.*`:
 | Scheduling | Timed pipeline execution |
 
 Domain layer has **zero external dependencies** (no fastapi/redis/httpx/openai/anthropic in domain) — enforced by import-linter on every `make ci`.
-
----
-
-## Docs
-
-- [`docs/AIlourOS.md`](docs/AIlourOS.md) — architecture, invariants, env vars, topology
-- [`docs/PROJECT_CONTEXT_TEMPLATE.md`](docs/PROJECT_CONTEXT_TEMPLATE.md) — project context template
-- [`docs/PROJECT_CONTEXT_FRONTEND.md`](docs/PROJECT_CONTEXT_FRONTEND.md) — built-in UI context
 
 ---
 

@@ -1,6 +1,7 @@
 """Design pipeline nodes: ux_researcher, ux_architect, ui_designer + reviews + human gates."""
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from backend.App.orchestration.infrastructure.agents.ux_researcher_agent import UXResearcherAgent
@@ -17,15 +18,17 @@ from backend.App.orchestration.application.nodes._shared import (
     _make_reviewer_agent,
     _pipeline_context_block,
     _project_knowledge_block,
+    _stream_progress_emit,
     _swarm_prompt_prefix,
     planning_mcp_tool_instruction,
     _remote_api_client_kwargs_for_role,
     _skills_extra_for_role_cfg,
-    build_phase_pipeline_user_context,
     pipeline_user_task,
     embedded_pipeline_input_for_review,
     embedded_review_artifact,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -60,6 +63,19 @@ def ux_researcher_node(state: PipelineState) -> dict[str, Any]:
         f"Specification:\n{_effective_spec_for_build(state)}\n\n"
     )
     result, _, _ = _llm_planning_agent_run(agent, prompt, state)
+    # Retry on empty output
+    if not (result or "").strip():
+        logger.warning(
+            "ux_researcher_node: model returned empty output — retrying. task_id=%s",
+            (state.get("task_id") or "")[:36],
+        )
+        _stream_progress_emit(state, "UX Researcher: empty response — retrying…")
+        result, _, _ = _llm_planning_agent_run(agent, prompt, state)
+    if not (result or "").strip():
+        logger.error(
+            "ux_researcher_node: model returned empty output after retry. task_id=%s",
+            (state.get("task_id") or "")[:36],
+        )
     if (result or "").strip():
         from backend.App.workspace.application.doc_workspace import write_step_wiki
         write_step_wiki(state, "ux_researcher", result)
@@ -147,6 +163,19 @@ def ux_architect_node(state: PipelineState) -> dict[str, Any]:
         f"{ux_block}"
     )
     result, _, _ = _llm_planning_agent_run(agent, prompt, state)
+    # Retry on empty output
+    if not (result or "").strip():
+        logger.warning(
+            "ux_architect_node: model returned empty output — retrying. task_id=%s",
+            (state.get("task_id") or "")[:36],
+        )
+        _stream_progress_emit(state, "UX Architect: empty response — retrying…")
+        result, _, _ = _llm_planning_agent_run(agent, prompt, state)
+    if not (result or "").strip():
+        logger.error(
+            "ux_architect_node: model returned empty output after retry. task_id=%s",
+            (state.get("task_id") or "")[:36],
+        )
     if (result or "").strip():
         from backend.App.workspace.application.doc_workspace import write_step_wiki
         write_step_wiki(state, "ux_architect", result)
@@ -239,6 +268,19 @@ def ui_designer_node(state: PipelineState) -> dict[str, Any]:
         f"{ux_block}"
     )
     result, _, _ = _llm_planning_agent_run(agent, prompt, state)
+    # Retry on empty output
+    if not (result or "").strip():
+        logger.warning(
+            "ui_designer_node: model returned empty output — retrying. task_id=%s",
+            (state.get("task_id") or "")[:36],
+        )
+        _stream_progress_emit(state, "UI Designer: empty response — retrying…")
+        result, _, _ = _llm_planning_agent_run(agent, prompt, state)
+    if not (result or "").strip():
+        logger.error(
+            "ui_designer_node: model returned empty output after retry. task_id=%s",
+            (state.get("task_id") or "")[:36],
+        )
     if (result or "").strip():
         from backend.App.workspace.application.doc_workspace import write_step_wiki
         write_step_wiki(state, "ui_designer", result)

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 
+import pytest
+
 from backend.App.orchestration.application.repo_evidence import (
     ensure_validated_repo_evidence,
     enforce_repo_evidence_policy,
@@ -240,3 +242,75 @@ def test_ensure_validated_repo_evidence_uses_artifact_only_repair_when_retry_sti
     assert "Architecture summary after retry" in output
     assert '"repo_evidence"' in output
     assert validated["repo_evidence"][0]["path"] == "backend/composer.json"
+
+
+def test_ensure_validated_repo_evidence_skips_retries_when_cap_is_zero(monkeypatch, tmp_path):
+    """SWARM_REPO_EVIDENCE_MAX_RETRIES=0 returns empty evidence without LLM call."""
+    monkeypatch.setenv("SWARM_REPO_EVIDENCE_MAX_RETRIES", "0")
+    calls = {"count": 0}
+
+    def _retry_run(_prompt: str) -> str:
+        calls["count"] += 1
+        return ""
+
+    output, validated = ensure_validated_repo_evidence(
+        raw_output="narrative without any canonical artifact",
+        base_prompt="Base prompt",
+        workspace_root=str(tmp_path),
+        step_id="devops",
+        retry_run=_retry_run,
+    )
+
+    assert calls["count"] == 0
+    assert output == "narrative without any canonical artifact"
+    assert validated == {
+        "repo_evidence": [],
+        "unverified_claims": [],
+        "has_artifact": False,
+        "repair_failed": True,
+    }
+
+
+def test_ensure_validated_repo_evidence_caps_retries_at_one(monkeypatch, tmp_path):
+    """SWARM_REPO_EVIDENCE_MAX_RETRIES=1 runs the correction pass but skips artifact repair."""
+    monkeypatch.setenv("SWARM_REPO_EVIDENCE_MAX_RETRIES", "1")
+    calls = {"count": 0}
+
+    def _retry_run(_prompt: str) -> str:
+        calls["count"] += 1
+        return "still no canonical artifact"
+
+    output, validated = ensure_validated_repo_evidence(
+        raw_output="narrative without any canonical artifact",
+        base_prompt="Base prompt",
+        workspace_root=str(tmp_path),
+        step_id="devops",
+        retry_run=_retry_run,
+    )
+
+    assert calls["count"] == 1
+    assert output == "still no canonical artifact"
+    assert validated["repair_failed"] is True
+    assert validated["has_artifact"] is False
+
+
+def test_ensure_validated_repo_evidence_rejects_invalid_retry_cap(monkeypatch, tmp_path):
+    monkeypatch.setenv("SWARM_REPO_EVIDENCE_MAX_RETRIES", "not-a-number")
+    with pytest.raises(RuntimeError, match="must be an integer"):
+        ensure_validated_repo_evidence(
+            raw_output="anything",
+            base_prompt="Base",
+            workspace_root=str(tmp_path),
+            step_id="devops",
+            retry_run=lambda _: "",
+        )
+
+    monkeypatch.setenv("SWARM_REPO_EVIDENCE_MAX_RETRIES", "3")
+    with pytest.raises(RuntimeError, match="must be 0, 1, or 2"):
+        ensure_validated_repo_evidence(
+            raw_output="anything",
+            base_prompt="Base",
+            workspace_root=str(tmp_path),
+            step_id="devops",
+            retry_run=lambda _: "",
+        )

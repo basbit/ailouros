@@ -159,6 +159,11 @@ async def onboarding_mcp_preflight(body: OnboardingMcpPreflightRequest) -> JSONR
         workspace_root,
         "retrieve_mcp",
         mcp_config=config,
+        search_api_keys={
+            "tavily": body.tavily_api_key,
+            "exa": body.exa_api_key,
+            "scrapingdog": body.scrapingdog_api_key,
+        },
     )
     return JSONResponse(content={"servers": servers_out, **recommendations})
 

@@ -25,6 +25,25 @@ VERDICT_APPROVED = "APPROVED"
 _invalid_response_shape_count: int = 0
 
 
+# Tolerant VERDICT pattern — allows markdown emphasis (**Verdict:**, _Verdict_:,
+# `Verdict:`, ## Verdict:, or any mix) between the word "VERDICT" and the
+# captured verdict token. Historical bug (2026-04-16): reviewers that wrote
+# ``**Verdict:** NEEDS_WORK`` silently slipped through as OK because the old
+# regex only allowed whitespace between the colon and the word. This made the
+# auto-retry dev-rework loop unreachable. Keep the `[\s*_`]*` class and the
+# shared pattern aligned with ``review_moa._VERDICT_RE`` / ``_has_verdict``.
+VERDICT_RE = re.compile(
+    r"VERDICT\b[\s*_`]*:[\s*_`]*([A-Z_][A-Z0-9_]*)",
+    re.IGNORECASE,
+)
+
+# Tolerant NEEDS_WORK probe — same surrounding-markdown rules as VERDICT_RE.
+_NEEDS_WORK_RE = re.compile(
+    r"VERDICT\b[\s*_`]*:[\s*_`]*NEEDS_WORK\b",
+    re.IGNORECASE,
+)
+
+
 def get_quality_gate_metrics() -> dict[str, int]:
     """Return process-level quality-gate telemetry counters.
 
@@ -38,7 +57,9 @@ def get_quality_gate_metrics() -> dict[str, int]:
 def extract_verdict(text: str) -> str:
     """Extract APPROVED/NEEDS_WORK/ESCALATE from reviewer output.
 
-    Parses a ``VERDICT: <word>`` marker from *text*.
+    Parses a ``VERDICT: <word>`` marker from *text*, tolerating markdown
+    emphasis around the label (``**Verdict:**``, ``_Verdict_:``, headers)
+    and around the captured value (``Verdict: **NEEDS_WORK**``).
     Returns the uppercase verdict word, or ``'OK'`` when no marker is found.
 
     When no marker is found, logs a warning so operators can detect cases where
@@ -47,7 +68,7 @@ def extract_verdict(text: str) -> str:
     already inserted a ``VERDICT: NEEDS_WORK`` before this point.
     """
     global _invalid_response_shape_count
-    m = re.search(r"VERDICT\s*:\s*(\w+)", text or "", re.IGNORECASE)
+    m = VERDICT_RE.search(text or "")
     if not m:
         _invalid_response_shape_count += 1
         _log.warning(
@@ -67,7 +88,7 @@ def extract_defect_report(text: str) -> list[dict[str, str]]:
     returns a sentinel defect so callers always receive a non-empty list on NEEDS_WORK.
     If verdict is not NEEDS_WORK, returns an empty list.
     """
-    if not re.search(r"VERDICT\s*:\s*NEEDS_WORK", text or "", re.IGNORECASE):
+    if not _NEEDS_WORK_RE.search(text or ""):
         return []
 
     block_match = re.search(

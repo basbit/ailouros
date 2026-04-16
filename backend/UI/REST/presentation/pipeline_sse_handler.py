@@ -17,7 +17,10 @@ from typing import Any, Optional
 
 from backend.App.tasks.infrastructure.task_run_log import append_task_run_log
 from backend.App.workspace.infrastructure.workspace_io import (
+    _shell_allowlist,
     command_exec_allowed,
+    extend_runtime_shell_allowlist,
+    extract_command_binary,
     workspace_write_allowed,
 )
 from backend.App.workspace.infrastructure.patch_parser import (
@@ -119,9 +122,58 @@ class PipelineSSEHandler:
             SSE ``data: ...\\n\\n`` strings.
         """
         from backend.App.orchestration.infrastructure.shell_approval import request_shell_approval
+        from backend.App.workspace.infrastructure.workspace_io import (
+            scoped_runtime_shell_allowlist,
+        )
 
+        # Enter a per-task runtime-allowlist scope. Anything the user approves
+        # during this run (via request_shell_approval) is appended to this
+        # scope and discarded at end-of-task — so a later task running in
+        # the same worker thread cannot reuse the previous task's allowlist.
+        with scoped_runtime_shell_allowlist():
+            yield from self._handle_events_impl(
+                events_gen=events_gen,
+                task_id=task_id,
+                task_dir=task_dir,
+                agents_dir=agents_dir,
+                pipeline_snapshot=pipeline_snapshot,
+                now=now,
+                request_model=request_model,
+                workspace_path=workspace_path,
+                workspace_apply_writes=workspace_apply_writes,
+                cancel_event=cancel_event,
+                request_shell_approval=request_shell_approval,
+            )
+
+    def _handle_events_impl(
+        self,
+        *,
+        events_gen: Any,
+        task_id: str,
+        task_dir: Path,
+        agents_dir: Path,
+        pipeline_snapshot: dict[str, Any],
+        now: int,
+        request_model: str,
+        workspace_path: Optional[Path],
+        workspace_apply_writes: bool,
+        cancel_event: Optional[threading.Event],
+        request_shell_approval: Any,
+    ) -> Generator[str, None, None]:
         try:
             for event in events_gen:
+                if "agent" not in event:
+                    # Meta-event without an agent (e.g. ``active_steps`` from
+                    # ``run_pipeline_stream_staged`` when entering a parallel
+                    # stage). Forward it as a plain delta line so the frontend
+                    # still sees the announcement, then continue — there is no
+                    # per-agent artifact/snapshot work to do for these.
+                    msg_ev = str(event.get("message") or "")
+                    if msg_ev:
+                        meta_line = f"[orchestrator] {msg_ev}\n"
+                        append_task_run_log(task_dir, meta_line.strip())
+                        yield _sse_delta_line(now, request_model, meta_line)
+                    continue
                 agent = event["agent"]
                 st_ev = event.get("status") or ""
                 msg_ev = str(event.get("message") or "")
@@ -153,14 +205,38 @@ class PipelineSSEHandler:
                         if command_exec_allowed():
                             shell_cmds = extract_shell_commands(msg_ev)
                             if shell_cmds:
+                                # Split commands by whether their binary is already
+                                # in the env allowlist. Out-of-allowlist ones require
+                                # the user to explicitly grant a per-task extension.
+                                env_allow = _shell_allowlist()
+                                already_allowed: list[str] = []
+                                needs_allowlist: list[str] = []
+                                for cmd in shell_cmds:
+                                    binary = extract_command_binary(cmd)
+                                    if not binary:
+                                        continue
+                                    if binary in env_allow:
+                                        if binary not in already_allowed:
+                                            already_allowed.append(binary)
+                                    else:
+                                        if binary not in needs_allowlist:
+                                            needs_allowlist.append(binary)
+
                                 preview = ", ".join(f"`{c}`" for c in shell_cmds[:5])
                                 if len(shell_cmds) > 5:
                                     preview += f" … (+{len(shell_cmds) - 5})"
                                 role_label = "devops" if agent == "devops" else "dev"
+                                allowlist_suffix = ""
+                                if needs_allowlist:
+                                    allowlist_suffix = (
+                                        " [requires allowlist extension: "
+                                        + ", ".join(needs_allowlist)
+                                        + "]"
+                                    )
                                 ask_line = (
                                     f"[orchestrator] {role_label} requests to execute "
                                     f"{len(shell_cmds)} command(s): "
-                                    f"{preview} — awaiting approval…\n"
+                                    f"{preview}{allowlist_suffix} — awaiting approval…\n"
                                 )
                                 append_task_run_log(task_dir, ask_line.strip())
                                 yield _sse_delta_line(now, request_model, ask_line)
@@ -169,11 +245,31 @@ class PipelineSSEHandler:
                                     shell_cmds,
                                     self._task_store,
                                     cancel_event=cancel_event,
+                                    needs_allowlist=needs_allowlist,
+                                    already_allowed=already_allowed,
                                 )
                                 run_shell_flag = approved
+                                # Apply the per-task allowlist extension BEFORE we
+                                # reach ``_shell_command_allowed`` inside
+                                # ``apply_workspace_pipeline`` — otherwise the new
+                                # binaries would still be rejected and we'd silently
+                                # drop commands the user just explicitly approved.
+                                if approved and needs_allowlist:
+                                    extend_runtime_shell_allowlist(needs_allowlist)
+                                    logger.info(
+                                        "shell approval: extended runtime allowlist "
+                                        "for task=%s with %s",
+                                        task_id, needs_allowlist,
+                                    )
                                 result_line = (
                                     f"[orchestrator] shell "
-                                    f"{'approved' if approved else 'rejected'} by user\n"
+                                    f"{'approved' if approved else 'rejected'} by user"
+                                    + (
+                                        f" (allowlist extended: {', '.join(needs_allowlist)})"
+                                        if approved and needs_allowlist
+                                        else ""
+                                    )
+                                    + "\n"
                                 )
                                 append_task_run_log(task_dir, result_line.strip())
                                 yield _sse_delta_line(now, request_model, result_line)
@@ -235,7 +331,46 @@ class PipelineSSEHandler:
                         except OSError as ose:
                             logger.warning("incremental pipeline.json: %s", ose)
 
-                yield _build_agent_sse_event(now, request_model, event["agent"], event["status"], msg_ev)
+                # M-14 — structured audit events travel as JSON in delta.content
+                # so the frontend's ``parseChatStreamEvent`` can surface them
+                # as toasts. The plain text fallback (_build_agent_sse_event)
+                # would produce ``[step] auto_approved: `` which the parser
+                # can't distinguish from a regular log line.
+                if event.get("status") == "auto_approved":
+                    audit_payload = {
+                        "status": "auto_approved",
+                        "step": event.get("step") or event.get("agent"),
+                        "rule": event.get("rule"),
+                        "audit": event.get("audit"),
+                        "timestamp": event.get("timestamp"),
+                        "content_hash": event.get("content_hash"),
+                    }
+                    yield _sse_delta_line(
+                        now,
+                        request_model,
+                        json.dumps(audit_payload, ensure_ascii=False),
+                    )
+                elif event.get("status") in ("automation_agent", "ring_restart"):
+                    # Structured events: forward as JSON so the frontend can render
+                    # automation-agent spinners and ring-restart announcements distinctly.
+                    structured_payload = {
+                        "status": event["status"],
+                        "agent": event.get("agent", "orchestrator"),
+                        "message": msg_ev,
+                    }
+                    structured_payload.update(
+                        {k: v for k, v in event.items()
+                         if k not in ("status", "agent", "message") and v is not None}
+                    )
+                    yield _sse_delta_line(
+                        now,
+                        request_model,
+                        json.dumps(structured_payload, ensure_ascii=False),
+                    )
+                else:
+                    yield _build_agent_sse_event(
+                        now, request_model, event["agent"], event["status"], msg_ev
+                    )
 
         except Exception as exc:
             err_text = str(exc)

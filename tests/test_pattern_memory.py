@@ -108,7 +108,7 @@ def test_load_store_nonexistent(tmp_path):
     from backend.App.integrations.infrastructure.pattern_memory import _load_store
     path = tmp_path / "nonexistent.json"
     result = _load_store(path)
-    assert result == {"version": 1, "namespaces": {}}
+    assert result == {"version": 2, "namespaces": {}, "vectors": {}}
 
 
 def test_load_store_invalid_json(tmp_path):
@@ -116,7 +116,7 @@ def test_load_store_invalid_json(tmp_path):
     path = tmp_path / "bad.json"
     path.write_text("not valid json")
     result = _load_store(path)
-    assert result == {"version": 1, "namespaces": {}}
+    assert result == {"version": 2, "namespaces": {}, "vectors": {}}
 
 
 def test_load_store_non_dict_json(tmp_path):
@@ -125,7 +125,7 @@ def test_load_store_non_dict_json(tmp_path):
     path = tmp_path / "list.json"
     path.write_text(json.dumps([1, 2, 3]))
     result = _load_store(path)
-    assert result == {"version": 1, "namespaces": {}}
+    assert result == {"version": 2, "namespaces": {}, "vectors": {}}
 
 
 def test_load_store_namespaces_not_dict(tmp_path):
@@ -135,6 +135,19 @@ def test_load_store_namespaces_not_dict(tmp_path):
     path.write_text(json.dumps({"version": 1, "namespaces": "wrong"}))
     result = _load_store(path)
     assert result["namespaces"] == {}
+    # v1 stores without a vectors block get one promoted in-memory.
+    assert result["vectors"] == {}
+
+
+def test_load_store_v1_legacy_format_preserved(tmp_path):
+    """v1 stores written by older code must still be readable."""
+    from backend.App.integrations.infrastructure.pattern_memory import _load_store
+    import json
+    path = tmp_path / "v1.json"
+    path.write_text(json.dumps({"version": 1, "namespaces": {"default": {"k": "v"}}}))
+    result = _load_store(path)
+    assert result["namespaces"]["default"]["k"] == "v"
+    assert result["vectors"] == {}
 
 
 # ---------------------------------------------------------------------------
@@ -248,3 +261,118 @@ def test_format_pattern_memory_block_no_hits(tmp_path, monkeypatch):
     # No patterns stored, so no hits
     block = format_pattern_memory_block(state, "no matches here")
     assert block == ""
+
+
+# ---------------------------------------------------------------------------
+# Semantic layer — uses a stub embedding provider for determinism.
+# Real-model smoke tests live in tests/smoke/test_pattern_memory_smoke.py.
+# ---------------------------------------------------------------------------
+
+
+class _StubEmbedder:
+    """Hand-crafted provider — emits a 4-dim vector based on keyword hits."""
+
+    name = "stub"
+    dim = 4
+
+    _AXES = ("auth", "deploy", "design", "memory")
+
+    def embed(self, texts):
+        out = []
+        for text in texts:
+            lowered = text.lower()
+            vec = [1.0 if axis in lowered else 0.0 for axis in self._AXES]
+            norm = sum(v * v for v in vec) ** 0.5
+            if norm:
+                vec = [v / norm for v in vec]
+            out.append(vec)
+        return out
+
+
+@pytest.fixture
+def _semantic_provider(monkeypatch):
+    from backend.App.integrations.infrastructure import embedding_service
+    embedding_service.reset_embedding_provider()
+    stub = _StubEmbedder()
+    monkeypatch.setattr(embedding_service, "_provider_singleton", stub)
+    monkeypatch.delenv("SWARM_PATTERN_MEMORY_SEMANTIC", raising=False)
+    monkeypatch.delenv("SWARM_PATTERN_MEMORY_SEMANTIC_WEIGHT", raising=False)
+    yield stub
+    embedding_service.reset_embedding_provider()
+
+
+def test_store_pattern_writes_vector_when_provider_available(tmp_path, _semantic_provider):
+    from backend.App.integrations.infrastructure.pattern_memory import store_pattern
+    path = tmp_path / "mem.json"
+    store_pattern(path, "default", "auth-jwt", "JWT auth body", merge=False)
+    import json
+    raw = json.loads(path.read_text())
+    assert raw["version"] == 2
+    assert "auth-jwt" in raw["vectors"]["default"]
+    assert len(raw["vectors"]["default"]["auth-jwt"]) == _StubEmbedder.dim
+
+
+def test_store_pattern_skips_vector_when_provider_disabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("SWARM_PATTERN_MEMORY_SEMANTIC", "0")
+    from backend.App.integrations.infrastructure import embedding_service
+    embedding_service.reset_embedding_provider()
+    from backend.App.integrations.infrastructure.pattern_memory import store_pattern
+    path = tmp_path / "mem.json"
+    store_pattern(path, "default", "k", "v", merge=False)
+    import json
+    raw = json.loads(path.read_text())
+    assert raw.get("vectors", {}).get("default", {}) == {}
+
+
+def test_search_prefers_semantic_match_over_token_overlap(tmp_path, _semantic_provider):
+    """Semantic provider should rank token-disjoint but semantically close
+    entries above noisy token matches."""
+    from backend.App.integrations.infrastructure.pattern_memory import (
+        search_patterns,
+        store_pattern,
+    )
+    path = tmp_path / "mem.json"
+    # Both entries share zero meaningful tokens with the query, but only
+    # the first one shares a semantic axis ("auth").
+    store_pattern(path, "default", "credential-flow", "auth handshake notes", merge=False)
+    store_pattern(path, "default", "deploy-pipeline", "deploy CI rollout", merge=False)
+    state = {"agent_config": {"swarm": {"pattern_memory": True, "pattern_memory_path": str(path)}}}
+    hits = search_patterns(state, "auth login flow", limit=2)
+    assert hits, "semantic provider should produce hits"
+    assert hits[0][0] == "credential-flow"
+
+
+def test_search_falls_back_to_token_when_vector_dim_mismatches(tmp_path, _semantic_provider):
+    """Stored vectors with the wrong dim must be ignored, not crash."""
+    from backend.App.integrations.infrastructure.pattern_memory import (
+        search_patterns,
+        store_pattern,
+    )
+    path = tmp_path / "mem.json"
+    store_pattern(path, "default", "auth-jwt", "JWT auth body", merge=False)
+    # Corrupt the stored vector to simulate a model-change.
+    import json
+    raw = json.loads(path.read_text())
+    raw["vectors"]["default"]["auth-jwt"] = [0.1] * 999
+    path.write_text(json.dumps(raw))
+    state = {"agent_config": {"swarm": {"pattern_memory": True, "pattern_memory_path": str(path)}}}
+    hits = search_patterns(state, "JWT", limit=3)
+    # Token overlap on "JWT" still triggers — we get a hit even though the
+    # cosine path was skipped due to dim mismatch.
+    assert hits and hits[0][0] == "auth-jwt"
+
+
+def test_search_works_when_provider_is_null(tmp_path, monkeypatch):
+    """Token-overlap path must still function with embeddings disabled."""
+    monkeypatch.setenv("SWARM_PATTERN_MEMORY_SEMANTIC", "0")
+    from backend.App.integrations.infrastructure import embedding_service
+    embedding_service.reset_embedding_provider()
+    from backend.App.integrations.infrastructure.pattern_memory import (
+        search_patterns,
+        store_pattern,
+    )
+    path = tmp_path / "mem.json"
+    store_pattern(path, "default", "auth-jwt", "JWT keys", merge=False)
+    state = {"agent_config": {"swarm": {"pattern_memory": True, "pattern_memory_path": str(path)}}}
+    hits = search_patterns(state, "jwt", limit=3)
+    assert hits and hits[0][0] == "auth-jwt"

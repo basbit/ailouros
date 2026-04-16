@@ -25,14 +25,12 @@ FRONTEND_SHELL_SCOPE = [
     REPO_ROOT / "frontend/src/features/task-gate/ShellGate.vue",
     REPO_ROOT / "frontend/src/features/task-gate/HumanGate.vue",
     REPO_ROOT / "frontend/src/features/task-gate/RetryGate.vue",
-    REPO_ROOT / "frontend/src/features/checkpoints/CheckpointList.vue",
     REPO_ROOT / "frontend/src/features/remote-api/RemoteApiProfiles.vue",
     REPO_ROOT / "frontend/src/features/agent-roles/AgentRoles.vue",
     REPO_ROOT / "frontend/src/features/agent-roles/AgentRoleRow.vue",
     REPO_ROOT / "frontend/src/features/dev-roles/DevRoles.vue",
     REPO_ROOT / "frontend/src/features/custom-roles/CustomRoles.vue",
     REPO_ROOT / "frontend/src/features/skills-catalog/SkillsCatalog.vue",
-    REPO_ROOT / "frontend/src/features/pipeline/PipelineSteps.vue",
 ]
 
 FRONTEND_MODEL_FREE_SCOPE = [
@@ -53,7 +51,6 @@ FRONTEND_MODEL_FREE_SCOPE = [
     REPO_ROOT / "frontend/src/features/task-gate/ShellGate.vue",
     REPO_ROOT / "frontend/src/features/task-gate/HumanGate.vue",
     REPO_ROOT / "frontend/src/features/task-gate/RetryGate.vue",
-    REPO_ROOT / "frontend/src/features/checkpoints/CheckpointList.vue",
     REPO_ROOT / "frontend/src/widgets/onboarding-wizard/OnboardingWizard.vue",
 ]
 

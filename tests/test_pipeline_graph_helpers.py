@@ -45,6 +45,31 @@ def test_extract_verdict_none_input():
     assert _extract_verdict(None) == "OK"  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        # Regression for 2026-04-16 bug: reviewer wrote markdown-bold
+        # ``**Verdict:** NEEDS_WORK`` and the old regex silently returned "OK",
+        # skipping the dev-rework loop and letting NEEDS_WORK flow to devops/qa.
+        ("**Verdict:** NEEDS_WORK", "NEEDS_WORK"),
+        ("**VERDICT: NEEDS_WORK**", "NEEDS_WORK"),
+        ("**Verdict**: NEEDS_WORK", "NEEDS_WORK"),
+        ("Verdict: **NEEDS_WORK**", "NEEDS_WORK"),
+        ("`Verdict`: OK", "OK"),
+        ("### Final Verdict\nVERDICT: APPROVED", "APPROVED"),
+        ("verdict  :  needs_work", "NEEDS_WORK"),
+        ("verdict:APPROVED", "APPROVED"),
+    ],
+)
+def test_extract_verdict_tolerates_markdown_emphasis(text: str, expected: str) -> None:
+    """Markdown-wrapped verdicts (bold/italic/inline-code/heading) must parse.
+
+    Regression guard: without this tolerance the review_dev → dev rework loop
+    becomes unreachable whenever a reviewer uses emphasis around the label.
+    """
+    assert _extract_verdict(text) == expected
+
+
 # ---------------------------------------------------------------------------
 # _dev_review_router
 # ---------------------------------------------------------------------------
@@ -102,7 +127,8 @@ def test_dev_review_router_continue_when_retries_exhausted():
             "step_retries": {"dev": 2},
         }
         result = _dev_review_router(state)
-    assert result == "continue"
+    assert result == "escalate"  # exhausted retries → escalate to human
+    assert "escalation_warning" in state
 
 
 def test_dev_review_router_requires_structured_blockers():

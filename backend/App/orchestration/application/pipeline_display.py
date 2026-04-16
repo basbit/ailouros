@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from backend.App.orchestration.application.pipeline_state import PipelineState
+from collections.abc import Mapping
+from typing import Any
 
 
-def pipeline_step_in_progress_message(step_id: str, state: "PipelineState") -> str:
+def pipeline_step_in_progress_message(step_id: str, state: Mapping[str, Any]) -> str:
     """Return a UI/SSE progress message for *step_id*.
 
     For dev/qa steps that issue multiple sequential LLM calls without

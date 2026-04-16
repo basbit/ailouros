@@ -87,17 +87,29 @@ class DeepPlanner:
         # plan is a DeepPlan — human gate required before execution (INV-4)
     """
 
-    def analyze(self, task_id: str, task_spec: str, workspace_root: str = "") -> DeepPlan:
+    def analyze(
+        self,
+        task_id: str,
+        task_spec: str,
+        workspace_root: str = "",
+        llm_kwargs: dict[str, Any] | None = None,
+    ) -> "DeepPlan":
         """Run full 5-stage deep analysis. Returns DeepPlan proposal.
 
         INV-4: result is a proposal only — caller must show to human before executing.
         INV-1: each stage is logged.
+
+        Args:
+            llm_kwargs: Extra kwargs forwarded to ``chat_completion_text`` (e.g.
+                ``anthropic_api_key``, ``llm_route``).  When omitted the global
+                environment variables are used (local Ollama / env ANTHROPIC_API_KEY).
         """
         if not _deep_planning_enabled():
             logger.debug("DeepPlanner: disabled (SWARM_DEEP_PLANNING=0)")
             return DeepPlan(task_id=task_id, task_goal=task_spec)
 
         plan = DeepPlan(task_id=task_id, task_goal=task_spec)
+        _kw = dict(llm_kwargs or {})
         logger.info("DeepPlanner: starting 5-stage analysis for task=%s", task_id)  # INV-1
 
         try:
@@ -114,7 +126,7 @@ class DeepPlanner:
                 f"Summarize the key files, modules, and components relevant to this task "
                 f"in 200-400 words."
             )
-            plan.scan_summary = self._call_llm(chat_completion_text, scan_prompt)
+            plan.scan_summary = self._call_llm(chat_completion_text, scan_prompt, _kw)
             plan.raw_responses["scan"] = plan.scan_summary
 
             # Stage 2: Risks
@@ -127,7 +139,7 @@ class DeepPlanner:
                 f'[{{"id":"R1","description":"...","likelihood":"high|medium|low",'
                 f'"impact":"high|medium|low","mitigation":"..."}}]'
             )
-            risks_raw = self._call_llm(chat_completion_text, risks_prompt)
+            risks_raw = self._call_llm(chat_completion_text, risks_prompt, _kw)
             plan.raw_responses["risks"] = risks_raw
             plan.risks = self._parse_risks(risks_raw)
 
@@ -140,7 +152,7 @@ class DeepPlanner:
                 f"Respond in JSON array:\n"
                 f'[{{"title":"...","description":"...","pros":["..."],"cons":["..."]}}]'
             )
-            alts_raw = self._call_llm(chat_completion_text, alts_prompt)
+            alts_raw = self._call_llm(chat_completion_text, alts_prompt, _kw)
             plan.raw_responses["alternatives"] = alts_raw
             plan.alternatives = self._parse_alternatives(alts_raw)
 
@@ -154,7 +166,7 @@ class DeepPlanner:
                 f'{{"recommended_alternative":"...","milestones":['
                 f'{{"id":"M1","title":"...","description":"...","dependencies":[],"rollback_point":false}}]}}'
             )
-            plan_raw = self._call_llm(chat_completion_text, plan_prompt)
+            plan_raw = self._call_llm(chat_completion_text, plan_prompt, _kw)
             plan.raw_responses["plan"] = plan_raw
             self._parse_plan(plan, plan_raw)
 
@@ -222,10 +234,11 @@ class DeepPlanner:
         lines = "\n".join(entries)
         return f"\nWorkspace file index ({len(entries)} entries):\n```\n{lines}\n```\n\n"
 
-    def _call_llm(self, llm_fn: Any, prompt: str) -> str:
+    def _call_llm(self, llm_fn: Any, prompt: str, llm_kwargs: dict[str, Any] | None = None) -> str:
         return llm_fn(
             model=_deep_planning_model(),
             messages=[{"role": "user", "content": prompt}],
+            **(llm_kwargs or {}),
         )
 
     def _parse_risks(self, raw: str) -> list[RiskItem]:

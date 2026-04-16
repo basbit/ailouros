@@ -15,7 +15,6 @@ from typing import Any, Optional
 from fastapi import WebSocket
 from starlette.websockets import WebSocketDisconnect
 
-from backend.App.tasks.infrastructure.task_store_redis import TaskStore
 from backend.App.workspace.infrastructure.workspace_io import command_exec_allowed, workspace_write_allowed
 
 logger = logging.getLogger(__name__)
@@ -43,7 +42,7 @@ def metrics_payload() -> dict[str, Any]:
     return data
 
 
-def task_snapshot(task_store: TaskStore, task_id: Optional[str]) -> Optional[dict[str, Any]]:
+def task_snapshot(task_store: Any, task_id: Optional[str]) -> Optional[dict[str, Any]]:
     if not task_id:
         return None
     try:
@@ -52,7 +51,7 @@ def task_snapshot(task_store: TaskStore, task_id: Optional[str]) -> Optional[dic
         return {"error": "not_found", "task_id": task_id}
 
 
-async def handle_ws_ui(websocket: WebSocket, task_store: TaskStore) -> None:
+async def handle_ws_ui(websocket: WebSocket, task_store: Any) -> None:
     """Metrics + task snapshot subscription."""
     await websocket.accept()
     subscribed: dict[str, Any] = {"task_id": None}

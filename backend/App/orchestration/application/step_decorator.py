@@ -47,8 +47,17 @@ def hook_wrap(
 
     def wrapped(state: PipelineState) -> dict[str, Any]:
         from backend.App.integrations.infrastructure.observability.logging_config import set_step
+        from backend.App.orchestration.application import current_step as _cs
         set_step(step_id)
         cast(dict, state)["_current_step_id"] = step_id
+        # Pin step_id + agent_config on a ContextVar so helpers below the
+        # agent layer (LLM client, router) can apply per-step tuning —
+        # e.g. role-aware reasoning_budget_tokens — without every call
+        # site threading the step_id through. Tokens are cleared in the
+        # finally block below alongside ``_current_step_id``.
+        _active_agent_config = state.get("agent_config") if isinstance(state.get("agent_config"), dict) else None
+        _cs_step_token = _cs._current_step_id.set(step_id)
+        _cs_cfg_token = _cs._current_agent_config.set(_active_agent_config)
         try:
             base = dict(state)
             start_time = time.perf_counter()
@@ -78,6 +87,14 @@ def hook_wrap(
                 after_state: PipelineState = cast(PipelineState, {**base, **combined_output})
                 run_pipeline_hooks_after(step_id, after_state, step_output)
                 persist_after_pipeline_step(step_id, after_state, step_output)
+                try:
+                    from backend.App.orchestration.application.session_transcript import (
+                        append_transcript_entry,
+                    )
+                    _elapsed_so_far = (time.perf_counter() - start_time) * 1000.0
+                    append_transcript_entry(step_id, after_state, step_output, elapsed_ms=_elapsed_so_far)
+                except Exception as _transcript_exc:
+                    logger.debug("session_transcript: write skipped: %s", _transcript_exc)
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0
             try:
                 _observability.record_metric(step_id, elapsed_ms)
@@ -95,6 +112,26 @@ def hook_wrap(
                         output_with_metrics[_TOKEN_KEY_OUTPUT] = token_usage["output_tokens"]
                 except Exception:
                     pass
+            # L-9 — propagate file_read cache hits/misses from MCP tool loop telemetry
+            try:
+                from backend.App.integrations.infrastructure.mcp.openai_loop.loop import (
+                    _last_mcp_telemetry,
+                )
+                from backend.App.integrations.infrastructure.observability.step_metrics import (
+                    _TOKEN_KEY_FILE_READ_CACHE_HITS,
+                    _TOKEN_KEY_FILE_READ_CACHE_MISSES,
+                )
+                _cache_hits = getattr(_last_mcp_telemetry, "file_read_cache_hits", 0) or 0
+                _cache_misses = getattr(_last_mcp_telemetry, "file_read_cache_misses", 0) or 0
+                if _cache_hits:
+                    output_with_metrics[_TOKEN_KEY_FILE_READ_CACHE_HITS] = _cache_hits
+                if _cache_misses:
+                    output_with_metrics[_TOKEN_KEY_FILE_READ_CACHE_MISSES] = _cache_misses
+                # Reset telemetry counters so subsequent steps start fresh
+                _last_mcp_telemetry.file_read_cache_hits = 0
+                _last_mcp_telemetry.file_read_cache_misses = 0
+            except Exception:
+                pass
 
             try:
                 _observability.trace_step(
@@ -110,6 +147,14 @@ def hook_wrap(
             return combined_output
         finally:
             cast(dict, state).pop("_current_step_id", None)
+            try:
+                _cs._current_agent_config.reset(_cs_cfg_token)
+            except Exception:
+                pass
+            try:
+                _cs._current_step_id.reset(_cs_step_token)
+            except Exception:
+                pass
 
     return wrapped
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from backend.App.orchestration.infrastructure.agents.base_agent import BaseAgent, load_prompt, resolve_agent_model, resolve_default_environment
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -43,10 +43,10 @@ class PMAgent(BaseAgent):
             system_prompt_extra=system_prompt_extra,
         )
 
-    def run(self, user_input: str) -> str:
+    def run(self, user_input: str, *, _progress_queue: Any = None) -> str:
         """Run PM agent.
 
         Deep planning (SWARM_DEEP_PLANNING=1) is handled by pm_node() before this
         is called, so user_input already contains the analysis summary if enabled.
         """
-        return super().run(user_input)
+        return super().run(user_input, _progress_queue=_progress_queue)

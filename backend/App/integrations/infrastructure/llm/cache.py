@@ -13,14 +13,14 @@ import hashlib
 import json
 import logging
 import os
-from typing import Any, Optional
+from typing import Any
 
 from backend.App.integrations.domain.ports import LLMCachePort
 
 try:
-    import redis as _redis_mod
+    import redis as _redis_mod  # type: ignore[import-not-found,no-redef]
 except ImportError:
-    _redis_mod: Optional[Any] = None
+    _redis_mod = None  # type: ignore[assignment]
 
 # Redis URL default — agents layer resolves this independently from orchestrator
 _DEFAULT_REDIS_URL: str = (

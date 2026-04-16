@@ -1,5 +1,6 @@
 """Tests for backend/App/orchestration/application/pipeline_runners.py."""
 import json
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -46,14 +47,12 @@ def _mock_pipeline_graph_symbols(step_ids, step_funcs=None):
     patches = {
         "DEFAULT_PIPELINE_STEP_IDS": step_ids,
         "_compact_state_if_needed": lambda state, step_id: None,
-        "_emit_completed": fake_emit_completed,
         "_initial_pipeline_state": lambda *args, **kwargs: {
             "input": kwargs.get("user_input") or args[0] if args else "",
             "agent_config": args[1] if len(args) > 1 else {},
         },
         "_pipeline_should_cancel": lambda state: False,
         "_resolve_pipeline_step": fake_resolve_step,
-        "_run_step_with_stream_progress": fake_run_step_with_stream_progress,
         "_state_snapshot": lambda state: dict(state),
         "pipeline_step_in_progress_message": lambda step_id, state: f"Running {step_id}",
         "validate_pipeline_steps": lambda steps, ac: None,
@@ -104,10 +103,10 @@ def test_run_pipeline_stream_yields_events():
         "backend.App.orchestration.application.pipeline_graph._resolve_pipeline_step",
         side_effect=lambda sid, ac: (f"Running {sid}", _make_step_func()),
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._run_step_with_stream_progress",
+        "backend.App.orchestration.application.pipeline_runners._step_executor.run",
         side_effect=lambda sid, fn, st: iter([]),
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._emit_completed",
+        "backend.App.orchestration.application.pipeline_runners._step_extractor.emit_completed",
         side_effect=lambda sid, st: {"agent": sid, "status": "completed"},
     ), patch(
         "backend.App.orchestration.application.pipeline_display.pipeline_step_in_progress_message",
@@ -148,10 +147,10 @@ def test_run_pipeline_stream_returns_pipeline_metrics():
         "backend.App.orchestration.application.pipeline_graph._resolve_pipeline_step",
         side_effect=lambda sid, ac: ("Running", _make_step_func("pm_output", "pm result")),
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._run_step_with_stream_progress",
+        "backend.App.orchestration.application.pipeline_runners._step_executor.run",
         side_effect=lambda sid, fn, st: iter([fn(st)]),
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._emit_completed",
+        "backend.App.orchestration.application.pipeline_runners._step_extractor.emit_completed",
         side_effect=lambda sid, st: {"agent": sid, "status": "completed"},
     ), patch(
         "backend.App.orchestration.application.pipeline_graph._state_snapshot",
@@ -222,7 +221,7 @@ def test_run_pipeline_stream_step_exception_attaches_state():
         "backend.App.orchestration.application.pipeline_graph._resolve_pipeline_step",
         side_effect=lambda sid, ac: ("Running", _make_step_func()),
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._run_step_with_stream_progress",
+        "backend.App.orchestration.application.pipeline_runners._step_executor.run",
         side_effect=raising_run_step,
     ), patch(
         "backend.App.orchestration.application.pipeline_graph._state_snapshot",
@@ -266,7 +265,7 @@ def test_run_pipeline_stream_human_approval_required():
         "backend.App.orchestration.application.pipeline_graph._resolve_pipeline_step",
         side_effect=lambda sid, ac: ("Running", _make_step_func()),
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._run_step_with_stream_progress",
+        "backend.App.orchestration.application.pipeline_runners._step_executor.run",
         side_effect=raising_run_step,
     ), patch(
         "backend.App.orchestration.application.pipeline_graph._state_snapshot",
@@ -282,10 +281,19 @@ def test_run_pipeline_stream_human_approval_required():
 
 
 def test_run_pipeline_stream_blocks_on_review_pm_needs_work() -> None:
-    step_ids = ["review_pm", "architect"]
+    step_ids = ["review_pm", "human_pm", "architect"]
 
     def fake_run_step_with_stream_progress(step_id, step_func, state):
-        state["pm_review_output"] = "VERDICT: NEEDS_WORK\nPM plan uses unsupported hardcoded stack."
+        # Review output must exceed _MIN_REVIEW_CONTENT_CHARS (120) to
+        # take the real NEEDS_WORK path (shorter → empty-review escalation).
+        state["pm_review_output"] = (
+            "### Summary of Work\n"
+            "PM built a plan with hardcoded stack choices.\n\n"
+            "### Risks & Gaps\n"
+            "Role separation violation: PM should not hardcode the technology stack. "
+            "Architect is the source of truth for stack decisions.\n\n"
+            "VERDICT: NEEDS_WORK"
+        )
         yield {"agent": step_id, "status": "progress", "message": "working"}
 
     with patch(
@@ -307,10 +315,10 @@ def test_run_pipeline_stream_blocks_on_review_pm_needs_work() -> None:
         "backend.App.orchestration.application.pipeline_graph._resolve_pipeline_step",
         side_effect=lambda sid, ac: ("Running", _make_step_func()),
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._run_step_with_stream_progress",
+        "backend.App.orchestration.application.pipeline_runners._step_executor.run",
         side_effect=fake_run_step_with_stream_progress,
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._emit_completed",
+        "backend.App.orchestration.application.pipeline_runners._step_extractor.emit_completed",
         side_effect=lambda sid, st: {"agent": sid, "status": "completed", "message": "done"},
     ), patch(
         "backend.App.orchestration.application.pipeline_graph._state_snapshot",
@@ -339,10 +347,27 @@ def test_run_pipeline_stream_auto_retries_review_pm_before_human_gate(monkeypatc
         if step_id == "pm":
             state["pm_output"] = f"pm attempt {calls['pm']}"
         if step_id == "review_pm":
+            # Review output must exceed _MIN_REVIEW_CONTENT_CHARS (120) —
+            # shorter outputs are treated as "empty review" and escalate
+            # without retry (bug aec02899 guard). Use realistic-length
+            # fixtures so we exercise the actual retry path.
             if calls["review_pm"] == 1:
-                state["pm_review_output"] = "VERDICT: NEEDS_WORK\nStack drift."
+                state["pm_review_output"] = (
+                    "### Summary of Work\n"
+                    "PM decomposed the task into 5 core activities with acceptance "
+                    "criteria covering monetization, core loop, and persistence.\n\n"
+                    "### Risks & Gaps\n"
+                    "Role separation violation: PM hard-coded SQLite and AdMob — "
+                    "the Architect should own stack decisions.\n\n"
+                    "VERDICT: NEEDS_WORK"
+                )
             else:
-                state["pm_review_output"] = "VERDICT: APPROVED\nLooks good."
+                state["pm_review_output"] = (
+                    "### Summary of Work\n"
+                    "PM decomposed the task clearly and removed the stack hardcoding "
+                    "flagged in the previous round. Acceptance criteria are measurable.\n\n"
+                    "VERDICT: APPROVED"
+                )
         yield {"agent": step_id, "status": "progress", "message": "working"}
 
     monkeypatch.setenv("SWARM_AUTO_RETRY_ON_NEEDS_WORK", "1")
@@ -367,10 +392,10 @@ def test_run_pipeline_stream_auto_retries_review_pm_before_human_gate(monkeypatc
         "backend.App.orchestration.application.pipeline_graph._resolve_pipeline_step",
         side_effect=fake_resolve_step,
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._run_step_with_stream_progress",
+        "backend.App.orchestration.application.pipeline_runners._step_executor.run",
         side_effect=fake_run_step_with_stream_progress,
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._emit_completed",
+        "backend.App.orchestration.application.pipeline_runners._step_extractor.emit_completed",
         side_effect=lambda sid, st: {"agent": sid, "status": "completed", "message": "done"},
     ), patch(
         "backend.App.orchestration.application.pipeline_graph._state_snapshot",
@@ -390,7 +415,7 @@ def test_run_pipeline_stream_auto_retries_review_pm_before_human_gate(monkeypatc
 
 
 def test_run_pipeline_stream_blocks_on_review_stack_needs_work() -> None:
-    step_ids = ["review_stack", "review_arch"]
+    step_ids = ["review_stack", "human_arch", "review_arch"]
 
     def fake_run_step_with_stream_progress(step_id, step_func, state):
         state["stack_review_output"] = "VERDICT: NEEDS_WORK\nStack claims are not evidence-backed."
@@ -415,10 +440,10 @@ def test_run_pipeline_stream_blocks_on_review_stack_needs_work() -> None:
         "backend.App.orchestration.application.pipeline_graph._resolve_pipeline_step",
         side_effect=lambda sid, ac: ("Running", _make_step_func()),
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._run_step_with_stream_progress",
+        "backend.App.orchestration.application.pipeline_runners._step_executor.run",
         side_effect=fake_run_step_with_stream_progress,
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._emit_completed",
+        "backend.App.orchestration.application.pipeline_runners._step_extractor.emit_completed",
         side_effect=lambda sid, st: {"agent": sid, "status": "completed", "message": "done"},
     ), patch(
         "backend.App.orchestration.application.pipeline_graph._state_snapshot",
@@ -466,10 +491,10 @@ def test_run_pipeline_stream_runs_verification_layer_after_dev(tmp_path):
         "backend.App.orchestration.application.pipeline_graph._resolve_pipeline_step",
         side_effect=lambda sid, ac: ("Running", _make_step_func()),
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._run_step_with_stream_progress",
+        "backend.App.orchestration.application.pipeline_runners._step_executor.run",
         side_effect=fake_run_step_with_stream_progress,
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._emit_completed",
+        "backend.App.orchestration.application.pipeline_runners._step_extractor.emit_completed",
         side_effect=lambda sid, st: {"agent": sid, "status": "completed"},
     ), patch(
         "backend.App.orchestration.application.pipeline_display.pipeline_step_in_progress_message",
@@ -478,7 +503,7 @@ def test_run_pipeline_stream_runs_verification_layer_after_dev(tmp_path):
         "backend.App.workspace.infrastructure.patch_parser.apply_from_devops_and_dev_outputs",
         return_value={"written": ["app.py"], "patched": [], "udiff_applied": [], "parsed": 1},
     ), patch(
-        "backend.App.orchestration.domain.gates.run_all_gates",
+        "backend.App.orchestration.application.gate_runner.run_all_gates",
         return_value=[GateResult(True, "build_gate")],
     ):
         events = list(run_pipeline_stream("input", pipeline_steps=step_ids))
@@ -520,10 +545,10 @@ def test_run_pipeline_stream_builds_verification_contract_from_deliverables(tmp_
         "backend.App.orchestration.application.pipeline_graph._resolve_pipeline_step",
         side_effect=lambda sid, ac: ("Running", _make_step_func()),
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._run_step_with_stream_progress",
+        "backend.App.orchestration.application.pipeline_runners._step_executor.run",
         side_effect=fake_run_step_with_stream_progress,
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._emit_completed",
+        "backend.App.orchestration.application.pipeline_runners._step_extractor.emit_completed",
         side_effect=lambda sid, st: {"agent": sid, "status": "completed"},
     ), patch(
         "backend.App.orchestration.application.pipeline_display.pipeline_step_in_progress_message",
@@ -532,7 +557,7 @@ def test_run_pipeline_stream_builds_verification_contract_from_deliverables(tmp_
         "backend.App.workspace.infrastructure.patch_parser.apply_from_devops_and_dev_outputs",
         return_value={"written": ["app.py"], "patched": [], "udiff_applied": [], "parsed": 1},
     ), patch(
-        "backend.App.orchestration.domain.gates.run_all_gates",
+        "backend.App.orchestration.application.gate_runner.run_all_gates",
         return_value=[
             GateResult(True, "build_gate"),
             GateResult(True, "spec_gate"),
@@ -588,10 +613,10 @@ def test_run_pipeline_stream_fails_on_unjustified_full_file_rewrite(tmp_path):
         "backend.App.orchestration.application.pipeline_graph._resolve_pipeline_step",
         side_effect=lambda sid, ac: ("Running", _make_step_func()),
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._run_step_with_stream_progress",
+        "backend.App.orchestration.application.pipeline_runners._step_executor.run",
         side_effect=fake_run_step_with_stream_progress,
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._emit_completed",
+        "backend.App.orchestration.application.pipeline_runners._step_extractor.emit_completed",
         side_effect=lambda sid, st: {"agent": sid, "status": "completed"},
     ), patch(
         "backend.App.orchestration.application.pipeline_graph._state_snapshot",
@@ -651,10 +676,10 @@ def test_run_pipeline_stream_fails_on_unjustified_mcp_full_file_rewrite(tmp_path
         "backend.App.orchestration.application.pipeline_graph._resolve_pipeline_step",
         side_effect=lambda sid, ac: ("Running", _make_step_func()),
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._run_step_with_stream_progress",
+        "backend.App.orchestration.application.pipeline_runners._step_executor.run",
         side_effect=fake_run_step_with_stream_progress,
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._emit_completed",
+        "backend.App.orchestration.application.pipeline_runners._step_extractor.emit_completed",
         side_effect=lambda sid, st: {"agent": sid, "status": "completed"},
     ), patch(
         "backend.App.orchestration.application.pipeline_graph._state_snapshot",
@@ -725,10 +750,10 @@ def test_run_pipeline_stream_rejects_manifest_mismatch_with_deliverables(tmp_pat
         "backend.App.orchestration.application.pipeline_graph._resolve_pipeline_step",
         side_effect=lambda sid, ac: ("Running", _make_step_func()),
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._run_step_with_stream_progress",
+        "backend.App.orchestration.application.pipeline_runners._step_executor.run",
         side_effect=fake_run_step_with_stream_progress,
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._emit_completed",
+        "backend.App.orchestration.application.pipeline_runners._step_extractor.emit_completed",
         side_effect=lambda sid, st: {"agent": sid, "status": "completed"},
     ), patch(
         "backend.App.orchestration.application.pipeline_graph._state_snapshot",
@@ -819,10 +844,10 @@ def test_run_pipeline_stream_review_dev_requires_structured_blockers():
         "backend.App.orchestration.application.pipeline_graph._resolve_pipeline_step",
         side_effect=lambda sid, ac: ("Running", _make_step_func()),
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._run_step_with_stream_progress",
+        "backend.App.orchestration.application.pipeline_runners._step_executor.run",
         side_effect=fake_run_step_with_stream_progress,
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._emit_completed",
+        "backend.App.orchestration.application.pipeline_runners._step_extractor.emit_completed",
         side_effect=lambda sid, st: {"agent": sid, "status": "completed"},
     ), patch(
         "backend.App.orchestration.application.pipeline_graph._state_snapshot",
@@ -946,10 +971,10 @@ def test_run_pipeline_stream_review_qa_retries_dev_until_structured_defects_clos
         "backend.App.orchestration.application.pipeline_graph._resolve_pipeline_step",
         side_effect=lambda sid, ac: ("Running", _make_step_func()),
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._run_step_with_stream_progress",
+        "backend.App.orchestration.application.pipeline_runners._step_executor.run",
         side_effect=fake_run_step_with_stream_progress,
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._emit_completed",
+        "backend.App.orchestration.application.pipeline_runners._step_extractor.emit_completed",
         side_effect=lambda sid, st: {"agent": sid, "status": "completed"},
     ), patch(
         "backend.App.orchestration.application.pipeline_graph._state_snapshot",
@@ -967,7 +992,7 @@ def test_run_pipeline_stream_review_qa_retries_dev_until_structured_defects_clos
         "backend.App.workspace.infrastructure.patch_parser.apply_from_devops_and_dev_outputs",
         return_value={"written": ["app.py"], "patched": [], "udiff_applied": [], "parsed": 1},
     ), patch(
-        "backend.App.orchestration.domain.gates.run_all_gates",
+        "backend.App.orchestration.application.gate_runner.run_all_gates",
         return_value=[GateResult(True, "build_gate")],
     ):
         events, final_state = _drain_generator_with_return(
@@ -1010,13 +1035,15 @@ def test_run_pipeline_stream_resume_unknown_human_step():
 
 
 def test_run_pipeline_stream_resume_step_not_in_pipeline():
+    # Non-human steps that aren't in pipeline_steps must raise ValueError("не найден").
+    # (Human-prefixed steps get dynamically injected, so use a non-human gate name.)
     partial_state = {"input": "test", "agent_config": {}}
     with patch(
         "backend.App.orchestration.application.pipeline_graph.validate_pipeline_steps",
         lambda *a, **kw: None,
     ), patch(
         "backend.App.orchestration.application.pipeline_graph.HUMAN_PIPELINE_STEP_TO_STATE_KEY",
-        {"human_spec": "spec_human_output"},
+        {"review_spec": "spec_review_output"},
     ), patch(
         "backend.App.orchestration.application.pipeline_graph._migrate_legacy_pm_tasks_state",
         lambda s: None,
@@ -1026,7 +1053,7 @@ def test_run_pipeline_stream_resume_step_not_in_pipeline():
     ):
         gen = run_pipeline_stream_resume(
             partial_state, ["pm", "ba"],
-            "human_spec", "feedback text",
+            "review_spec", "feedback text",
         )
         with pytest.raises(ValueError, match="не найден"):
             list(gen)
@@ -1055,10 +1082,10 @@ def test_run_pipeline_stream_resume_yields_events():
         "backend.App.orchestration.application.pipeline_graph._resolve_pipeline_step",
         side_effect=lambda sid, ac: (f"Running {sid}", _make_step_func()),
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._run_step_with_stream_progress",
+        "backend.App.orchestration.application.pipeline_runners._step_executor.run",
         side_effect=lambda sid, fn, st: iter([]),
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._emit_completed",
+        "backend.App.orchestration.application.pipeline_runners._step_extractor.emit_completed",
         side_effect=lambda sid, st: {"agent": sid, "status": "completed"},
     ), patch(
         "backend.App.orchestration.application.pipeline_display.pipeline_step_in_progress_message",
@@ -1110,10 +1137,10 @@ def test_run_pipeline_stream_resume_runs_verification_layer_after_dev(tmp_path):
         "backend.App.orchestration.application.pipeline_graph._resolve_pipeline_step",
         side_effect=lambda sid, ac: (f"Running {sid}", _make_step_func()),
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._run_step_with_stream_progress",
+        "backend.App.orchestration.application.pipeline_runners._step_executor.run",
         side_effect=fake_run_step_with_stream_progress,
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._emit_completed",
+        "backend.App.orchestration.application.pipeline_runners._step_extractor.emit_completed",
         side_effect=lambda sid, st: {"agent": sid, "status": "completed"},
     ), patch(
         "backend.App.orchestration.application.pipeline_display.pipeline_step_in_progress_message",
@@ -1125,7 +1152,7 @@ def test_run_pipeline_stream_resume_runs_verification_layer_after_dev(tmp_path):
         "backend.App.workspace.infrastructure.patch_parser.apply_from_devops_and_dev_outputs",
         return_value={"written": ["app.py"], "patched": [], "udiff_applied": [], "parsed": 1},
     ), patch(
-        "backend.App.orchestration.domain.gates.run_all_gates",
+        "backend.App.orchestration.application.gate_runner.run_all_gates",
         return_value=[GateResult(True, "build_gate")],
     ):
         events, final_state = _drain_generator_with_return(
@@ -1181,10 +1208,10 @@ def test_run_pipeline_stream_retry_merges_override_agent_config():
         "backend.App.orchestration.application.pipeline_graph._resolve_pipeline_step",
         side_effect=fake_resolve,
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._run_step_with_stream_progress",
+        "backend.App.orchestration.application.pipeline_runners._step_executor.run",
         side_effect=lambda sid, fn, st: iter([]),
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._emit_completed",
+        "backend.App.orchestration.application.pipeline_runners._step_extractor.emit_completed",
         side_effect=lambda sid, st: {"agent": sid, "status": "completed"},
     ), patch(
         "backend.App.orchestration.application.pipeline_display.pipeline_step_in_progress_message",
@@ -1221,10 +1248,10 @@ def test_run_pipeline_stream_retry_yields_from_step():
         "backend.App.orchestration.application.pipeline_graph._resolve_pipeline_step",
         side_effect=lambda sid, ac: (f"Running {sid}", _make_step_func()),
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._run_step_with_stream_progress",
+        "backend.App.orchestration.application.pipeline_runners._step_executor.run",
         side_effect=lambda sid, fn, st: iter([]),
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._emit_completed",
+        "backend.App.orchestration.application.pipeline_runners._step_extractor.emit_completed",
         side_effect=lambda sid, st: {"agent": sid, "status": "completed"},
     ), patch(
         "backend.App.orchestration.application.pipeline_display.pipeline_step_in_progress_message",
@@ -1270,10 +1297,10 @@ def test_run_pipeline_stream_retry_runs_verification_layer_after_dev(tmp_path):
         "backend.App.orchestration.application.pipeline_graph._resolve_pipeline_step",
         side_effect=lambda sid, ac: (f"Running {sid}", _make_step_func()),
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._run_step_with_stream_progress",
+        "backend.App.orchestration.application.pipeline_runners._step_executor.run",
         side_effect=fake_run_step_with_stream_progress,
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._emit_completed",
+        "backend.App.orchestration.application.pipeline_runners._step_extractor.emit_completed",
         side_effect=lambda sid, st: {"agent": sid, "status": "completed"},
     ), patch(
         "backend.App.orchestration.application.pipeline_display.pipeline_step_in_progress_message",
@@ -1285,7 +1312,7 @@ def test_run_pipeline_stream_retry_runs_verification_layer_after_dev(tmp_path):
         "backend.App.workspace.infrastructure.patch_parser.apply_from_devops_and_dev_outputs",
         return_value={"written": ["app.py"], "patched": [], "udiff_applied": [], "parsed": 1},
     ), patch(
-        "backend.App.orchestration.domain.gates.run_all_gates",
+        "backend.App.orchestration.application.gate_runner.run_all_gates",
         return_value=[GateResult(True, "build_gate")],
     ):
         events, final_state = _drain_generator_with_return(
@@ -1378,10 +1405,10 @@ def test_run_pipeline_stream_staged_single_steps():
         "backend.App.orchestration.application.pipeline_graph._resolve_pipeline_step",
         side_effect=lambda sid, ac: (f"Running {sid}", _make_step_func()),
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._run_step_with_stream_progress",
+        "backend.App.orchestration.application.pipeline_runners._step_executor.run",
         side_effect=fake_run_step_with_stream_progress,
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._emit_completed",
+        "backend.App.orchestration.application.pipeline_runners._step_extractor.emit_completed",
         side_effect=lambda sid, st: {"agent": sid, "status": "completed"},
     ), patch(
         "backend.App.orchestration.application.pipeline_display.pipeline_step_in_progress_message",
@@ -1393,7 +1420,7 @@ def test_run_pipeline_stream_staged_single_steps():
         "backend.App.workspace.infrastructure.patch_parser.apply_from_devops_and_dev_outputs",
         return_value={"written": ["app.py"], "patched": [], "udiff_applied": [], "parsed": 1},
     ), patch(
-        "backend.App.orchestration.domain.gates.run_all_gates",
+        "backend.App.orchestration.application.gate_runner.run_all_gates",
         return_value=[GateResult(True, "build_gate")],
     ):
         events, final_state = _drain_generator_with_return(run_pipeline_stream_staged("test", stages))
@@ -1423,10 +1450,10 @@ def test_run_pipeline_stream_staged_parallel_stage():
         "backend.App.orchestration.application.pipeline_graph._resolve_pipeline_step",
         side_effect=lambda sid, ac: (f"Running {sid}", _make_step_func()),
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._run_step_with_stream_progress",
+        "backend.App.orchestration.application.pipeline_runners._step_executor.run",
         side_effect=lambda sid, fn, st: iter([]),
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._emit_completed",
+        "backend.App.orchestration.application.pipeline_runners._step_extractor.emit_completed",
         side_effect=lambda sid, st: {"agent": sid, "status": "completed"},
     ), patch(
         "backend.App.orchestration.application.pipeline_display.pipeline_step_in_progress_message",
@@ -1465,10 +1492,10 @@ def test_run_pipeline_stream_staged_rejects_parallel_non_plan_stage():
         "backend.App.orchestration.application.pipeline_graph._resolve_pipeline_step",
         side_effect=lambda sid, ac: (f"Running {sid}", _make_step_func()),
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._run_step_with_stream_progress",
+        "backend.App.orchestration.application.pipeline_runners._step_executor.run",
         side_effect=lambda sid, fn, st: iter([]),
     ), patch(
-        "backend.App.orchestration.application.pipeline_graph._emit_completed",
+        "backend.App.orchestration.application.pipeline_runners._step_extractor.emit_completed",
         side_effect=lambda sid, st: {"agent": sid, "status": "completed"},
     ), patch(
         "backend.App.orchestration.application.pipeline_display.pipeline_step_in_progress_message",
@@ -1480,3 +1507,266 @@ def test_run_pipeline_stream_staged_rejects_parallel_non_plan_stage():
         gen = run_pipeline_stream_staged("test", stages)
         with pytest.raises(ValueError, match="Parallel staged execution is only supported for PLAN-phase steps"):
             list(gen)
+
+
+# ---------------------------------------------------------------------------
+# stream_chat_chunks routing (UI → staged vs sequential runner)
+# ---------------------------------------------------------------------------
+
+
+def test_stream_chat_chunks_routes_stages_to_staged_runner(tmp_path):
+    """If pipeline_stages has a parallel stage, _stream_chat_chunks must call the
+    staged runner rather than the sequential one (integration of §3 UI→backend
+    contract: stages declared by the UI are what drives execution)."""
+    from backend.UI.REST.presentation import stream_handlers
+
+    called: dict[str, Any] = {}
+
+    def fake_staged(*args: Any, **kwargs: Any):
+        called["staged"] = (args, kwargs)
+        return iter([])
+
+    def fake_sequential(*args: Any, **kwargs: Any):
+        called["sequential"] = (args, kwargs)
+        return iter([])
+
+    class _FakeTaskStore:
+        def update_task(self, *a: Any, **kw: Any) -> None:
+            pass
+
+        def get_task(self, *a: Any, **kw: Any) -> dict[str, Any]:
+            return {}
+
+    with patch(
+        "backend.App.orchestration.application.pipeline_runners.run_pipeline_stream_staged",
+        side_effect=fake_staged,
+    ), patch.object(
+        stream_handlers,
+        "run_pipeline_stream",
+        side_effect=fake_sequential,
+    ), patch.object(
+        stream_handlers,
+        "PipelineSSEHandler",
+    ) as MockHandler:
+        MockHandler.return_value.handle_events.return_value = iter([])
+        list(
+            stream_handlers._stream_chat_chunks(
+                original_prompt="hi",
+                effective_prompt="hi",
+                request_model="m",
+                task_id="t1",
+                task_store=_FakeTaskStore(),
+                artifacts_root=tmp_path,
+                agent_config={},
+                pipeline_steps=["pm", "ba", "architect", "dev"],
+                pipeline_stages=[["pm"], ["ba", "architect"], ["dev"]],
+            )
+        )
+
+    assert "staged" in called, "Parallel stage must route to staged runner"
+    assert "sequential" not in called, "Sequential runner must not be used when stages declared"
+
+
+def test_stream_chat_chunks_routes_linear_to_sequential_runner(tmp_path):
+    """If pipeline_stages is None or all stages have one step, use the
+    sequential runner (unchanged default behaviour)."""
+    from backend.UI.REST.presentation import stream_handlers
+
+    called: dict[str, Any] = {}
+
+    def fake_staged(*args: Any, **kwargs: Any):
+        called["staged"] = True
+        return iter([])
+
+    def fake_sequential(*args: Any, **kwargs: Any):
+        called["sequential"] = True
+        return iter([])
+
+    class _FakeTaskStore:
+        def update_task(self, *a: Any, **kw: Any) -> None:
+            pass
+
+        def get_task(self, *a: Any, **kw: Any) -> dict[str, Any]:
+            return {}
+
+    with patch(
+        "backend.App.orchestration.application.pipeline_runners.run_pipeline_stream_staged",
+        side_effect=fake_staged,
+    ), patch.object(
+        stream_handlers,
+        "run_pipeline_stream",
+        side_effect=fake_sequential,
+    ), patch.object(
+        stream_handlers,
+        "PipelineSSEHandler",
+    ) as MockHandler:
+        MockHandler.return_value.handle_events.return_value = iter([])
+        list(
+            stream_handlers._stream_chat_chunks(
+                original_prompt="hi",
+                effective_prompt="hi",
+                request_model="m",
+                task_id="t1",
+                task_store=_FakeTaskStore(),
+                artifacts_root=tmp_path,
+                agent_config={},
+                pipeline_steps=["pm", "ba", "dev"],
+                pipeline_stages=None,
+            )
+        )
+
+    assert "sequential" in called
+    assert "staged" not in called
+
+
+# ---------------------------------------------------------------------------
+# PipelineSSEHandler tolerance for meta-events without an "agent" key
+# (regression for KeyError('agent') on parallel staged runs — see
+# `run_pipeline_stream_staged` yielding ``{"type": "active_steps", ...}``)
+# ---------------------------------------------------------------------------
+
+
+def _consume_handler_events(events, tmp_path):
+    """Drive PipelineSSEHandler.handle_events with a list of pipeline events."""
+    from backend.UI.REST.presentation.pipeline_sse_handler import PipelineSSEHandler
+
+    class _FakeTaskStore:
+        def __init__(self) -> None:
+            self.updates: list[dict[str, Any]] = []
+
+        def update_task(self, *_a: Any, **kw: Any) -> None:
+            self.updates.append(kw)
+
+        def get_task(self, *_a: Any, **_kw: Any) -> dict[str, Any]:
+            return {}
+
+    written: list[tuple[str, str]] = []
+
+    def _artifact_writer(_dir, agent, text):
+        written.append((agent, text))
+
+    task_dir = tmp_path / "task"
+    agents_dir = task_dir / "agents"
+    task_dir.mkdir(parents=True, exist_ok=True)
+    agents_dir.mkdir(parents=True, exist_ok=True)
+
+    store = _FakeTaskStore()
+    handler = PipelineSSEHandler(task_store=store, artifact_writer=_artifact_writer)
+    sse_chunks = list(
+        handler.handle_events(
+            events_gen=iter(events),
+            task_id="t-staged",
+            task_dir=task_dir,
+            agents_dir=agents_dir,
+            pipeline_snapshot={},
+            now=1700000000,
+            request_model="test-model",
+            workspace_path=None,
+            workspace_apply_writes=False,
+            cancel_event=None,
+        )
+    )
+    return sse_chunks, store.updates, written, task_dir
+
+
+def test_pipeline_sse_handler_forwards_active_steps_meta_event(tmp_path):
+    """Regression: ``run_pipeline_stream_staged`` yields a ``type=active_steps``
+    meta-event without an ``agent`` key when entering a parallel stage.
+
+    The handler must NOT crash with ``KeyError('agent')`` — it should forward
+    the message as a plain delta line and continue with subsequent per-agent
+    events.
+    """
+    events = [
+        {"agent": "pm", "status": "in_progress", "message": "PM start"},
+        {"agent": "pm", "status": "completed", "message": "PM done"},
+        # Meta-event from staged runner — no "agent" key
+        {
+            "type": "active_steps",
+            "activeSteps": ["ba", "architect"],
+            "stage": 1,
+            "status": "in_progress",
+            "message": "Running parallel stage: ba, architect",
+        },
+        {"agent": "ba", "status": "in_progress", "message": "BA start"},
+        {"agent": "architect", "status": "in_progress", "message": "Arch start"},
+        {"agent": "ba", "status": "completed", "message": "BA done"},
+        {"agent": "architect", "status": "completed", "message": "Arch done"},
+    ]
+
+    sse_chunks, updates, written, task_dir = _consume_handler_events(events, tmp_path)
+
+    # No exception bubbled up — the meta-event was forwarded as a generic
+    # ``[orchestrator]`` delta line, not crashed on missing ``agent`` key.
+    meta_chunks = [c for c in sse_chunks if "Running parallel stage: ba, architect" in c]
+    assert len(meta_chunks) == 1
+    assert "[orchestrator]" in meta_chunks[0]
+
+    # And per-agent events that came after the meta-event still drove the
+    # task store + artifact writer normally — i.e. the loop did not abort.
+    assert any(u.get("agent") == "ba" for u in updates)
+    assert any(u.get("agent") == "architect" for u in updates)
+    assert ("ba", "BA done") in written
+    assert ("architect", "Arch done") in written
+
+    # The pipeline_run.log received the meta-event line.
+    log_text = (task_dir / "pipeline_run.log").read_text(encoding="utf-8")
+    assert "[orchestrator] Running parallel stage: ba, architect" in log_text
+
+
+def test_pipeline_sse_handler_skips_meta_event_with_no_message(tmp_path):
+    """A meta-event without an ``agent`` AND without a ``message`` is silently
+    dropped (no extra delta line, no log entry, no crash)."""
+    events = [
+        {"agent": "pm", "status": "completed", "message": "PM done"},
+        {"type": "active_steps", "activeSteps": ["ba"], "stage": 1, "status": "in_progress"},
+    ]
+
+    sse_chunks, _, _, task_dir = _consume_handler_events(events, tmp_path)
+
+    # Nothing about active_steps reached the SSE stream or the log.
+    assert not any("active_steps" in c or "Running parallel" in c for c in sse_chunks)
+    log_text = (task_dir / "pipeline_run.log").read_text(encoding="utf-8")
+    assert "active_steps" not in log_text
+
+
+def test_pipeline_sse_handler_emits_auto_approved_as_json(tmp_path):
+    """M-14 — auto_approved audit events must travel as JSON in delta.content
+    so the frontend's ``parseChatStreamEvent`` can distinguish them from
+    regular log text and surface a toast.
+
+    Plain ``[step] auto_approved:`` frames (the generic agent-event format)
+    don't start with ``{`` and the frontend parser returns null for them.
+    """
+    events = [
+        {
+            "agent": "human_dev",
+            "status": "auto_approved",
+            "step": "human_dev",
+            "rule": "low-risk-edit",
+            "timestamp": "2026-04-16T10:00:00+00:00",
+            "content_hash": "abc123",
+        },
+    ]
+
+    sse_chunks, _, _, _ = _consume_handler_events(events, tmp_path)
+
+    # Find the chunk that carries the audit payload.
+    # The status string is JSON-escaped inside the outer envelope (``\"auto_approved\"``),
+    # so filter on the unquoted substring instead.
+    audit_chunks = [c for c in sse_chunks if "auto_approved" in c]
+    assert len(audit_chunks) == 1, f"expected 1 auto_approved chunk, got {audit_chunks!r}"
+
+    # The delta.content must be a JSON object (frontend parser requirement).
+    import json
+    frame = audit_chunks[0]
+    # SSE layout: ``data: {"id":...,"choices":[{"delta":{"content":"<JSON>"}}]}``
+    data_line = [ln for ln in frame.splitlines() if ln.startswith("data: ")][0]
+    envelope = json.loads(data_line[len("data: "):])
+    content = envelope["choices"][0]["delta"]["content"]
+    assert content.strip().startswith("{"), f"expected JSON content, got {content!r}"
+    payload = json.loads(content)
+    assert payload["status"] == "auto_approved"
+    assert payload["step"] == "human_dev"
+    assert payload["rule"] == "low-risk-edit"
+    assert payload["content_hash"] == "abc123"

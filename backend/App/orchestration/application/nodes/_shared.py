@@ -125,6 +125,7 @@ __all__ = [
     "_pipeline_should_cancel",
     "_remote_api_client_kwargs",
     "_remote_api_client_kwargs_for_role",
+    "_stream_automation_emit",
     "_stream_progress_emit",
     "make_agent",
 ]
@@ -134,6 +135,27 @@ def _stream_progress_emit(state: Mapping[str, Any], message: str) -> None:
     """Queue for run_pipeline_stream: main generator thread reads between yields."""
     progress_queue = state.get("_stream_progress_queue")
     _emit_progress(progress_queue, message)
+
+
+def _stream_automation_emit(state: Mapping[str, Any], agent_name: str, message: str) -> None:
+    """Emit a structured automation-agent SSE event.
+
+    Produces a JSON event with ``_event_type: "automation_agent"`` so the SSE
+    layer surfaces it as ``{"status": "automation_agent", "agent": agent_name, ...}``
+    — distinct from generic ``progress`` lines. The frontend task monitor maps
+    ``self_verify`` / ``deep_planning`` to dedicated desk slots and emoji so users
+    can see these agents actively working between pipeline steps.
+    """
+    import json
+    progress_queue = state.get("_stream_progress_queue")
+    if progress_queue is None:
+        return
+    evt = json.dumps({
+        "_event_type": "automation_agent",
+        "agent": agent_name,
+        "message": message,
+    })
+    _emit_progress(progress_queue, evt)
 
 
 def _server_stream_shutdown_requested() -> bool:
@@ -179,7 +201,7 @@ def _make_human_agent(state: PipelineState, step: str) -> Any:
     )
 
 
-def _remote_api_client_kwargs(state: PipelineState) -> dict[str, Any]:
+def _remote_api_client_kwargs(state: Mapping[str, Any]) -> dict[str, Any]:
     """Remote API credentials: agent_config.remote_api; legacy cloud → anthropic."""
     agent_config = state.get("agent_config") or {}
     remote_api = agent_config.get("remote_api")
@@ -211,7 +233,7 @@ def _remote_api_client_kwargs(state: PipelineState) -> dict[str, Any]:
 
 
 def _remote_api_client_kwargs_for_role(
-    state: PipelineState,
+    state: Mapping[str, Any],
     role_cfg: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """remote_api + legacy cloud; optionally ``remote_profile`` — key in ``remote_api_profiles``."""
@@ -243,7 +265,7 @@ def _remote_api_client_kwargs_for_role(
     return client_kwargs
 
 
-def _workspace_root_str(state: PipelineState) -> str:
+def _workspace_root_str(state: Mapping[str, Any]) -> str:
     return str(state.get("workspace_root") or "").strip()
 
 
@@ -259,7 +281,7 @@ def _stack_reviewer_cfg(state: PipelineState) -> dict[str, Any]:
 
 
 def _skills_extra_for_role_cfg(
-    state: PipelineState, role_cfg: Optional[dict[str, Any]]
+    state: Mapping[str, Any], role_cfg: Optional[dict[str, Any]]
 ) -> str:
     agent_config = state.get("agent_config") or {}
     if not isinstance(agent_config, dict):

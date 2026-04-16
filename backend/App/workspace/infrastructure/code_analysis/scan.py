@@ -50,6 +50,18 @@ _EXT_LANG: dict[str, str] = {
     ".rs": "rust",
     ".vue": "vue",
     ".svelte": "svelte",
+    # Game engines
+    ".gd": "gdscript",       # Godot GDScript
+    ".gdscript": "gdscript",
+    ".cs": "csharp",         # Unity / Godot C#
+    ".lua": "lua",           # LÖVE, Defold
+    ".cpp": "cpp",           # Unreal, custom engines
+    ".hpp": "cpp",
+    ".h": "cpp",
+    ".c": "c",
+    # Config / data
+    ".swift": "swift",
+    ".dart": "dart",
 }
 # Extend via env: SWARM_EXT_LANG_EXTRA=".cs:csharp,.swift:swift"
 _extra_ext = os.getenv("SWARM_EXT_LANG_EXTRA", "").strip()

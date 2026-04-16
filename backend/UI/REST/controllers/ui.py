@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query, WebSocket
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
-from backend.UI.REST.presentation.live import handle_ws_ui, metrics_payload
+from backend.UI.REST.presentation.live import handle_ws_ui
 from backend.UI.REST.schemas import UiRemoteModelsRequest
 from backend.App.integrations.infrastructure.model_proxy import (
     lmstudio_models_proxy_response,
@@ -18,12 +18,6 @@ from backend.App.integrations.infrastructure.model_proxy import (
 _UI_BUNDLE_INDEX = Path(__file__).resolve().parents[2] / "Web" / "index.html"
 
 router = APIRouter()
-
-
-@router.get("/metrics/live")
-def metrics_live():
-    """Live pipeline metrics payload (JSON) — distinct from GET /metrics (Prometheus text)."""
-    return metrics_payload()
 
 
 @router.websocket("/ws/ui")

@@ -256,3 +256,10 @@ class OnboardingMcpPreflightRequest(BaseModel):
     """Request body for POST /v1/onboarding/mcp-preflight (G-4)."""
 
     workspace_root: str = ""
+    # Web-search API keys entered in the UI settings panel.
+    # Passed through to build_preflight_recommendations so the
+    # internet_search capability shows green even when the keys
+    # are stored in localStorage rather than env vars.
+    tavily_api_key: str = ""
+    exa_api_key: str = ""
+    scrapingdog_api_key: str = ""
