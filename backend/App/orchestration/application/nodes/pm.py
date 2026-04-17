@@ -15,6 +15,9 @@ from backend.App.integrations.infrastructure.cross_task_memory import format_cro
 from backend.App.integrations.infrastructure.pattern_memory import format_pattern_memory_block
 from backend.App.orchestration.application.review_moa import run_reviewer_or_moa
 from backend.App.orchestration.application.pipeline_state import PipelineState
+from backend.App.orchestration.application.source_research import (
+    ensure_source_research,
+)
 from backend.App.orchestration.domain.quality_gate_policy import (
     CLARIFY_SIMPLE_ANSWER,
     CLARIFY_NEEDS_CLARIFICATION,
@@ -644,6 +647,7 @@ def _collect_pm_evidence_packet(workspace_root: str, task_text: str, *, max_char
 def pm_node(state: PipelineState) -> dict[str, Any]:
     from backend.App.orchestration.application.context_budget import get_context_budget
 
+    ensure_source_research(state, caller_step="pm")
     plan_ctx = planning_pipeline_user_context(state)
     _budget = get_context_budget("pm", state.get("agent_config") if isinstance(state.get("agent_config"), dict) else None)
     mem = format_pattern_memory_block(state, plan_ctx, max_chars=_budget.pattern_memory_chars)
@@ -710,30 +714,13 @@ def pm_node(state: PipelineState) -> dict[str, Any]:
     if os.getenv("SWARM_DEEP_PLANNING", "0") == "1":
         try:
             from backend.App.orchestration.application.deep_planning import DeepPlanner
-            from backend.App.orchestration.infrastructure.agents.llm_backend_selector import (
-                LLMBackendSelector,
-            )
             task_id = os.getenv("SWARM_CURRENT_TASK_ID", "unknown")
             workspace_root = str(state.get("workspace_root") or os.getenv("SWARM_WORKSPACE_ROOT", ""))
-            # Forward PM's configured API credentials so DeepPlanner reaches the
-            # same LLM backend (Anthropic / OpenAI-compat) as the PM agent itself.
-            _remote_kw = _remote_api_client_kwargs_for_role(state, cfg)
-            _deep_selector = LLMBackendSelector()
-            _deep_cfg = _deep_selector.select(
-                role="pm",
-                model=os.getenv("SWARM_DEEP_PLANNING_MODEL", ""),
-                environment=str(cfg.get("environment") or ""),
-                remote_provider=_remote_kw.get("remote_provider"),
-                remote_api_key=_remote_kw.get("remote_api_key"),
-                remote_base_url=_remote_kw.get("remote_base_url"),
-            )
-            _deep_llm_kwargs = _deep_selector.ask_kwargs(_deep_cfg)
             _stream_automation_emit(state, "deep_planning", "deep_planning: scanning workspace (stage 1/5)…")
             plan = DeepPlanner().analyze(
                 task_id=task_id,
                 task_spec=user_input,
                 workspace_root=workspace_root,
-                llm_kwargs=_deep_llm_kwargs,
             )
             if not plan.error:
                 _stream_automation_emit(

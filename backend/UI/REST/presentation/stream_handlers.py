@@ -29,6 +29,7 @@ from backend.UI.REST.presentation.stream_utils import (
     _write_agent_artifact,
     _write_agents_error_txt,
 )
+from backend.UI.REST.utils import _redact_agent_config_secrets
 # Re-export async bridge so existing callers remain unmodified.
 from backend.UI.REST.presentation.async_sse_bridge import (
     _active_tasks,
@@ -112,7 +113,7 @@ def _stream_chat_chunks(
                     "pipeline_steps": pipeline_steps,
                     "pipeline_stages": pipeline_stages,
                     "pipeline_steps_effective": _effective_pipeline_steps,
-                    "agent_config": agent_config or {},
+                    "agent_config": _redact_agent_config_secrets(agent_config or {}),
                     "workspace_root": workspace_root_str,
                     "workspace_apply_writes": workspace_apply_writes,
                 },

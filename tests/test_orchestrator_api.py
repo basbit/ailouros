@@ -63,6 +63,98 @@ def test_chat_completions_bad_pipeline_steps():
     assert response.status_code == 400
 
 
+def test_project_settings_round_trip(tmp_path):
+    workspace = (tmp_path / "repo").resolve()
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    with TestClient(orchestrator_api.app) as client:
+        r0 = client.get("/v1/project/settings", params={"workspace_root": str(workspace)})
+        assert r0.status_code == 200
+        assert r0.json()["exists"] is False
+
+        payload = {
+            "workspace_root": str(workspace),
+            "settings": {
+                "v": 1,
+                "prompt": "build auth",
+                "workspace_root": str(workspace),
+                "swarm_tavily_api_key": "tvly-test",
+            },
+        }
+        r1 = client.put("/v1/project/settings", json=payload)
+        assert r1.status_code == 200
+        assert (workspace / ".swarm" / "settings.json").is_file()
+
+        r2 = client.get("/v1/project/settings", params={"workspace_root": str(workspace)})
+        assert r2.status_code == 200
+        assert r2.json()["exists"] is True
+        assert r2.json()["settings"]["prompt"] == "build auth"
+        assert r2.json()["settings"]["swarm_tavily_api_key"] == "tvly-test"
+
+
+def test_background_agent_configure_endpoint(tmp_path, monkeypatch):
+    workspace = (tmp_path / "repo").resolve()
+    watch_dir = workspace / "src"
+    watch_dir.mkdir(parents=True, exist_ok=True)
+
+    import backend.App.orchestration.application.background_agent as bg_mod
+    captured: dict[str, str] = {}
+
+    def fake_start(self):
+        captured["environment"] = self._environment
+        captured["model"] = self._model
+        captured["remote_provider"] = self._remote_provider
+        self._running = True
+
+    def fake_stop(self):
+        self._running = False
+
+    monkeypatch.setattr(bg_mod.BackgroundAgent, "start", fake_start)
+    monkeypatch.setattr(bg_mod.BackgroundAgent, "stop", fake_stop)
+    monkeypatch.setattr(
+        bg_mod,
+        "_fetch_provider_model_ids",
+        lambda *args, **kwargs: ["claude-haiku-4-5"],
+    )
+
+    with TestClient(orchestrator_api.app) as client:
+        r1 = client.put(
+            "/v1/background-agent",
+            json={
+                "enabled": True,
+                "workspace_root": str(workspace),
+                "watch_paths": "src",
+                "environment": "cloud",
+                "model": "claude-haiku-4-5",
+                "remote_provider": "openrouter",
+            },
+        )
+        assert r1.status_code == 200
+        assert r1.json()["active"] is True
+        assert r1.json()["watch_paths"] == [str(watch_dir)]
+        assert captured == {
+            "environment": "cloud",
+            "model": "claude-haiku-4-5",
+            "remote_provider": "openrouter",
+        }
+
+        r2 = client.put("/v1/background-agent", json={"enabled": False})
+        assert r2.status_code == 200
+        assert r2.json()["active"] is False
+
+
+def test_legacy_user_settings_route_removed():
+    with TestClient(orchestrator_api.app) as client:
+        response = client.get("/v1/user/settings")
+    assert response.status_code == 404
+
+
+def test_schedule_route_removed():
+    with TestClient(orchestrator_api.app) as client:
+        response = client.get("/v1/schedule")
+    assert response.status_code == 404
+
+
 def test_normalize_openai_v1_models_payload():
     payload = {
         "object": "list",

@@ -45,7 +45,12 @@ def load_at_mentions(prompt: str, workspace_root: str) -> str:
         if rel in seen:
             continue
         seen.add(rel)
-        abs_path = root / rel
+        abs_path = (root / rel).resolve()
+        try:
+            abs_path.relative_to(root)
+        except ValueError:
+            logger.warning("AtMentionLoader: skipping path outside workspace: %s", rel)
+            continue
         try:
             text = abs_path.read_text(encoding="utf-8", errors="replace")
         except OSError:

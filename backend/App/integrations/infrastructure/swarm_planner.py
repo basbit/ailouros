@@ -22,6 +22,20 @@ def _remote_kw(ac: dict[str, Any], role_key: str) -> dict[str, Any]:
     return _remote_api_client_kwargs_for_role({"agent_config": ac}, role_cfg)
 
 
+def _planner_remote_kw(
+    ac: dict[str, Any],
+    planner_cfg: dict[str, Any],
+) -> dict[str, Any]:
+    from backend.App.orchestration.application.pipeline_graph import _remote_api_client_kwargs
+
+    environment = str(planner_cfg.get("environment") or "").strip().lower()
+    if environment in {"cloud", "anthropic"}:
+        return _remote_api_client_kwargs({"agent_config": ac})
+    if environment:
+        return {}
+    return _remote_kw(ac, "pm")
+
+
 def plan_pipeline_steps(
     goal: str,
     *,
@@ -61,7 +75,7 @@ def plan_pipeline_steps(
     if constraints.strip():
         user += f"\nConstraints:\n{constraints.strip()}\n"
 
-    rkw = _remote_kw(ac, "pm")
+    rkw = _planner_remote_kw(ac, planner_cfg)
     agent = BaseAgent(
         role="PM",
         system_prompt=sys,

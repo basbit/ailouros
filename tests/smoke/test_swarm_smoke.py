@@ -853,15 +853,6 @@ class TestSwarmTopologies:
         compiled = PipelineGraphBuilder().build_for_topology("")
         assert compiled is not None
 
-    def test_hierarchical_topology(self, swarm_env):
-        """Hierarchical topology should compile (slim PM → dev_lead chain)."""
-        from backend.App.orchestration.application.graph_builder import (
-            PipelineGraphBuilder,
-        )
-
-        compiled = PipelineGraphBuilder().build_for_topology("hierarchical")
-        assert compiled is not None
-
     def test_ring_topology(self, swarm_env):
         """Ring topology should compile (QA feedback loop to DEV)."""
         from backend.App.orchestration.application.graph_builder import (

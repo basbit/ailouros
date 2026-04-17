@@ -93,13 +93,16 @@ def request_manual_execution(
     if not commands:
         return False
     ev = threading.Event()
+    # Register the waiter and clear stale result *before* exposing pending data.
+    # Otherwise a fast UI poller can submit Done/Cancel in the tiny window where
+    # pending exists but the event/result channel is not ready yet.
+    _MANUAL_SHELL_EVENTS[task_id] = ev
+    clear_result(task_id)
     store_pending(
         "manual-shell",
         task_id,
         _build_pending_payload(commands, reason=reason),
     )
-    _MANUAL_SHELL_EVENTS[task_id] = ev
-    clear_result(task_id)
 
     task_store.update_task(
         task_id,

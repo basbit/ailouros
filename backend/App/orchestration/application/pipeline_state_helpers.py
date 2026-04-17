@@ -162,6 +162,10 @@ def _initial_pipeline_state(
     if pipeline_workspace_parts and isinstance(pipeline_workspace_parts, dict):
         parts = pipeline_workspace_parts
         user_task = str(parts.get("user_task") or "").strip() or user_input.strip()
+        raw_user_task = str(parts.get("raw_user_task") or "").strip()
+        security_rewrite_output = str(parts.get("security_rewrite_output") or "").strip()
+        security_rewrite_model = str(parts.get("security_rewrite_model") or "").strip()
+        security_rewrite_provider = str(parts.get("security_rewrite_provider") or "").strip()
         project_manifest = str(parts.get("project_manifest") or "")
         workspace_snapshot = str(parts.get("workspace_snapshot") or "")
         workspace_root_resolved = str(parts.get("workspace_root_resolved") or workspace_root or "").strip()
@@ -171,6 +175,10 @@ def _initial_pipeline_state(
     else:
         legacy_parts = _legacy_workspace_parts_from_input(user_input)
         user_task = legacy_parts["user_task"]
+        raw_user_task = ""
+        security_rewrite_output = ""
+        security_rewrite_model = ""
+        security_rewrite_provider = ""
         project_manifest = legacy_parts["project_manifest"]
         workspace_snapshot = legacy_parts["workspace_snapshot"]
         workspace_root_resolved = str(workspace_root or "").strip()
@@ -192,6 +200,10 @@ def _initial_pipeline_state(
     initial_state: dict[str, Any] = {
         "input": user_input,
         "user_task": user_task,
+        "raw_user_task": raw_user_task,
+        "security_rewrite_output": security_rewrite_output,
+        "security_rewrite_model": security_rewrite_model,
+        "security_rewrite_provider": security_rewrite_provider,
         "project_manifest": project_manifest,
         "workspace_snapshot": workspace_snapshot,
         "workspace_context_mode": workspace_context_mode,
@@ -255,8 +267,20 @@ def _initial_pipeline_state(
     # re-read after each pipeline initialisation via their own accessors.
     swarm_cfg = effective_agent_config.get("swarm") or {}
     _set_feature_env(swarm_cfg, "self_verify", "SWARM_SELF_VERIFY")
+    _set_feature_env(
+        swarm_cfg,
+        "self_verify_provider",
+        "SWARM_SELF_VERIFY_PROVIDER",
+        is_str=True,
+    )
     _set_feature_env(swarm_cfg, "self_verify_model", "SWARM_SELF_VERIFY_MODEL", is_str=True)
     _set_feature_env(swarm_cfg, "deep_planning", "SWARM_DEEP_PLANNING")
+    _set_feature_env(
+        swarm_cfg,
+        "deep_planning_provider",
+        "SWARM_DEEP_PLANNING_PROVIDER",
+        is_str=True,
+    )
     _set_feature_env(swarm_cfg, "deep_planning_model", "SWARM_DEEP_PLANNING_MODEL", is_str=True)
     # Wire UI toggles to env (auto_approve, auto_retry, dream)
     _set_feature_env(swarm_cfg, "auto_approve", "SWARM_AUTO_APPROVE")
@@ -265,6 +289,18 @@ def _initial_pipeline_state(
     _set_feature_env(swarm_cfg, "max_step_retries", "SWARM_MAX_STEP_RETRIES", is_str=True)
     _set_feature_env(swarm_cfg, "dream_enabled", "SWARM_DREAM_ENABLED")
     _set_feature_env(swarm_cfg, "background_agent", "SWARM_BACKGROUND_AGENT")
+    _set_feature_env(
+        swarm_cfg,
+        "background_agent_provider",
+        "SWARM_BACKGROUND_AGENT_PROVIDER",
+        is_str=True,
+    )
+    _set_feature_env(
+        swarm_cfg,
+        "background_agent_model",
+        "SWARM_BACKGROUND_AGENT_MODEL",
+        is_str=True,
+    )
     _set_feature_env(swarm_cfg, "background_watch_paths", "SWARM_BACKGROUND_AGENT_WATCH_PATHS", is_str=True)
 
     # Propagate runtime context to env for agents that read env directly (e.g. PMAgent)

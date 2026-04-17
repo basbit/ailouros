@@ -71,8 +71,7 @@ def test_pending_count_empty() -> None:
 # ---------------------------------------------------------------------------
 
 def test_call_llm_fallback_on_import_error() -> None:
-    """_call_llm returns a safe static dict (severity='info') when the
-    AnthropicClient import fails — it must never raise."""
+    """_call_llm returns an explicit error recommendation when the LLM import fails."""
     import backend.App.orchestration.application.background_agent as mod
 
     # Simulate the import inside _call_llm failing.
@@ -82,7 +81,7 @@ def test_call_llm_fallback_on_import_error() -> None:
         result = mod._call_llm("modified", "/some/file.py")
 
     assert isinstance(result, dict)
-    assert result.get("severity") == "info"
+    assert result.get("severity") == "error"
     assert "message" in result
     assert "suggested_action" in result
 
@@ -194,13 +193,9 @@ def test_call_llm_success_parses_json() -> None:
         "severity": "warning",
         "suggested_action": "Run tests",
     })
-    mock_client = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
-    mock_client.complete.return_value = response
-
     with patch(
-        "backend.App.integrations.infrastructure.llm.client.AnthropicClient",
-        return_value=mock_client,
-        create=True,
+        "backend.App.integrations.infrastructure.llm.client.chat_completion_text",
+        return_value=response,
     ):
         result = mod._call_llm("modified", "/src/main.py")
 
@@ -218,34 +213,119 @@ def test_call_llm_json_in_markdown_fences() -> None:
         "suggested_action": "Run mypy",
     })
     response = f"```json\n{inner}\n```"
-    mock_client = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
-    mock_client.complete.return_value = response
-
     with patch(
-        "backend.App.integrations.infrastructure.llm.client.AnthropicClient",
-        return_value=mock_client,
-        create=True,
+        "backend.App.integrations.infrastructure.llm.client.chat_completion_text",
+        return_value=response,
     ):
         result = mod._call_llm("modified", "/src/types.py")
 
     assert result["severity"] == "warning"
 
 
+def test_call_llm_routes_openai_compat_provider() -> None:
+    import json
+    import backend.App.orchestration.application.background_agent as mod
+
+    response = json.dumps({
+        "message": "File was modified",
+        "severity": "warning",
+        "suggested_action": "Run tests",
+    })
+    with patch(
+        "backend.App.integrations.infrastructure.llm.client.chat_completion_text",
+        return_value=response,
+    ) as mock_call:
+        result = mod._call_llm(
+            "modified",
+            "/src/main.py",
+            remote_provider="openrouter",
+            remote_api_key="or-key",
+        )
+
+    kwargs = mock_call.call_args.kwargs
+    assert result["severity"] == "warning"
+    assert kwargs["llm_route"] == "openai"
+    assert kwargs["api_key"] == "or-key"
+    assert kwargs["base_url"] == "https://openrouter.ai/api/v1"
+    assert "anthropic_api_key" not in kwargs
+
+
+def test_call_llm_routes_anthropic_provider() -> None:
+    import json
+    import backend.App.orchestration.application.background_agent as mod
+
+    response = json.dumps({
+        "message": "File was modified",
+        "severity": "warning",
+        "suggested_action": "Run tests",
+    })
+    with patch(
+        "backend.App.integrations.infrastructure.llm.client.chat_completion_text",
+        return_value=response,
+    ) as mock_call:
+        result = mod._call_llm(
+            "modified",
+            "/src/main.py",
+            remote_provider="anthropic",
+            remote_api_key="anth-key",
+            remote_base_url="https://anthropic.example/v1",
+        )
+
+    kwargs = mock_call.call_args.kwargs
+    assert result["severity"] == "warning"
+    assert kwargs["llm_route"] == "anthropic"
+    assert kwargs["anthropic_api_key"] == "anth-key"
+    assert kwargs["anthropic_base_url"] == "https://anthropic.example/v1"
+    assert "api_key" not in kwargs
+
+
+def test_call_llm_replaces_incompatible_gemini_model() -> None:
+    import json
+    import backend.App.orchestration.application.background_agent as mod
+
+    response = json.dumps({
+        "message": "File was modified",
+        "severity": "warning",
+        "suggested_action": "Run tests",
+    })
+    with patch(
+        "backend.App.orchestration.application.background_agent._fetch_provider_model_ids",
+        return_value=["gemini-2.0-flash", "gemini-1.5-pro"],
+    ), patch(
+        "backend.App.integrations.infrastructure.llm.client.chat_completion_text",
+        return_value=response,
+    ) as mock_call:
+        result = mod._call_llm(
+            "modified",
+            "/src/main.py",
+            environment="cloud",
+            model="claude-haiku-4-5",
+            remote_provider="gemini",
+            remote_api_key="gem-key",
+        )
+
+    kwargs = mock_call.call_args.kwargs
+    assert result["severity"] == "warning"
+    assert kwargs["model"] == "gemini-2.0-flash"
+    assert kwargs["llm_route"] == "openai"
+    assert kwargs["api_key"] == "gem-key"
+    assert (
+        kwargs["base_url"]
+        == "https://generativelanguage.googleapis.com/v1beta/openai/"
+    )
+
+
 def test_call_llm_invalid_json_fallback() -> None:
     import backend.App.orchestration.application.background_agent as mod
 
-    mock_client = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
-    mock_client.complete.return_value = "not valid json"
-
     with patch(
-        "backend.App.integrations.infrastructure.llm.client.AnthropicClient",
-        return_value=mock_client,
-        create=True,
+        "backend.App.integrations.infrastructure.llm.client.chat_completion_text",
+        return_value="not valid json",
     ):
         result = mod._call_llm("created", "/src/new.py")
 
     assert "message" in result
-    assert result["severity"] == "info"
+    assert result["severity"] == "warning"
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +396,8 @@ def test_process_events_produces_recommendation() -> None:
     agent._event_queue = queue.Queue()
     agent._queue = queue.Queue()
     agent._running = True
+    agent._remote_api_key = ""
+    agent._remote_base_url = ""
 
     event = MagicMock()
     event.event_type = "modified"
@@ -354,6 +436,8 @@ def test_process_events_exception_does_not_crash() -> None:
     agent._event_queue = queue.Queue()
     agent._queue = queue.Queue()
     agent._running = True
+    agent._remote_api_key = ""
+    agent._remote_base_url = ""
 
     event = MagicMock()
     event.event_type = "error"
@@ -371,6 +455,25 @@ def test_process_events_exception_does_not_crash() -> None:
         thread.join(timeout=2.0)
 
     assert agent.drain_recommendations() == []
+
+
+def test_background_agent_init_resolves_provider_compatible_model() -> None:
+    from backend.App.orchestration.application.background_agent import BackgroundAgent
+
+    with patch(
+        "backend.App.orchestration.application.background_agent._fetch_provider_model_ids",
+        return_value=["gemini-2.0-flash", "gemini-1.5-pro"],
+    ):
+        agent = BackgroundAgent(
+            watch_paths=["/tmp"],
+            enabled=True,
+            environment="cloud",
+            model="claude-haiku-4-5",
+            remote_provider="gemini",
+            remote_api_key="gem-key",
+        )
+
+    assert agent._model == "gemini-2.0-flash"
 
 
 # ---------------------------------------------------------------------------

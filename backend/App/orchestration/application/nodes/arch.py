@@ -10,6 +10,9 @@ from backend.App.orchestration.infrastructure.agents.arch_agent import Architect
 from backend.App.orchestration.infrastructure.agents.stack_reviewer_agent import StackReviewerAgent
 from backend.App.orchestration.application.review_moa import run_reviewer_or_moa
 from backend.App.orchestration.application.pipeline_state import PipelineState
+from backend.App.orchestration.application.source_research import (
+    ensure_source_research,
+)
 from backend.App.orchestration.application.repo_evidence import (
     ensure_validated_repo_evidence,
     format_repo_evidence_for_prompt,
@@ -99,6 +102,7 @@ def _spec_memory_artifact(state: PipelineState, spec_output: str) -> dict[str, l
 
 
 def arch_node(state: PipelineState) -> dict[str, Any]:
+    ensure_source_research(state, caller_step="architect")
     plan_ctx = planning_pipeline_user_context(state)
     ctx = _pipeline_context_block(state, "architect")
     pm_output = state.get("pm_output") or ""

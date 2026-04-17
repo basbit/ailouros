@@ -53,11 +53,14 @@ class AppContainer:
     def _make_background_agent(self, workspace_root: str) -> Any | None:
         from backend.App.orchestration.application.background_agent import (
             BackgroundAgent,
-            _AGENT_ENABLED as _bg_enabled,
+            _agent_enabled,
         )
-        if not _bg_enabled:
+        if not _agent_enabled():
             return None
-        agent = BackgroundAgent(watch_paths=[workspace_root] if workspace_root else [])
+        agent = BackgroundAgent(
+            watch_paths=[workspace_root] if workspace_root else [],
+            enabled=True,
+        )
         agent.start()
         self._teardown_fns.append(agent.stop)
         return agent

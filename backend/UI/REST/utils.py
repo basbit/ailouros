@@ -53,29 +53,32 @@ def _extract_user_prompt(messages: list[Any]) -> str:
 # ---------------------------------------------------------------------------
 
 def _redact_agent_config_secrets(cfg: Optional[dict[str, Any]]) -> dict[str, Any]:
-    """Deep-copy cfg and redact api_key fields."""
+    """Deep-copy cfg and redact api_key / *_api_key fields recursively."""
     if not cfg:
         return {}
-    out = copy.deepcopy(cfg)
-    cloud = out.get("cloud")
-    if isinstance(cloud, dict) and cloud.get("api_key"):
-        cloud["api_key"] = "***REDACTED***"
-    ra = out.get("remote_api")
-    if isinstance(ra, dict) and ra.get("api_key"):
-        ra["api_key"] = "***REDACTED***"
-    rap = out.get("remote_api_profiles")
-    if isinstance(rap, dict):
-        red_p: dict[str, Any] = {}
-        for pk, prof in rap.items():
-            if isinstance(prof, dict):
-                pvc = copy.deepcopy(prof)
-                if pvc.get("api_key"):
-                    pvc["api_key"] = "***REDACTED***"
-                red_p[str(pk)] = pvc
-            else:
-                red_p[str(pk)] = prof
-        out["remote_api_profiles"] = red_p
-    return out
+
+    def _walk(value: Any) -> Any:
+        if isinstance(value, dict):
+            out: dict[str, Any] = {}
+            for key, inner in value.items():
+                key_s = str(key)
+                if (
+                    isinstance(inner, str)
+                    and inner
+                    and (
+                        key_s == "api_key"
+                        or key_s.endswith("_api_key")
+                    )
+                ):
+                    out[key_s] = "***REDACTED***"
+                else:
+                    out[key_s] = _walk(inner)
+            return out
+        if isinstance(value, list):
+            return [_walk(item) for item in value]
+        return value
+
+    return _walk(copy.deepcopy(cfg))
 
 
 def _pipeline_snapshot_for_disk(snap: dict[str, Any]) -> dict[str, Any]:
@@ -255,12 +258,28 @@ def _chat_sync_prepare_workspace_and_task(
 ) -> tuple[str, Optional[Path], dict[str, Any], dict[str, Any]]:
     """Snapshot workspace + create_task in Redis — run only from worker thread (not event loop)."""
     from backend.App.orchestration.application.tasks import prepare_workspace
-    effective_prompt, workspace_path, meta_ws = prepare_workspace(
+    from backend.App.orchestration.application.ingress_security import rewrite_untrusted_input
+
+    rewrite = rewrite_untrusted_input(
         user_prompt,
+        agent_config,
+        source="chat_user_prompt",
+    )
+    effective_prompt, workspace_path, meta_ws = prepare_workspace(
+        rewrite.safe_text,
         workspace_root,
         workspace_write,
         project_context_file,
         agent_config,
+        at_mention_source_prompt=user_prompt,
     )
+    meta_ws["raw_user_task"] = user_prompt
+    meta_ws["security_rewrite_output"] = rewrite.safe_text
+    meta_ws["security_rewrite_model"] = rewrite.model
+    meta_ws["security_rewrite_provider"] = rewrite.provider
+    meta_ws["security_rewrite_flags"] = list(rewrite.security_flags)
+    meta_ws["security_rewrite_risk_level"] = rewrite.risk_level
+    meta_ws["security_rewrite_dropped_text_summary"] = rewrite.dropped_text_summary
+    meta_ws["security_rewrite_used_fallback"] = rewrite.used_fallback
     task = task_store.create_task(user_prompt)
     return effective_prompt, workspace_path, meta_ws, task

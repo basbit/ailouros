@@ -463,6 +463,17 @@ def test_planning_pipeline_user_context_returns_input():
     assert planning_pipeline_user_context(state) == "user message"
 
 
+def test_planning_pipeline_user_context_includes_source_research():
+    state = _state(
+        input="user message",
+        source_research_output='{"summary":"Found event directories."}',
+    )
+    result = planning_pipeline_user_context(state)
+    assert "[External source research brief]" in result
+    assert "Found event directories" in result
+    assert result.endswith("user message")
+
+
 def test_planning_pipeline_user_context_empty():
     state = _state()
     assert planning_pipeline_user_context(state) == ""

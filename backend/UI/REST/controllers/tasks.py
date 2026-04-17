@@ -10,20 +10,77 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from backend.App.tasks.domain.ports import TaskId
+from backend.App.workspace.infrastructure.workspace_io import validate_workspace_root
 from backend.App.orchestration.infrastructure.pipeline_artifact_reader import (
     load_partial_pipeline_state,
     load_failed_step,
 )
+from backend.UI.REST.schemas import BackgroundAgentRequest
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _is_under(root: Path, candidate: Path) -> bool:
+    try:
+        candidate.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _resolve_watch_paths(workspace_root: str, raw: str) -> list[str]:
+    root = validate_workspace_root(Path(workspace_root))
+    parts = [
+        part.strip()
+        for part in raw.replace("\n", ",").split(",")
+        if part.strip()
+    ]
+    if not parts:
+        return [str(root)]
+
+    resolved: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        candidate = Path(part).expanduser()
+        if not candidate.is_absolute():
+            candidate = (root / candidate).resolve(strict=False)
+        else:
+            candidate = candidate.resolve(strict=False)
+        if not _is_under(root, candidate):
+            raise ValueError(
+                f"background watch path must stay inside workspace_root: {part}"
+            )
+        if not candidate.exists():
+            raise ValueError(f"background watch path does not exist: {candidate}")
+        as_str = str(candidate)
+        if as_str not in seen:
+            seen.add(as_str)
+            resolved.append(as_str)
+    return resolved
+
+
+def _stop_background_agent(request: Request) -> None:
+    agent = getattr(request.app.state, "background_agent", None)
+    if agent is not None:
+        try:
+            agent.stop()
+        finally:
+            request.app.state.background_agent = None
+
+
+def _set_background_env(enabled: bool, watch_paths: list[str]) -> None:
+    os.environ["SWARM_BACKGROUND_AGENT"] = "1" if enabled else "0"
+    os.environ["SWARM_BACKGROUND_AGENT_WATCH_PATHS"] = ",".join(watch_paths) if enabled else ""
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +254,7 @@ def get_background_recommendations(request: Request) -> JSONResponse:
     Drains the recommendation queue — each item is returned only once.
     """
     agent = getattr(request.app.state, "background_agent", None)
-    if agent is None:
+    if agent is None or not getattr(agent, "active", False):
         return JSONResponse({"active": False, "recommendations": []})
     recs = agent.drain_recommendations()
     return JSONResponse({
@@ -214,3 +271,39 @@ def get_background_recommendations(request: Request) -> JSONResponse:
             for r in recs
         ],
     })
+
+
+@router.put("/v1/background-agent")
+def configure_background_agent(
+    body: BackgroundAgentRequest,
+    request: Request,
+) -> JSONResponse:
+    from backend.App.orchestration.application.background_agent import BackgroundAgent
+
+    try:
+        if not body.enabled:
+            _stop_background_agent(request)
+            _set_background_env(False, [])
+            return JSONResponse({"active": False, "watch_paths": []})
+
+        workspace_root = body.workspace_root.strip()
+        if not workspace_root:
+            raise ValueError("workspace_root is required when background agent is enabled")
+        watch_paths = _resolve_watch_paths(workspace_root, body.watch_paths)
+        _stop_background_agent(request)
+        _set_background_env(True, watch_paths)
+        agent = BackgroundAgent(
+            watch_paths=watch_paths,
+            enabled=True,
+            environment=body.environment,
+            model=body.model,
+            remote_provider=body.remote_provider,
+            remote_api_key=body.remote_api_key,
+            remote_base_url=body.remote_base_url,
+        )
+        agent.start()
+        request.app.state.background_agent = agent
+        return JSONResponse({"active": agent.active, "watch_paths": watch_paths})
+    except (OSError, ValueError) as exc:
+        logger.warning("configure_background_agent failed: %s", exc)
+        return JSONResponse({"detail": str(exc)}, status_code=400)

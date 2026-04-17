@@ -33,6 +33,39 @@ def _deep_planning_model() -> str:
     return os.getenv("SWARM_DEEP_PLANNING_MODEL", "claude-opus-4-6")
 
 
+def _deep_planning_provider() -> str:
+    """Return the configured runtime environment for deep planning."""
+    return os.getenv("SWARM_DEEP_PLANNING_PROVIDER", "").strip()
+
+
+def _deep_planning_default_llm_kwargs() -> dict[str, Any]:
+    environment = _deep_planning_provider()
+    if not environment:
+        return {}
+    from backend.App.orchestration.application.current_step import get_current_agent_config
+    from backend.App.orchestration.application.nodes._shared import _remote_api_client_kwargs
+    from backend.App.orchestration.infrastructure.agents.llm_backend_selector import (
+        LLMBackendSelector,
+    )
+
+    agent_config = get_current_agent_config() or {}
+    remote_kwargs = (
+        _remote_api_client_kwargs({"agent_config": agent_config})
+        if environment.lower() in {"cloud", "anthropic"}
+        else {}
+    )
+    selector = LLMBackendSelector()
+    cfg = selector.select(
+        role="deep_planning",
+        model=_deep_planning_model(),
+        environment=environment,
+        remote_provider=remote_kwargs.get("remote_provider"),
+        remote_api_key=remote_kwargs.get("remote_api_key"),
+        remote_base_url=remote_kwargs.get("remote_base_url"),
+    )
+    return selector.ask_kwargs(cfg)
+
+
 @dataclass
 class RiskItem:
     id: str
@@ -235,10 +268,13 @@ class DeepPlanner:
         return f"\nWorkspace file index ({len(entries)} entries):\n```\n{lines}\n```\n\n"
 
     def _call_llm(self, llm_fn: Any, prompt: str, llm_kwargs: dict[str, Any] | None = None) -> str:
+        merged_kwargs = _deep_planning_default_llm_kwargs()
+        if llm_kwargs:
+            merged_kwargs.update(llm_kwargs)
         return llm_fn(
             model=_deep_planning_model(),
             messages=[{"role": "user", "content": prompt}],
-            **(llm_kwargs or {}),
+            **merged_kwargs,
         )
 
     def _parse_risks(self, raw: str) -> list[RiskItem]:

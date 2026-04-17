@@ -810,23 +810,42 @@ class MCPToolLoop:
             if _time_to_first_tool is None:
                 _time_to_first_tool = time.monotonic() - _loop_start_time
             _time_last_tool = time.monotonic()
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": raw_content or msg.content,
-                    "tool_calls": [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.function.name,
-                                "arguments": tc.function.arguments or "{}",
-                            },
-                        }
-                        for tc in tool_calls
-                    ],
+            # Build the assistant message to append to conversation history.
+            # For Gemini thinking models the response may carry extra fields
+            # (thought_signature) that MUST be echoed back verbatim; otherwise
+            # Gemini returns 400 "Function call is missing a thought_signature".
+            _is_gemini = "generativelanguage.googleapis.com" in base_url_str
+            _tool_calls_list: list[dict[str, Any]] = []
+            for tc in tool_calls:
+                tc_dict: dict[str, Any] = {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments or "{}",
+                    },
                 }
-            )
+                # Preserve thought_signature and other Gemini-specific fields
+                if _is_gemini:
+                    tc_extra = getattr(tc, "model_extra", None)
+                    if tc_extra and isinstance(tc_extra, dict):
+                        for _ek, _ev in tc_extra.items():
+                            if _ek not in tc_dict:
+                                tc_dict[_ek] = _ev
+                _tool_calls_list.append(tc_dict)
+            _assistant_msg: dict[str, Any] = {
+                "role": "assistant",
+                "content": raw_content or msg.content,
+                "tool_calls": _tool_calls_list,
+            }
+            # For Gemini: also preserve any message-level extra fields (e.g. thinking parts)
+            if _is_gemini:
+                _msg_extra = getattr(msg, "model_extra", None)
+                if _msg_extra and isinstance(_msg_extra, dict):
+                    for _ek, _ev in _msg_extra.items():
+                        if _ek not in _assistant_msg:
+                            _assistant_msg[_ek] = _ev
+            messages.append(_assistant_msg)
 
             for tc in tool_calls:
                 name = tc.function.name

@@ -485,7 +485,7 @@ class PipelineGraphBuilder:
 
         Args:
             topology: One of ``""``, ``"linear"``, ``"parallel"``, ``"default"``,
-                ``"hierarchical"``, ``"ring"``, or ``"mesh"``.
+                ``"ring"``, or ``"mesh"``.
                 ``"linear"`` is an explicit synonym for the default graph and
                 exists so that the UI can offer a "plain list" layout choice
                 without forking into a separate config field.
@@ -501,9 +501,6 @@ class PipelineGraphBuilder:
         if topology in ("", "linear", "parallel", "default"):
             return self.build()
 
-        if topology == "hierarchical":
-            return self._build_hierarchical()
-
         if topology == "ring":
             return self._build_ring()
 
@@ -512,71 +509,8 @@ class PipelineGraphBuilder:
 
         raise ValueError(
             f"Unknown topology {topology!r}. "
-            "Valid values: '', 'linear', 'parallel', 'default', 'hierarchical', "
-            "'ring', 'mesh'."
+            "Valid values: '', 'linear', 'parallel', 'default', 'ring', 'mesh'."
         )
-
-    def _build_hierarchical(self):
-        """Build slim hierarchical graph: PM → dev_lead chain only, no BA/ARCH fork."""
-        from backend.App.orchestration.application.nodes.pm import (
-            pm_node, review_pm_node, human_pm_node,
-        )
-        from backend.App.orchestration.application.nodes.dev import (
-            dev_lead_node, review_dev_lead_node, human_dev_lead_node,
-            human_dev_node,
-        )
-        from backend.App.orchestration.application.nodes.qa import human_qa_node
-
-        definition = GraphDefinition(
-            nodes=[
-                NodeDef("PM", hook_wrap("pm", pm_node)),
-                NodeDef("REVIEW_PM", hook_wrap("review_pm", _planning_review_gate_wrapper("review_pm", "pm_review_output", review_pm_node))),
-                NodeDef("HUMAN_PM", hook_wrap("human_pm", _with_approval_gate("human_pm", human_pm_node))),
-                NodeDef("DEV_LEAD", hook_wrap("dev_lead", dev_lead_node)),
-                NodeDef("REVIEW_DEV_LEAD", hook_wrap("review_dev_lead", review_dev_lead_node)),
-                NodeDef("HUMAN_DEV_LEAD", hook_wrap("human_dev_lead", _with_approval_gate("human_dev_lead", human_dev_lead_node))),
-                NodeDef("DEV", hook_wrap("dev", _dev_node_with_machine)),
-                NodeDef("VERIFICATION_LAYER", hook_wrap("verification_layer", _verification_layer_node)),
-                NodeDef("REVIEW_DEV", hook_wrap("review_dev", _review_dev_node_with_open_defects)),
-                NodeDef("DEV_RETRY_GATE", hook_wrap("dev_retry_gate", _dev_retry_gate_node)),
-                NodeDef("HUMAN_DEV", hook_wrap("human_dev", _with_approval_gate("human_dev", human_dev_node))),
-                NodeDef("QA", hook_wrap("qa", _qa_node_with_machine)),
-                NodeDef("REVIEW_QA", hook_wrap("review_qa", _review_qa_node_with_open_defects)),
-                NodeDef("QA_RETRY_GATE", hook_wrap("qa_retry_gate", _qa_retry_gate_node)),
-                NodeDef("HUMAN_QA", hook_wrap("human_qa", _with_approval_gate("human_qa", human_qa_node))),
-                NodeDef("FINALIZE_PIPELINE", hook_wrap("finalize_pipeline", _finalize_pipeline_node)),
-            ],
-            edges=[
-                EdgeDef("__start__", "PM"),
-                EdgeDef("PM", "REVIEW_PM"),
-                EdgeDef("REVIEW_PM", "HUMAN_PM"),
-                EdgeDef("HUMAN_PM", "DEV_LEAD"),
-                EdgeDef("DEV_LEAD", "REVIEW_DEV_LEAD"),
-                EdgeDef("REVIEW_DEV_LEAD", "HUMAN_DEV_LEAD"),
-                EdgeDef("HUMAN_DEV_LEAD", "DEV"),
-                EdgeDef("DEV", "VERIFICATION_LAYER"),
-                EdgeDef("VERIFICATION_LAYER", "REVIEW_DEV"),
-                EdgeDef("DEV_RETRY_GATE", "DEV"),
-                EdgeDef("HUMAN_DEV", "QA"),
-                EdgeDef("QA", "REVIEW_QA"),
-                EdgeDef("QA_RETRY_GATE", "DEV"),
-                EdgeDef("HUMAN_QA", "FINALIZE_PIPELINE"),
-                EdgeDef("FINALIZE_PIPELINE", "__end__"),
-            ],
-            conditional_edges=[
-                ConditionalEdgeDef(
-                    from_node="REVIEW_DEV",
-                    router=_dev_review_router,
-                    route_map={"retry": "DEV_RETRY_GATE", "continue": "HUMAN_DEV", "escalate": "HUMAN_DEV"},
-                ),
-                ConditionalEdgeDef(
-                    from_node="REVIEW_QA",
-                    router=_qa_review_router,
-                    route_map={"retry": "QA_RETRY_GATE", "continue": "HUMAN_QA", "escalate": "HUMAN_QA"},
-                ),
-            ],
-        )
-        return _LangGraphAdapter().compile(definition, PipelineState)
 
     def _build_ring(self):
         """Build full graph with QA ring-back: REVIEW_QA can route to DEV on failure."""

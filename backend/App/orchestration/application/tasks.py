@@ -116,6 +116,7 @@ def prepare_workspace(
     workspace_write: bool,
     project_context_file: Optional[str] = None,
     agent_config: Optional[dict[str, Any]] = None,
+    at_mention_source_prompt: Optional[str] = None,
 ) -> tuple[str, Optional[Path], dict[str, Any]]:
     """Build the effective prompt by injecting workspace snapshot + project context.
 
@@ -249,7 +250,8 @@ def prepare_workspace(
         workspace_section_title=section_title,
     )
     meta["assembled_input_chars"] = len(effective)
-    at_block = _load_at_mentioned_files(user_prompt, workspace_root or "")
+    at_prompt = at_mention_source_prompt if at_mention_source_prompt is not None else user_prompt
+    at_block = _load_at_mentioned_files(at_prompt, workspace_root or "")
     if at_block:
         effective = at_block + "\n\n---\n\n" + effective
     return effective, root_for_paths, meta
@@ -259,6 +261,10 @@ def pipeline_workspace_parts_from_meta(meta_ws: dict[str, Any]) -> dict[str, Any
     """Поля для ``run_pipeline`` / ``_initial_pipeline_state`` из meta ``prepare_workspace``."""
     return {
         "user_task": str(meta_ws.get("user_task") or ""),
+        "raw_user_task": str(meta_ws.get("raw_user_task") or ""),
+        "security_rewrite_output": str(meta_ws.get("security_rewrite_output") or ""),
+        "security_rewrite_model": str(meta_ws.get("security_rewrite_model") or ""),
+        "security_rewrite_provider": str(meta_ws.get("security_rewrite_provider") or ""),
         "project_manifest": str(meta_ws.get("project_manifest") or ""),
         "workspace_snapshot": str(meta_ws.get("workspace_snapshot") or ""),
         "workspace_context_mode": str(

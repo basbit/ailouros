@@ -73,6 +73,10 @@ def request_shell_approval(
     if not commands:
         return False
     ev = threading.Event()
+    # Prepare the waiter/result channel before publishing pending state so a
+    # fast UI response cannot arrive in between and get dropped.
+    _SHELL_APPROVAL_EVENTS[task_id] = ev
+    clear_result(task_id)
     store_pending(
         "shell",
         task_id,
@@ -82,8 +86,6 @@ def request_shell_approval(
             already_allowed=already_allowed,
         ),
     )
-    _SHELL_APPROVAL_EVENTS[task_id] = ev
-    clear_result(task_id)
 
     # Keep the legacy "N shell-команд" message for UIs that just show the
     # status, but suffix the needs-allowlist binaries so it's obvious in the

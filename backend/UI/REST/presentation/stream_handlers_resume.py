@@ -39,6 +39,9 @@ from backend.UI.REST.utils import (
     _pipeline_snapshot_for_disk,
     _workspace_followup_lines,
 )
+from backend.App.orchestration.application.ingress_security import (
+    rewrite_untrusted_input,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +137,13 @@ def _stream_human_resume_chunks(
 
     pipeline_snapshot: dict[str, Any] = dict(raw)
     pipeline_snapshot.pop("error", None)
-    human_line = format_human_resume_output(resume_step, human_feedback)
+    rewritten_feedback = rewrite_untrusted_input(
+        human_feedback,
+        ac_for_steps,
+        task_id=task_id,
+        source=f"human_resume:{resume_step}",
+    )
+    human_line = format_human_resume_output(resume_step, rewritten_feedback.safe_text)
     pipeline_snapshot[f"{resume_step}_output"] = human_line
 
     workspace_root_str = str(partial.get("workspace_root") or "")
@@ -159,7 +168,7 @@ def _stream_human_resume_chunks(
             cast(PipelineState, partial),
             steps,
             resume_step,
-            human_feedback,
+            rewritten_feedback.safe_text,
             cancel_event=cancel_event,
         )
         while True:

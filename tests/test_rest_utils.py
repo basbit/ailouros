@@ -113,6 +113,22 @@ def test_redact_agent_config_secrets_no_keys():
     assert result == cfg
 
 
+def test_redact_agent_config_secrets_swarm_search_keys():
+    cfg = {
+        "swarm": {
+            "tavily_api_key": "t-key",
+            "exa_api_key": "e-key",
+            "scrapingdog_api_key": "s-key",
+            "model": "llama3",
+        }
+    }
+    result = _redact_agent_config_secrets(cfg)
+    assert result["swarm"]["tavily_api_key"] == "***REDACTED***"
+    assert result["swarm"]["exa_api_key"] == "***REDACTED***"
+    assert result["swarm"]["scrapingdog_api_key"] == "***REDACTED***"
+    assert result["swarm"]["model"] == "llama3"
+
+
 def test_redact_agent_config_secrets_empty():
     assert _redact_agent_config_secrets(None) == {}
     assert _redact_agent_config_secrets({}) == {}

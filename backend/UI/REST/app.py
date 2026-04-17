@@ -27,13 +27,12 @@ from backend.UI.REST.controllers.memory import router as _router_memory
 from backend.UI.REST.controllers.onboarding import router as _router_onboarding
 from backend.UI.REST.controllers.chat import router as _router_tasks
 from backend.UI.REST.controllers.tasks import router as _router_task_endpoints
-from backend.UI.REST.controllers.schedules import router as _router_schedules
 from backend.UI.REST.controllers.ui import router as _router_ui
 from backend.UI.REST.controllers.shell import router as _router_shell
 from backend.UI.REST.controllers.workspace import router as _router_workspace
 from backend.UI.REST.controllers.wiki import router as _router_wiki
 from backend.UI.REST.controllers.pipelines import router as _router_pipelines
-from backend.UI.REST.controllers.user_settings import router as _router_user_settings
+from backend.UI.REST.controllers.project_settings import router as _router_project_settings
 
 logger = logging.getLogger(__name__)
 
@@ -101,10 +100,9 @@ app.include_router(_router_memory)
 app.include_router(_router_onboarding)
 app.include_router(_router_tasks)
 app.include_router(_router_task_endpoints)
-app.include_router(_router_schedules)
 app.include_router(_router_ui)
 app.include_router(_router_shell)
 app.include_router(_router_workspace)
 app.include_router(_router_wiki)
 app.include_router(_router_pipelines)
-app.include_router(_router_user_settings)
+app.include_router(_router_project_settings)

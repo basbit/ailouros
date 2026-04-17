@@ -91,6 +91,10 @@ class AgenticBaseAgent(BaseAgent):
         2. If response contains tool_use / function_call → execute tool → append result.
         3. Repeat until LLM returns plain text (no tool calls) or max_tool_rounds.
         4. Return the final text response.
+
+        For OpenAI-compatible backends (llm_route=="openai", e.g. Gemini) tool schemas
+        are converted from Anthropic format to OpenAI function-calling format and the
+        response tool_calls are handled natively via the OpenAI client.
         """
         self.truncation_retries = 0
         self.tool_rounds_used = 0
@@ -125,10 +129,16 @@ class AgenticBaseAgent(BaseAgent):
             {"role": "user", "content": user_input},
         ]
 
-        # Inject tool schemas (Anthropic native format)
-        ask_kwargs["tools"] = self._tool_schemas
-
         max_rounds = int(os.getenv("SWARM_AGENT_MAX_TOOL_ROUNDS", str(_MAX_TOOL_ROUNDS)))
+
+        # Any non-Anthropic backend here is OpenAI-compatible (local or cloud),
+        # so tool schemas must use the OpenAI ``type=function`` format.
+        if cfg.llm_route != "anthropic":
+            return self._run_openai_tool_loop(cfg, messages, max_rounds, _progress_queue)
+
+        # ── Anthropic / local path ────────────────────────────────────────────
+        # Inject tool schemas in Anthropic native format
+        ask_kwargs["tools"] = self._tool_schemas
         final_text = ""
 
         for _round in range(max_rounds + 1):
@@ -177,6 +187,151 @@ class AgenticBaseAgent(BaseAgent):
                 max_rounds, self.role,
             )
             final_text = llm_response if isinstance(llm_response, str) else str(llm_response)
+
+        return final_text
+
+    def _run_openai_tool_loop(
+        self,
+        cfg: Any,
+        messages: list[dict[str, Any]],
+        max_rounds: int,
+        _progress_queue: Any,
+    ) -> str:
+        """Tool loop for OpenAI-compatible backends (Gemini, etc.).
+
+        Converts Anthropic-format tool schemas to OpenAI function-calling format,
+        calls the OpenAI client directly so that ``tool_calls`` in the response are
+        accessible, and appends tool results in the OpenAI ``role=tool`` format.
+        """
+        import json as _json
+        from backend.App.integrations.infrastructure.llm.client import (
+            make_openai_client,
+            merge_openai_compat_max_tokens,
+            _accumulate_thread_usage,
+        )
+
+        # Convert Anthropic-format schemas → OpenAI function-calling format
+        openai_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": s["name"],
+                    "description": s.get("description", ""),
+                    "parameters": s.get("input_schema", {"type": "object", "properties": {}}),
+                },
+            }
+            for s in self._tool_schemas
+        ]
+
+        client = make_openai_client(base_url=cfg.base_url, api_key=cfg.api_key)
+        final_text = ""
+        msg = None  # set each iteration; referenced in the `else` branch
+
+        for _round in range(max_rounds + 1):
+            self.tool_rounds_used = _round
+            logger.debug(
+                "AgenticBaseAgent._run_openai_tool_loop: role=%s round=%d/%d",
+                self.role, _round, max_rounds,
+            )
+            create_kwargs: dict[str, Any] = {
+                "model": self.model,
+                "messages": messages,
+                "tools": openai_tools,
+                "tool_choice": "auto",
+            }
+            if cfg.max_tokens > 0:
+                create_kwargs["max_tokens"] = cfg.max_tokens
+            create_kwargs = merge_openai_compat_max_tokens(
+                create_kwargs, base_url=cfg.base_url
+            )
+
+            response = client.chat.completions.create(**create_kwargs)
+            usage_obj = response.usage
+            usage = {
+                "input_tokens": getattr(usage_obj, "prompt_tokens", None) or 0,
+                "output_tokens": getattr(usage_obj, "completion_tokens", None) or 0,
+                "model": self.model,
+                "cached": False,
+            }
+            self.last_usage = usage
+            try:
+                _accumulate_thread_usage(usage)
+            except Exception:
+                pass
+            self.used_model = self.model
+            self.used_provider = cfg.provider_label or "cloud:openai_compat"
+
+            msg = response.choices[0].message
+            tool_calls = msg.tool_calls or []
+
+            if not tool_calls:
+                final_text = msg.content or ""
+                break
+
+            # Build per-tool-call dicts; preserve Gemini thought_signature from
+            # model_extra so the next round is accepted by the API.
+            # Detection uses both the provider label (set by LLMBackendSelector) and
+            # the base URL (fallback for custom endpoints that don't match the label).
+            _is_gemini = "gemini" in (cfg.provider_label or "").lower() or \
+                "generativelanguage.googleapis.com" in (cfg.base_url or "")
+            _tc_list: list[dict[str, Any]] = []
+            for tc in tool_calls:
+                tc_dict: dict[str, Any] = {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments or "{}",
+                    },
+                }
+                if _is_gemini:
+                    tc_extra = getattr(tc, "model_extra", None)
+                    if tc_extra and isinstance(tc_extra, dict):
+                        for _ek, _ev in tc_extra.items():
+                            if _ek not in tc_dict:
+                                tc_dict[_ek] = _ev
+                _tc_list.append(tc_dict)
+
+            # Append assistant message with tool_calls (OpenAI format).
+            # For Gemini: also echo back the top-level thought from model_extra.
+            _assistant_msg: dict[str, Any] = {
+                "role": "assistant",
+                "content": msg.content or "",
+                "tool_calls": _tc_list,
+            }
+            if _is_gemini:
+                _msg_extra = getattr(msg, "model_extra", None)
+                if _msg_extra and isinstance(_msg_extra, dict):
+                    for _ek, _ev in _msg_extra.items():
+                        if _ek not in _assistant_msg:
+                            _assistant_msg[_ek] = _ev
+            messages.append(_assistant_msg)
+            # Execute each tool and append result in OpenAI ``role=tool`` format
+            for tc in tool_calls:
+                tool_name = tc.function.name
+                try:
+                    tool_input = _json.loads(tc.function.arguments or "{}")
+                except Exception as _parse_err:
+                    logger.warning(
+                        "AgenticBaseAgent._run_openai_tool_loop: could not parse tool "
+                        "arguments for %r — raw=%r error=%s; calling with empty input",
+                        tool_name, tc.function.arguments, _parse_err,
+                    )
+                    tool_input = {}
+                result_str = self._execute_tool(tool_name, tool_input, _progress_queue)
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": result_str,
+                })
+        else:
+            logger.warning(
+                "AgenticBaseAgent._run_openai_tool_loop: max_tool_rounds=%d exhausted "
+                "for role=%s — returning last response as plain text",
+                max_rounds, self.role,
+            )
+            if msg is not None:
+                final_text = msg.content or ""
 
         return final_text
 

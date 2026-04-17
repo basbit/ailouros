@@ -73,6 +73,9 @@ from backend.App.orchestration.application.output_contracts import (
     format_compressed_dev_lead,
     output_compression_enabled,
 )
+from backend.App.orchestration.application.source_research import (
+    ensure_source_research,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -279,6 +282,7 @@ def _extract_subtask_workspace_contract(
 
 def dev_lead_node(state: PipelineState) -> dict[str, Any]:
     """Dev Lead after BA+Architect (+ DevOps runbook): create Dev/QA subtasks."""
+    ensure_source_research(state, caller_step="dev_lead")
     agent_config = state.get("agent_config") or {}
     target_n = read_dev_qa_task_count_target(agent_config)
     count_rule = ""
@@ -338,6 +342,13 @@ def dev_lead_node(state: PipelineState) -> dict[str, Any]:
         if research_advisory
         else ""
     )
+    source_research = str(state.get("source_research_output") or "").strip()
+    if source_research and source_research != "SOURCE_RESEARCH_NOT_REQUIRED":
+        if len(source_research) > 6000:
+            source_research = source_research[:6000] + "\n…[source research truncated]"
+        source_research_block = "\n[External source research brief]\n" + source_research + "\n"
+    else:
+        source_research_block = ""
 
     # §10.7 — Inject missing-section instruction when retrying after validation failure
     _missing_sections_block = ""
@@ -370,6 +381,7 @@ def dev_lead_node(state: PipelineState) -> dict[str, Any]:
         f"{pipeline_user_task(state)}\n\n"
         "Approved specification (BA + Architect):\n"
         f"{_spec_for_build_mcp_safe(state)}\n"
+        f"{source_research_block}"
         f"{research_advisory_block}"
         "Planning review status artifact (required context; derive subtasks only from approved artifacts):\n"
         f"{json.dumps(planning_reviews_artifact, ensure_ascii=False, indent=2)}\n"

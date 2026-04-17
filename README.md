@@ -61,7 +61,6 @@ Between steps the system passes **validated JSON artifacts** (not raw text), so 
 | Topology | Behaviour |
 |----------|-----------|
 | `default` | Full DAG from `build_graph()` |
-| `hierarchical` | Top-down role chain; focus on `dev_lead` with narrow scope |
 | `mesh` | Parallel Dev+QA subtasks (`SWARM_MAX_PARALLEL_TASKS`) |
 | `ring` | Review → Human cycles built into each step |
 

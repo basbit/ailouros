@@ -11,6 +11,9 @@ import pytest
 from backend.App.workspace.infrastructure.workspace_io import (
     validate_workspace_root,
 )
+from backend.App.workspace.infrastructure.at_mention_loader import (
+    load_at_mentions,
+)
 from backend.App.workspace.infrastructure.patch_parser import (
     _run_shell_block,
     apply_workspace_pipeline,
@@ -92,6 +95,15 @@ def test_apply_workspace_writes_accepts_safe_nested(tmp_path: Path):
     r = apply_workspace_pipeline(text, root, dry_run=False, run_shell=False)
     assert not r["errors"]
     assert (root / "src" / "a.txt").read_text(encoding="utf-8") == "ok"
+
+
+def test_at_mentions_skip_path_outside_workspace(tmp_path: Path):
+    root = tmp_path / "w"
+    root.mkdir()
+    outside = tmp_path / "secret.py"
+    outside.write_text("print('secret')", encoding="utf-8")
+    prompt = "@../secret.py"
+    assert load_at_mentions(prompt, str(root)) == ""
 
 
 def test_shell_skips_binary_inside_workspace(tmp_path: Path):

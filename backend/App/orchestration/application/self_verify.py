@@ -46,6 +46,39 @@ def _verify_model() -> str:
     return os.getenv("SWARM_SELF_VERIFY_MODEL", _VERIFY_MODEL_DEFAULT)
 
 
+def _verify_provider() -> str:
+    """Return the configured verifier backend environment."""
+    return os.getenv("SWARM_SELF_VERIFY_PROVIDER", "").strip()
+
+
+def _verify_llm_kwargs() -> dict[str, Any]:
+    environment = _verify_provider()
+    if not environment:
+        return {}
+    from backend.App.orchestration.application.current_step import get_current_agent_config
+    from backend.App.orchestration.application.nodes._shared import _remote_api_client_kwargs
+    from backend.App.orchestration.infrastructure.agents.llm_backend_selector import (
+        LLMBackendSelector,
+    )
+
+    agent_config = get_current_agent_config() or {}
+    remote_kwargs = (
+        _remote_api_client_kwargs({"agent_config": agent_config})
+        if environment.lower() in {"cloud", "anthropic"}
+        else {}
+    )
+    selector = LLMBackendSelector()
+    cfg = selector.select(
+        role="self_verify",
+        model=_verify_model(),
+        environment=environment,
+        remote_provider=remote_kwargs.get("remote_provider"),
+        remote_api_key=remote_kwargs.get("remote_api_key"),
+        remote_base_url=remote_kwargs.get("remote_base_url"),
+    )
+    return selector.ask_kwargs(cfg)
+
+
 _VERIFY_PROMPT_TMPL = (
     "You are a strict output verifier. Given the task specification and the agent output, "
     "list any issues: missing requirements, contradictions, or logical errors. "
@@ -93,6 +126,7 @@ class SelfVerifier:
         raw = chat_completion_text(
             model=_verify_model(),
             messages=[{"role": "user", "content": prompt}],
+            **_verify_llm_kwargs(),
         )
         try:
             issues = json.loads(raw.strip())

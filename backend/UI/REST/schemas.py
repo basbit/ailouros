@@ -269,15 +269,27 @@ class OnboardingMcpPreflightRequest(BaseModel):
     # Web-search API keys entered in the UI settings panel.
     # Passed through to build_preflight_recommendations so the
     # internet_search capability shows green even when the keys
-    # are stored in localStorage rather than env vars.
+    # are stored in project settings instead of process env vars.
     tavily_api_key: str = ""
     exa_api_key: str = ""
     scrapingdog_api_key: str = ""
 
 
-class UserSettingsRequest(BaseModel):
-    """Request body for PUT /v1/user/settings — global cross-project settings."""
+class ProjectSettingsRequest(BaseModel):
+    """Request body for PUT /v1/project/settings."""
 
-    tavily_api_key: str = ""
-    exa_api_key: str = ""
-    scrapingdog_api_key: str = ""
+    workspace_root: str
+    settings: dict[str, Any]
+
+
+class BackgroundAgentRequest(BaseModel):
+    """Request body for PUT /v1/background-agent."""
+
+    workspace_root: str = ""
+    enabled: bool = False
+    watch_paths: str = ""
+    environment: str = ""
+    model: str = ""
+    remote_provider: str = ""
+    remote_api_key: str = ""
+    remote_base_url: str = ""

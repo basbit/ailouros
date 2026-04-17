@@ -13,10 +13,6 @@ def test_routes_misc_importable() -> None:
     importlib.import_module("backend.UI.REST.controllers.misc")
 
 
-def test_routes_schedules_importable() -> None:
-    importlib.import_module("backend.UI.REST.controllers.schedules")
-
-
 def test_routes_misc_no_app_mod_import() -> None:
     """Verify controllers/misc does not import orchestrator.app at module level."""
     import ast

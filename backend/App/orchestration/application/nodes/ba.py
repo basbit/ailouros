@@ -8,6 +8,9 @@ from backend.App.orchestration.infrastructure.agents.ba_agent import BAAgent
 from backend.App.integrations.infrastructure.cross_task_memory import format_cross_task_memory_block
 from backend.App.orchestration.application.review_moa import run_reviewer_or_moa
 from backend.App.orchestration.application.pipeline_state import PipelineState
+from backend.App.orchestration.application.source_research import (
+    ensure_source_research,
+)
 from backend.App.orchestration.application.repo_evidence import (
     ensure_validated_repo_evidence,
     format_repo_evidence_for_prompt,
@@ -69,6 +72,7 @@ def _ba_memory_artifact(ba_output: str, repo_evidence_artifact: Mapping[str, Any
 def ba_node(state: PipelineState) -> dict[str, Any]:
     from backend.App.orchestration.application.context_budget import get_context_budget
 
+    ensure_source_research(state, caller_step="ba")
     plan_ctx = planning_pipeline_user_context(state)
     _budget = get_context_budget("ba", state.get("agent_config") if isinstance(state.get("agent_config"), dict) else None)
     xmem = format_cross_task_memory_block(

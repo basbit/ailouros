@@ -87,6 +87,10 @@ class PipelineState(TypedDict, total=False):
     agent_config: dict[str, Any]
     # Разбор исходного запроса (оркестратор); для legacy-снимков может отсутствовать — см. pipeline_user_task()
     user_task: str
+    raw_user_task: str
+    security_rewrite_output: str
+    security_rewrite_model: str
+    security_rewrite_provider: str
     project_manifest: str
     # Тело секции workspace до склейки (полный снимок, индекс путей или приоритетные файлы)
     workspace_snapshot: str
@@ -117,6 +121,9 @@ class PipelineState(TypedDict, total=False):
     clarify_input_cache: ClarifyInputCacheState
     planning_review_feedback: dict[str, str]
     planning_review_blockers: list[dict[str, Any]]
+    source_research_output: str
+    source_research_model: str
+    source_research_provider: str
     # PM
     pm_output: str
     pm_model: str
@@ -302,6 +309,10 @@ _PIPELINE_INPUT_KEYS: frozenset[str] = frozenset(
         "workspace_identity",
         "task_id",
         "user_task",
+        "raw_user_task",
+        "security_rewrite_output",
+        "security_rewrite_model",
+        "security_rewrite_provider",
         "project_manifest",
         "workspace_snapshot",
         "workspace_context_mode",
@@ -434,6 +445,10 @@ def pipeline_workspace_parts_from_meta(meta_ws: dict[str, Any]) -> dict[str, Any
 
     return {
         "user_task": str(meta_ws.get("user_task") or ""),
+        "raw_user_task": str(meta_ws.get("raw_user_task") or ""),
+        "security_rewrite_output": str(meta_ws.get("security_rewrite_output") or ""),
+        "security_rewrite_model": str(meta_ws.get("security_rewrite_model") or ""),
+        "security_rewrite_provider": str(meta_ws.get("security_rewrite_provider") or ""),
         "project_manifest": str(meta_ws.get("project_manifest") or ""),
         "workspace_snapshot": str(meta_ws.get("workspace_snapshot") or ""),
         "workspace_root_resolved": str(meta_ws.get("workspace_root_resolved") or ""),

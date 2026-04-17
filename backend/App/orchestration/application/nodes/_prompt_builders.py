@@ -689,10 +689,18 @@ def build_phase_pipeline_user_context(state: PipelineState) -> str:
 def planning_pipeline_user_context(state: PipelineState) -> str:
     """Контекст для clarify/PM/BA/Arch/спека — как собрал оркестратор (см. prepare_workspace)."""
     user_input = state.get("input") or ""
+    source_research = str(state.get("source_research_output") or "").strip()
     wiki_ctx = (state.get("wiki_context") or "").strip()
-    if not wiki_ctx:
-        return user_input
-    return f"[Project wiki memory]\n{wiki_ctx}\n\n{user_input}"
+    parts: list[str] = []
+    if source_research and source_research != "SOURCE_RESEARCH_NOT_REQUIRED":
+        if len(source_research) > 6000:
+            source_research = source_research[:6000] + "\n…[source research truncated]"
+        parts.append("[External source research brief]\n" + source_research)
+    if wiki_ctx:
+        parts.append(f"[Project wiki memory]\n{wiki_ctx}")
+    if user_input:
+        parts.append(user_input)
+    return "\n\n".join(parts)
 
 
 def _should_compact_for_reviewer(log_node: str, state: PipelineState) -> bool:
@@ -1040,6 +1048,7 @@ def _pipeline_context_block(state: PipelineState, current_step_id: str) -> str:
         summaries: list[str] = []
         for key, label in (
             ("clarify_input_human_output", "UserClarification"),
+            ("source_research_output", "SourceResearch"),
             ("pm_output", "PM"),
             ("ba_output", "BA"),
             ("arch_output", "Architect"),

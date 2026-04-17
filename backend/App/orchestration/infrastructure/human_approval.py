@@ -40,9 +40,10 @@ def request_human_approval(
     Returns (approved, user_input_text).
     """
     ev = threading.Event()
-    store_pending("human", task_id, context)
+    # Make the waiter/result path live before the UI can observe pending state.
     _HUMAN_APPROVAL_EVENTS[task_id] = ev
     clear_result(task_id)
+    store_pending("human", task_id, context)
 
     task_store.update_task(
         task_id,
