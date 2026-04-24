@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "defaults": {
+    "reviewer": {
+      "prompt_path": "specialized/specialized-reviewer.md"
+    }
+  },
+  "roles": {
+    "pm": {
+      "enabled": true,
+      "version": 1
+    },
+    "ba": {
+      "enabled": true,
+      "version": 1
+    },
+    "architect": {
+      "enabled": true,
+      "version": 1
+    },
+    "code_quality_architect": {
+      "enabled": true,
+      "version": 1,
+      "config": {
+        "prompt_path": "engineering/code-quality-architect.md"
+      }
+    },
+    "dev": {
+      "enabled": true,
+      "version": 1
+    },
+    "image_generator": {
+      "enabled": true,
+      "version": 1,
+      "config": {
+        "prompt_path": "design/design-image-prompt-engineer.md"
+      }
+    },
+    "audio_generator": {
+      "enabled": true,
+      "version": 1,
+      "config": {
+        "prompt_path": "game-development/game-audio-engineer.md"
+      }
+    },
+    "qa": {
+      "enabled": true,
+      "version": 1
+    }
+  }
+}

@@ -1,0 +1,48 @@
+[importlinter]
+root_packages =
+    backend
+include_external_packages = True
+
+# ── Contract 1: orchestration.application must not import HTTP layer ─────────
+[importlinter:contract:1]
+name = orchestration.application must not import fastapi
+type = forbidden
+source_modules = backend.App.orchestration.application
+forbidden_modules =
+    fastapi
+
+# ── Contract 2: pipeline runners must not import HTTP layer ──────────────────
+[importlinter:contract:2]
+name = pipeline.runners must not import fastapi
+type = forbidden
+source_modules =
+    backend.App.orchestration.application.pipeline.pipeline_runners
+    backend.App.orchestration.application.pipeline.pipeline_step_runner
+    backend.App.orchestration.application.pipeline.pipeline_state_helpers
+forbidden_modules =
+    fastapi
+
+# ── Contract 3: tasks BC domain must not import orchestration.application ────
+[importlinter:contract:3]
+name = tasks.domain must not import orchestration.application
+type = forbidden
+source_modules = backend.App.tasks.domain
+forbidden_modules = backend.App.orchestration.application
+
+# ── Contract 4: all BC domain layers must not import infrastructure libs ──────
+[importlinter:contract:4]
+name = domain must not import external infrastructure
+type = forbidden
+source_modules =
+    backend.App.orchestration.domain
+    backend.App.tasks.domain
+    backend.App.workspace.domain
+    backend.App.integrations.domain
+forbidden_modules =
+    fastapi
+    redis
+    httpx
+    openai
+    anthropic
+    langgraph
+    subprocess

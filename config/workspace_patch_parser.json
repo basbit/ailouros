@@ -1,0 +1,20 @@
+{
+  "swarm_metadata_allowed_prefixes": [
+    ".swarm/wiki/",
+    ".swarm/settings.json",
+    ".swarm/project-context.md",
+    ".swarm/context.txt"
+  ],
+  "binary_asset_extensions": [
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif",
+    ".ico", ".icns", ".heic", ".heif", ".avif",
+    ".woff", ".woff2", ".ttf", ".otf", ".eot",
+    ".mp3", ".wav", ".ogg", ".flac", ".m4a", ".aac", ".opus",
+    ".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v",
+    ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar",
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    ".psd", ".blend", ".fbx", ".glb", ".gltf", ".obj", ".dae",
+    ".exe", ".dll", ".so", ".dylib", ".class", ".jar", ".wasm"
+  ],
+  "fence_base_extensions": "tsx?|jsx?|vue|svelte|py|rs|go|md|jsonc?|ya?ml|yml|toml|css|scss|html|php|java|kt|swift|gradle|kts"
+}

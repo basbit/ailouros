@@ -1,0 +1,6 @@
+{
+  "chat_stream": {
+    "resume_request_model": "swarm-resume",
+    "retry_request_model": "swarm-retry"
+  }
+}

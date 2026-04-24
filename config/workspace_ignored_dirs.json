@@ -1,0 +1,28 @@
+{
+  "ignored_directory_names": [
+    ".git",
+    "__pycache__",
+    "node_modules",
+    ".venv",
+    "venv",
+    ".idea",
+    ".vscode",
+    "dist",
+    "build",
+    "target",
+    ".mypy_cache",
+    ".pytest_cache",
+    "coverage",
+    ".coverage",
+    ".tox",
+    ".eggs",
+    "Library",
+    "PackageCache",
+    "Temp",
+    "Obj",
+    "Logs",
+    "UserSettings",
+    ".vs",
+    "Builds"
+  ]
+}

@@ -1,0 +1,60 @@
+{
+  "_comment": "Default per-step context budgets. Ships with sane starter values; operators override via agent_config.swarm.context_budgets or SWARM_CONTEXT_<FIELD>_<STEP> env vars. Two key kinds: (1) exact step_id (e.g. 'pm', 'dev'); (2) prefix tier (key ending with '_'; matches any step_id starting with the prefix when no exact match exists). Each entry only sets the fields it changes — unset fields fall through to DEFAULT_BUDGET in context_budget.py.",
+  "_schema": "ContextBudget fields: wiki_chars, pattern_memory_chars, cross_task_memory_chars, knowledge_chars, summaries_chars, include_summaries, code_analysis_chars, code_analysis_max_files, fix_cycle_summary_chars, state_max_chars, reasoning_budget_tokens",
+  "_reasoning_budget_notes": "reasoning_budget_tokens caps thinking tokens for local reasoning models (qwen3* / deepseek-r1 / *-ud-mlx). 4096 = full cap (Architect/Judge/Debate class). 2048 = balanced for reviewers. 1024 = narrow subtask (Dev/QA) where output is 1-3K tokens and 4K of thinking is wasted wall-clock (~5 s/call on MLX). 0 = opt out (let model default, risky). Non-reasoning models ignore this field.",
+
+  "profile_templates": {
+    "marketing_sidecar": {"wiki_chars": 3000, "code_analysis_chars": 2000, "reasoning_budget_tokens": 1024}
+  },
+
+  "clarify_input":          {"wiki_chars": 4000, "knowledge_chars": 2000, "summaries_chars": 200, "reasoning_budget_tokens": 2048},
+
+  "pm":                     {"wiki_chars": 8000, "knowledge_chars": 4000, "reasoning_budget_tokens": 2048},
+  "ba":                     {"wiki_chars": 6000, "knowledge_chars": 3000, "reasoning_budget_tokens": 2048},
+  "architect":              {"wiki_chars": 8000, "knowledge_chars": 4000, "code_analysis_chars": 15000, "reasoning_budget_tokens": 4096},
+  "ba_arch_debate":         {"wiki_chars": 4000, "knowledge_chars": 2000, "summaries_chars": 400, "reasoning_budget_tokens": 4096},
+  "spec_merge":             {"wiki_chars": 4000, "summaries_chars": 600, "reasoning_budget_tokens": 4096},
+
+  "analyze_code":           {"wiki_chars": 2000, "knowledge_chars": 1000, "summaries_chars": 200, "reasoning_budget_tokens": 1024},
+  "generate_documentation": {"wiki_chars": 4000, "reasoning_budget_tokens": 1024},
+  "problem_spotter":        {"wiki_chars": 2000, "code_analysis_chars": 15000, "reasoning_budget_tokens": 2048},
+  "refactor_plan":          {"wiki_chars": 2000, "reasoning_budget_tokens": 1024},
+
+  "dev_lead":               {"wiki_chars": 2000, "knowledge_chars": 1000, "code_analysis_chars": 20000, "code_analysis_max_files": 200, "reasoning_budget_tokens": 2048},
+  "dev":                    {"wiki_chars": 0, "knowledge_chars": 0, "summaries_chars": 200, "pattern_memory_chars": 4000, "cross_task_memory_chars": 0, "code_analysis_chars": 18000, "reasoning_budget_tokens": 1024},
+  "qa":                     {"wiki_chars": 0, "knowledge_chars": 0, "summaries_chars": 150, "pattern_memory_chars": 2000, "cross_task_memory_chars": 0, "code_analysis_chars": 15000, "reasoning_budget_tokens": 1024},
+  "devops":                 {"wiki_chars": 2000, "knowledge_chars": 1000, "code_analysis_chars": 10000, "code_analysis_max_files": 80, "reasoning_budget_tokens": 1024},
+
+  "ux_researcher":          {"wiki_chars": 4000, "code_analysis_chars": 2000, "reasoning_budget_tokens": 2048},
+  "ux_architect":           {"wiki_chars": 4000, "code_analysis_chars": 4000, "reasoning_budget_tokens": 2048},
+  "ui_designer":            {"wiki_chars": 3000, "code_analysis_chars": 4000, "reasoning_budget_tokens": 2048},
+
+  "seo_specialist":          "@marketing_sidecar",
+  "ai_citation_strategist":  "@marketing_sidecar",
+  "app_store_optimizer":     "@marketing_sidecar",
+
+  "e2e":                    {"wiki_chars": 0, "knowledge_chars": 0, "include_summaries": false, "code_analysis_chars": 4000, "reasoning_budget_tokens": 1024},
+
+  "review_": {
+    "wiki_chars": 2000,
+    "knowledge_chars": 0,
+    "pattern_memory_chars": 0,
+    "cross_task_memory_chars": 0,
+    "summaries_chars": 150,
+    "code_analysis_chars": 4000,
+    "code_analysis_max_files": 40,
+    "state_max_chars": 120000,
+    "reasoning_budget_tokens": 2048
+  },
+  "human_": {
+    "wiki_chars": 0,
+    "knowledge_chars": 0,
+    "pattern_memory_chars": 0,
+    "cross_task_memory_chars": 0,
+    "include_summaries": false,
+    "code_analysis_chars": 2000,
+    "code_analysis_max_files": 20,
+    "state_max_chars": 80000,
+    "reasoning_budget_tokens": 1024
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "redis_key_prefix": "swarm:task:",
+  "optimistic_lock_max_retries": 5,
+  "log_filename": "pipeline_run.log"
+}

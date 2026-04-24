@@ -1,0 +1,145 @@
+{
+  "roles": [
+    "pm", "ba", "architect", "code_quality_architect", "reviewer", "stack_reviewer",
+    "dev_lead", "dev", "qa", "devops",
+    "problem_spotter", "refactor_plan", "code_diagram", "doc_generate",
+    "ux_researcher", "ux_architect", "ui_designer", "image_generator", "audio_generator",
+    "seo_specialist", "ai_citation_strategist", "app_store_optimizer",
+    "critic", "planner", "onboarding"
+  ],
+  "role_tiers": {
+    "heavy":  ["architect", "code_quality_architect", "dev", "dev_lead", "critic", "planner"],
+    "medium": ["pm", "ba", "reviewer", "stack_reviewer", "qa", "devops",
+               "ux_researcher", "ux_architect", "ui_designer",
+               "image_generator", "audio_generator",
+               "seo_specialist", "ai_citation_strategist", "app_store_optimizer"],
+    "light":  ["problem_spotter", "refactor_plan", "code_diagram", "doc_generate", "onboarding"]
+  },
+  "keyword_preference_groups": {
+    "pm": ["qwen", "mistral", "llama-3", "gemma", "phi"],
+    "ba": ["qwen", "mistral", "llama-3", "gemma"],
+    "architect": ["deepseek", "qwen", "coder", "llama-3", "mistral"],
+    "code_quality_architect": ["deepseek", "qwen", "coder", "quality", "review", "llama-3"],
+    "reviewer": ["think", "qwen", "llama-3", "deepseek", "phi"],
+    "stack_reviewer": ["think", "qwen", "llama-3", "deepseek"],
+    "dev_lead": ["qwen", "deepseek", "coder", "llama-3", "mistral"],
+    "dev": ["coder", "code", "deepseek", "qwen-coder", "starcoder", "codellama", "llama-3"],
+    "general_qwen_llama_gemma_mistral": ["qwen", "llama-3", "gemma", "mistral"],
+    "problem_spotter_pair": ["qwen", "phi", "gemma", "llama-3"],
+    "diagram_doc_pair": ["qwen", "phi", "gemma"],
+    "ux_architect": ["coder", "code", "qwen-coder", "qwen", "llama-3"],
+    "image_generator": ["image", "vision", "multimodal", "qwen", "gemma", "llama-3"],
+    "audio_generator": ["audio", "tts", "voice", "qwen", "gemma", "llama-3"],
+    "planner": ["planning", "plan", "think", "qwen", "mistral", "llama-3", "gemma"],
+    "critic": ["think", "qwen", "llama-3", "deepseek", "phi"],
+    "onboarding": ["think", "olmo", "qwen", "llama-3", "gemma"]
+  },
+  "local_keyword_preferences": {
+    "pm": "@pm",
+    "ba": "@ba",
+    "architect": "@architect",
+    "code_quality_architect": "@code_quality_architect",
+    "reviewer": "@reviewer",
+    "stack_reviewer": "@stack_reviewer",
+    "dev_lead": "@dev_lead",
+    "dev": "@dev",
+    "qa": "@general_qwen_llama_gemma_mistral",
+    "devops": "@general_qwen_llama_gemma_mistral",
+    "problem_spotter": "@problem_spotter_pair",
+    "refactor_plan": "@problem_spotter_pair",
+    "code_diagram": "@diagram_doc_pair",
+    "doc_generate": "@diagram_doc_pair",
+    "ux_researcher": "@general_qwen_llama_gemma_mistral",
+    "ux_architect": "@ux_architect",
+    "ui_designer": "@general_qwen_llama_gemma_mistral",
+    "image_generator": "@image_generator",
+    "audio_generator": "@audio_generator",
+    "seo_specialist": "@general_qwen_llama_gemma_mistral",
+    "ai_citation_strategist": "@general_qwen_llama_gemma_mistral",
+    "app_store_optimizer": "@general_qwen_llama_gemma_mistral",
+    "planner": "@planner",
+    "critic": "@critic",
+    "onboarding": "@onboarding"
+  },
+  "planning_roles": [
+    "PM", "BA", "ARCH", "CODE_QUALITY_ARCHITECT", "REVIEWER", "STACK_REVIEWER", "DEV_LEAD",
+    "DOC_GEN", "PROBLEM_SPOTTER", "REFACTOR_PLAN", "CODE_DIAGRAM",
+    "UX_RESEARCHER", "UX_ARCHITECT", "UI_DESIGNER", "IMAGE_GENERATOR", "AUDIO_GENERATOR",
+    "SEO_SPECIALIST", "AI_CITATION_STRATEGIST", "APP_STORE_OPTIMIZER"
+  ],
+  "planning_model_roles_exclude": ["PM"],
+  "build_roles": ["DEV", "QA", "DEVOPS"],
+  "cloud_defaults": {
+    "anthropic": {
+      "catalog": {
+        "sonnet": "claude-sonnet-4-5",
+        "haiku": "claude-haiku-4-5",
+        "opus": "claude-opus-4-5"
+      },
+      "role_catalog_key": {
+        "pm": "sonnet",
+        "ba": "sonnet",
+        "architect": "sonnet",
+        "code_quality_architect": "sonnet",
+        "reviewer": "sonnet",
+        "stack_reviewer": "sonnet",
+        "dev_lead": "sonnet",
+        "dev": "sonnet",
+        "qa": "haiku",
+        "devops": "haiku",
+        "problem_spotter": "haiku",
+        "refactor_plan": "haiku",
+        "code_diagram": "haiku",
+        "doc_generate": "haiku",
+        "ux_researcher": "sonnet",
+        "ux_architect": "sonnet",
+        "ui_designer": "sonnet",
+        "image_generator": "sonnet",
+        "audio_generator": "sonnet",
+        "seo_specialist": "sonnet",
+        "ai_citation_strategist": "sonnet",
+        "app_store_optimizer": "sonnet",
+        "planner": "opus",
+        "critic": "opus",
+        "onboarding": "haiku"
+      }
+    },
+    "openai": {
+      "catalog": {
+        "gpt4o": "gpt-4o",
+        "mini": "gpt-4o-mini"
+      },
+      "role_catalog_key": {
+        "pm": "mini",
+        "ba": "gpt4o",
+        "architect": "gpt4o",
+        "code_quality_architect": "gpt4o",
+        "reviewer": "gpt4o",
+        "stack_reviewer": "gpt4o",
+        "dev_lead": "gpt4o",
+        "dev": "gpt4o",
+        "qa": "mini",
+        "devops": "mini",
+        "problem_spotter": "mini",
+        "refactor_plan": "mini",
+        "code_diagram": "mini",
+        "doc_generate": "mini",
+        "ux_researcher": "gpt4o",
+        "ux_architect": "gpt4o",
+        "ui_designer": "gpt4o",
+        "image_generator": "gpt4o",
+        "audio_generator": "gpt4o",
+        "seo_specialist": "gpt4o",
+        "ai_citation_strategist": "gpt4o",
+        "app_store_optimizer": "gpt4o",
+        "planner": "gpt4o",
+        "critic": "gpt4o",
+        "onboarding": "mini"
+      }
+    }
+  },
+  "provider_remote_profiles": {
+    "anthropic": "claude",
+    "openai": "chat-gpt"
+  }
+}

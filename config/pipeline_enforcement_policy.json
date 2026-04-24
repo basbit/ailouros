@@ -1,0 +1,10 @@
+{
+  "min_review_content_chars": 120,
+  "default_stale_review_similarity_threshold": 0.85,
+  "max_planning_review_retries_default": 2,
+  "required_non_empty_output_steps": ["ux_researcher"],
+  "swarm_file_tag_min_lines_default": 20,
+  "swarm_file_tag_pattern": "<swarm_file\\s+path=",
+  "code_fence_pattern": "```(?P<lang>[a-zA-Z0-9_.+-]*)\\n(?P<body>.*?)```",
+  "swarm_env_strings_that_mean_enabled": ["1", "true", "yes", "on"]
+}

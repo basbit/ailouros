@@ -1,0 +1,12 @@
+{
+  "readonly_commands": [
+    "pwd", "ls", "find", "cat", "head", "tail", "wc", "file", "stat", "echo", "which", "env"
+  ],
+  "write_commands": [
+    "npm", "npx", "yarn", "pnpm", "corepack", "bun", "node",
+    "pip", "pip3", "python", "python3", "uv",
+    "make", "cargo", "rustc", "go",
+    "composer", "php", "dotnet", "gradle", "mvn",
+    "pytest", "eslint", "prettier", "tsc", "jest", "vitest", "ruff", "flake8"
+  ]
+}
