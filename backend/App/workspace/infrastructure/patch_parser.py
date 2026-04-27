@@ -30,6 +30,8 @@ from backend.App.workspace.infrastructure.swarm_tag_parsers import (
     _lift_swarm_shell_from_bash_sh_fences,
     _lift_swarm_shell_from_prompt_style_xml_fences,
     _markdown_fence_spans,
+    _markdown_protected_spans,
+    _neutralize_inline_code_tags,
     _position_inside_fences,
     _run_shell_block,
     _shell_block_body_from_match,
@@ -438,9 +440,10 @@ def _extract_commands_from_bare_bash_fences(text: str) -> list[str]:
 def extract_shell_commands(text: str) -> list[str]:
     lifted = _lift_swarm_shell_from_prompt_style_xml_fences(text)
     lifted = _lift_swarm_shell_from_bash_sh_fences(lifted)
+    neutralized = _neutralize_inline_code_tags(lifted)
     fence_spans = _markdown_fence_spans(lifted)
     commands: list[str] = []
-    for match in _PAT_SHELL.finditer(lifted):
+    for match in _PAT_SHELL.finditer(neutralized):
         if _position_inside_fences(match.start(), fence_spans):
             continue
         for line in _shell_block_body_from_match(match).splitlines():
@@ -554,13 +557,18 @@ def apply_from_devops_and_dev_outputs(
         validation_result = apply_workspace_pipeline(merged, root, dry_run=True, run_shell=False)
         validation_errors = list(validation_result.get("errors") or [])
         if validation_errors:
-            error_detail = "; ".join(validation_errors[:10])
-            raise RuntimeError(
-                f"workspace_write_pre_validation_failed: patch validation errors detected before any files were written — "
-                f"operation=apply_from_devops_and_dev_outputs "
-                f"errors_count={len(validation_errors)} "
-                f"errors={error_detail!r} "
-                f"expected=all patches and writes are valid "
-                f"actual=VALIDATION_FAILED"
+            error_detail = "; ".join(str(error) for error in validation_errors[:10])
+            logger.warning(
+                "workspace_write_pre_validation: %d patch/write issue(s) detected — "
+                "continuing with best-effort apply so valid patches are written and errors "
+                "are surfaced to QA for dev retry. errors=%s",
+                len(validation_errors), error_detail,
             )
-    return apply_workspace_pipeline(merged, root, dry_run=dry_run, run_shell=run_shell)
+    apply_result = apply_workspace_pipeline(merged, root, dry_run=dry_run, run_shell=run_shell)
+    if not dry_run and validation_errors:
+        merged_errors = list(apply_result.get("errors") or [])
+        for validation_error in validation_errors:
+            if validation_error not in merged_errors:
+                merged_errors.append(validation_error)
+        apply_result["errors"] = merged_errors
+    return apply_result

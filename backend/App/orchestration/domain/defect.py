@@ -161,19 +161,44 @@ def parse_defect_report(text: str) -> DefectReport:
     import json
     import re
 
-    visible_text = re.sub(r"```.*?```", "", text or "", flags=re.DOTALL)
-    match = re.search(
+    raw_text = text or ""
+    visible_text = re.sub(r"```.*?```", "", raw_text, flags=re.DOTALL)
+    tag_match = re.search(
         r"<defect_report>\s*(.*?)\s*</defect_report>",
         visible_text,
         re.DOTALL | re.IGNORECASE,
     )
-    if match:
+    if tag_match:
         try:
-            data = json.loads(match.group(1))
+            data = json.loads(tag_match.group(1))
             if isinstance(data, dict):
                 return DefectReport.from_dict(data)
         except (json.JSONDecodeError, TypeError, ValueError):
             return DefectReport()
+
+    fenced_json_pattern = re.compile(
+        r"```(?:json)?\s*(\{[^`]*?\"defects\"\s*:\s*\[[^`]*?\][^`]*?\})\s*```",
+        re.DOTALL | re.IGNORECASE,
+    )
+    for fenced_match in fenced_json_pattern.finditer(raw_text):
+        candidate = fenced_match.group(1)
+        if "<defect_report>" in candidate.lower():
+            continue
+        try:
+            data = json.loads(candidate)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        defects_list = data.get("defects")
+        if not isinstance(defects_list, list) or not defects_list:
+            continue
+        if not all(
+            isinstance(defect_entry, dict) and defect_entry.get("severity")
+            for defect_entry in defects_list
+        ):
+            continue
+        return DefectReport.from_dict(data)
 
     defects = parse_defects_from_text(visible_text)
     if defects:

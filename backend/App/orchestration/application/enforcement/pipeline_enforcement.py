@@ -4,6 +4,9 @@ import logging
 from collections.abc import Callable, Generator
 from typing import Any
 
+from backend.App.orchestration.application.enforcement.dev_patch_errors_enforcer import (
+    enforce_dev_patch_errors,
+)
 from backend.App.orchestration.application.enforcement.dev_review_gate import run_dev_review_quality_gate
 from backend.App.orchestration.application.enforcement.dev_verification_gate import run_post_dev_verification_gates
 from backend.App.orchestration.application.enforcement.enforcement_policy import (
@@ -73,6 +76,18 @@ def run_post_step_enforcement(
             emit_completed=emit_completed,
         )
         gate_results = run_post_dev_verification_gates(state)
+        while state.get("_dev_patch_errors_for_retry"):
+            previous_retry_count = int(state.get("_dev_patch_retry_count") or 0)
+            yield from enforce_dev_patch_errors(
+                state,
+                resolve_step=resolve_step,
+                base_agent_config=base_agent_config,
+                run_step_with_stream_progress=run_step_with_stream_progress,
+                emit_completed=emit_completed,
+            )
+            if int(state.get("_dev_patch_retry_count") or 0) == previous_retry_count:
+                break
+            gate_results = run_post_dev_verification_gates(state)
         transition_pipeline_phase(state, machine, PipelinePhase.VERIFY, source="verification_layer")
         if gate_results:
             yield {

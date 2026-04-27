@@ -25,6 +25,7 @@ from backend.App.orchestration.application.nodes._shared import (
     _skills_extra_for_role_cfg,
     _stream_automation_emit,
     _swarm_prompt_prefix,
+    _web_research_guidance_block,
     embedded_pipeline_input_for_review,
     embedded_review_artifact,
     planning_pipeline_user_context,
@@ -286,6 +287,7 @@ def pm_node(state: PipelineState) -> dict[str, Any]:
         + ctx
         + _swarm_prompt_prefix(state)
         + _documentation_locale_line(state)
+        + _web_research_guidance_block(state, role="pm")
         + planning_mcp_tool_instruction(state)
         + _ca_block
         + _evidence_block

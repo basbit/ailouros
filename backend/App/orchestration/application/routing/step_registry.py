@@ -53,6 +53,7 @@ from backend.App.orchestration.application.nodes.design import (
     human_ui_designer_node,
     image_generator_node,
     audio_generator_node,
+    asset_fetcher_node,
 )
 from backend.App.orchestration.application.nodes.marketing import (
     seo_specialist_node,
@@ -97,6 +98,7 @@ PIPELINE_STEP_SEQUENCE: tuple[tuple[str, str, Callable[[PipelineState], dict[str
     ("human_ui_designer", "Human approve after UI Design", human_ui_designer_node),
     ("image_generator", "Image Generator: visual asset prompts and specs", image_generator_node),
     ("audio_generator", "Audio Generator: audio and TTS prompts and specs", audio_generator_node),
+    ("asset_fetcher", "Asset Fetcher: download free/CC images and audio to workspace", asset_fetcher_node),
     ("analyze_code", "Repository code analysis", analyze_code_node),
     ("generate_documentation", "Documentation and Mermaid from analysis", generate_documentation_node),
     ("problem_spotter", "Identify common code issues", problem_spotter_node),

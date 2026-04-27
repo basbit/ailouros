@@ -85,23 +85,24 @@ def build_pipeline_metrics(state: PipelineState) -> PipelineMetricsArtifact:
     open_defects = list(state.get("open_defects") or [])
     clustered_open_defects = list(state.get("clustered_open_defects") or [])
     dev_subtask_contracts = list(state.get("dev_subtask_contracts") or [])
-    steps = step_metrics.get("steps") or {}
+    steps_raw = step_metrics.get("steps") or []
 
     total_input_tokens = 0
     total_cache_hits = 0
     total_cache_misses = 0
     small_step_token_samples: list[int] = []
     small_steps = ("pm", "ba", "review_pm", "review_ba", "review_dev", "review_qa", "qa", "devops")
-    for step_id, payload in steps.items():
-        if not isinstance(payload, dict):
+    for step_row in steps_raw:
+        if not isinstance(step_row, dict):
             continue
-        tokens = payload.get("tokens") or {}
-        input_tokens = int(tokens.get("input_tokens") or 0)
+        step_id = str(step_row.get("step_id") or "")
+        tokens = step_row.get("tokens") or {}
+        input_tokens = int(tokens.get("input_tokens") or step_row.get("input_tokens") or 0)
         total_input_tokens += input_tokens
         total_cache_hits += int(tokens.get("file_read_cache_hits") or 0)
         total_cache_misses += int(tokens.get("file_read_cache_misses") or 0)
         if step_id in small_steps and input_tokens > 0:
-            for _ in range(int(payload.get("count") or 0) or 1):
+            for _ in range(int(step_row.get("count") or 0) or 1):
                 small_step_token_samples.append(input_tokens)
     small_step_token_samples.sort()
     median_small_input_tokens = (
@@ -165,6 +166,19 @@ def build_pipeline_metrics(state: PipelineState) -> PipelineMetricsArtifact:
 
 def finalize_pipeline_metrics(state: PipelineState) -> None:
     state["pipeline_metrics"] = cast(dict[str, Any], build_pipeline_metrics(state))
+
+
+def finalize_metrics_best_effort(state: PipelineState) -> None:
+    import logging as _logging
+    _local_logger = _logging.getLogger(__name__)
+    try:
+        finalize_pipeline_metrics(state)
+    except Exception as finalize_metrics_error:
+        _local_logger.warning(
+            "finalize_metrics_best_effort: pipeline_metrics not written — %s. "
+            "This usually happens when state is partially populated during an exception path.",
+            finalize_metrics_error,
+        )
 
 
 def load_defect_report(state: Mapping[str, Any], key: str) -> DefectReport:

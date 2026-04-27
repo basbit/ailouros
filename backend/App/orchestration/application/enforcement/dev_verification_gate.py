@@ -53,8 +53,17 @@ def run_post_dev_verification_gates(state: PipelineState) -> list[dict[str, Any]
 
         write_errors = list(workspace_writes.get("errors") or [])
         if write_errors:
-            error_summary = "; ".join(str(e) for e in write_errors)
-            raise RuntimeError(f"write_integrity_gate failed: {error_summary}")
+            error_summary = "; ".join(str(write_error) for write_error in write_errors)
+            _logger.warning(
+                "write_integrity_gate: %d patch/write error(s) detected — surfacing to "
+                "verification_gate_warnings so QA issues NEEDS_WORK and dev retries with "
+                "corrective feedback. errors=%s",
+                len(write_errors), error_summary,
+            )
+            state_dict.setdefault("_post_write_issues", []).append(
+                f"write_integrity_gate: {error_summary}"
+            )
+            state_dict["_dev_patch_errors_for_retry"] = list(write_errors)
 
         healed_patches = list(workspace_writes.get("healed_patches") or [])
         if healed_patches:

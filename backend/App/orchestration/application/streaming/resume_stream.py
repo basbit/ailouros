@@ -22,6 +22,9 @@ from backend.App.orchestration.application.routing.pipeline_graph import (
 )
 from backend.App.orchestration.application.pipeline.pipeline_state import PipelineState
 from backend.App.orchestration.application.snapshot_serializer import pipeline_snapshot_for_disk
+from backend.App.orchestration.infrastructure.pipeline_artifact_reader import (
+    reconstruct_partial_state_from_flat_snapshot,
+)
 from backend.App.shared.infrastructure.openai_sse import (
     build_done,
     ensure_task_dirs,
@@ -97,8 +100,21 @@ def stream_human_resume_chunks(
     resume_step = raw.get("resume_from_step")
     steps = raw.get("pipeline_steps")
     if not partial or not isinstance(partial, dict):
-        yield from _yield_err_line("No partial_state in pipeline.json — cannot resume this task")
-        return
+        reconstructed_state = reconstruct_partial_state_from_flat_snapshot(raw)
+        has_any_output = any(
+            key.endswith("_output") and isinstance(value, str) and value.strip()
+            for key, value in reconstructed_state.items()
+        )
+        if not has_any_output:
+            yield from _yield_err_line(
+                "No partial_state and no step outputs in pipeline.json — cannot resume this task"
+            )
+            return
+        logger.warning(
+            "resume: partial_state missing in pipeline.json — reconstructing from flat snapshot (task=%s)",
+            task_id,
+        )
+        partial = reconstructed_state
     if not resume_step or not isinstance(resume_step, str):
         yield from _yield_err_line("Missing resume_from_step in pipeline.json")
         return

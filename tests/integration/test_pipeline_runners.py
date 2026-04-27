@@ -580,8 +580,9 @@ def test_run_pipeline_stream_builds_verification_contract_from_deliverables(tmp_
     ]
 
 
-def test_run_pipeline_stream_blocks_write_errors_without_review_dev(tmp_path):
+def test_run_pipeline_stream_surfaces_write_errors_as_warnings(tmp_path, monkeypatch):
     step_ids = ["dev"]
+    monkeypatch.setenv("SWARM_MAX_DEV_PATCH_RETRIES", "0")
 
     def fake_run_step_with_stream_progress(step_id, step_func, state):
         state["dev_output"] = '<swarm_patch path="app.py">broken</swarm_patch>'
@@ -632,8 +633,13 @@ def test_run_pipeline_stream_blocks_write_errors_without_review_dev(tmp_path):
         "backend.App.orchestration.application.enforcement.gate_runner.run_all_gates",
         return_value=[GateResult(True, "build_gate")],
     ):
-        with pytest.raises(RuntimeError, match="write_integrity_gate failed"):
-            list(run_pipeline_stream("input", pipeline_steps=step_ids))
+        events, final_state = _drain_generator_with_return(
+            run_pipeline_stream("input", pipeline_steps=step_ids)
+        )
+
+    assert events, "pipeline must produce events, not crash"
+    warnings_text = str((final_state or {}).get("verification_gate_warnings") or "")
+    assert "write_integrity_gate" in warnings_text or "hunk 1 failed" in warnings_text
 
 
 def test_run_pipeline_stream_blocks_devops_without_command_evidence(tmp_path):

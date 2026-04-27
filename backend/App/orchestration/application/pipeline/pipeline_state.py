@@ -184,6 +184,11 @@ class PipelineState(TypedDict, total=False):
     audio_generator_output: str
     audio_generator_model: str
     audio_generator_provider: str
+    asset_fetcher_output: str
+    asset_fetcher_model: str
+    asset_fetcher_provider: str
+    asset_fetcher_manifest: dict[str, Any]
+    asset_fetcher_records: list[dict[str, Any]]
     analyze_code_output: str
     code_diagram_output: str
     code_diagram_model: str
@@ -347,6 +352,7 @@ ARTIFACT_AGENT_OUTPUT_KEYS: tuple[tuple[str, str], ...] = (
     ("human_ui_designer", "ui_designer_human_output"),
     ("image_generator", "image_generator_output"),
     ("audio_generator", "audio_generator_output"),
+    ("asset_fetcher", "asset_fetcher_output"),
     ("analyze_code", "analyze_code_output"),
     ("generate_documentation", "generate_documentation_output"),
     ("problem_spotter", "problem_spotter_output"),

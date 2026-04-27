@@ -187,9 +187,30 @@ def test_snapshot_for_task_filters_other_tasks():
     record_step("pm", 100.0, task_id="task-a", step_delta={"pm_model": "gpt-4o"})
     record_step("pm", 200.0, task_id="task-b", step_delta={"pm_model": "gpt-4o-mini"})
     snap = snapshot_for_task("task-a")
-    assert snap["steps"]["pm"]["count"] == 1
-    assert snap["steps"]["pm"]["max_ms"] == 100.0
+    pm_row = next(row for row in snap["steps"] if row["step_id"] == "pm")
+    assert pm_row["count"] == 1
+    assert pm_row["max_ms"] == 100.0
     assert snap["role_model_top"][0]["model"] == "gpt-4o"
+
+
+def test_snapshot_for_task_returns_array_of_rows_for_frontend():
+    record_step(
+        "dev", 50.0, task_id="task-x",
+        step_delta={
+            "dev_model": "claude",
+            "_step_input_tokens": 120,
+            "_step_output_tokens": 80,
+            "_step_tool_calls_count": 3,
+        },
+    )
+    snap = snapshot_for_task("task-x")
+    assert isinstance(snap["steps"], list), "frontend expects steps as array of rows"
+    assert len(snap["steps"]) == 1
+    row = snap["steps"][0]
+    assert row["step_id"] == "dev"
+    assert row["input_tokens"] == 120
+    assert row["output_tokens"] == 80
+    assert row["tool_calls_count"] == 3
 
 
 # ---------------------------------------------------------------------------

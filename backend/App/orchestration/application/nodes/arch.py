@@ -21,6 +21,7 @@ from backend.App.orchestration.application.nodes._shared import (
     _artifact_memory_lines,
     _cfg_model,
     _documentation_locale_line,
+    _web_research_guidance_block,
     _llm_planning_agent_run,
     _make_human_agent,
     _make_reviewer_agent,
@@ -93,6 +94,7 @@ def arch_node(state: PipelineState) -> dict[str, Any]:
         ctx
         + _swarm_prompt_prefix(state)
         + _documentation_locale_line(state)
+        + _web_research_guidance_block(state, role="architect")
         + planning_mcp_tool_instruction(state)
         + _project_knowledge_block(state, step_id="architect")
         + "User task:\n"

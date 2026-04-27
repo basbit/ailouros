@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import queue
 import threading
 import time
@@ -370,15 +371,29 @@ def _build_prompt(event_type: str, path: str) -> str:
     )
 
 
+_THINK_TAG_RE = re.compile(
+    r"<(?:think|reasoning|thinking)>.*?</(?:think|reasoning|thinking)>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _strip_reasoning_tags(raw: str) -> str:
+    if not raw:
+        return raw
+    return _THINK_TAG_RE.sub("", raw).strip()
+
+
 def _extract_json_payload(raw: str) -> dict[str, str]:
     import json as _json
 
-    clean = raw.strip()
+    clean = _strip_reasoning_tags(raw or "").strip()
     if clean.startswith("```"):
-        clean = clean.split("```")[1]
-        if clean.startswith("json"):
-            clean = clean[4:]
-        clean = clean.strip()
+        fenced_parts = clean.split("```")
+        if len(fenced_parts) >= 2:
+            clean = fenced_parts[1]
+            if clean.startswith("json"):
+                clean = clean[4:]
+            clean = clean.strip()
 
     try:
         return _json.loads(clean)
@@ -393,6 +408,15 @@ def _extract_json_payload(raw: str) -> dict[str, str]:
 def _should_ignore_event_path(path: str) -> bool:
     parts = {part.strip() for part in Path(path).parts}
     return ".swarm" in parts
+
+
+def _background_max_tokens() -> int:
+    env_value = os.getenv("SWARM_BACKGROUND_AGENT_MAX_TOKENS", "").strip()
+    if env_value.isdigit():
+        parsed_int = int(env_value)
+        if parsed_int >= 64:
+            return parsed_int
+    return 512
 
 
 def _call_llm(
@@ -429,7 +453,7 @@ def _call_llm(
             remote_provider=(remote_provider or "").strip() or None,
             remote_api_key=(remote_api_key or "").strip() or None,
             remote_base_url=(remote_base_url or "").strip() or None,
-            max_tokens=256,
+            max_tokens=_background_max_tokens(),
         )
         cred_kwargs = selector.ask_kwargs(cfg)
 
@@ -456,16 +480,17 @@ def _call_llm(
         )  # INV-1
         return parsed
     except Exception as exc:
-        logger.warning("BackgroundAgent: failed to parse LLM response: %s", exc)
-        return {
-            "message": (
-                raw[:200]
-                if raw
-                else f"Background agent returned unreadable output for {event_type}: {path}"
-            ),
-            "severity": "warning",
-            "suggested_action": "Review the change manually and inspect background-agent logs if this keeps happening.",
-        }
+        logger.error(
+            "BackgroundAgent: model %r returned non-JSON output for event=%s path=%s. "
+            "Increase SWARM_BACKGROUND_AGENT_MAX_TOKENS, pick a model with stronger "
+            "instruction-following, or disable the agent (background_agent=false). "
+            "parse_error=%s raw_preview=%r",
+            resolved_model, event_type, path, exc, (raw or "")[:300],
+        )
+        raise RuntimeError(
+            f"BackgroundAgent: non-JSON output from model {resolved_model!r} "
+            f"for {event_type} {path} — parse_error={exc}"
+        ) from exc
 
 
 class BackgroundAgent:

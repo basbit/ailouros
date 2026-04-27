@@ -35,6 +35,7 @@ _AGENT_STATE_KEYS: dict[str, tuple[str, str, str]] = {
     "ui_designer": ("ui_designer_output", "ui_designer_model", "ui_designer_provider"),
     "image_generator": ("image_generator_output", "image_generator_model", "image_generator_provider"),
     "audio_generator": ("audio_generator_output", "audio_generator_model", "audio_generator_provider"),
+    "asset_fetcher": ("asset_fetcher_output", "asset_fetcher_model", "asset_fetcher_provider"),
     "analyze_code": ("analyze_code_output", "", ""),
     "generate_documentation": (
         "generate_documentation_output",

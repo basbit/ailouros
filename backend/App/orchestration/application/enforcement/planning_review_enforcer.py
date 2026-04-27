@@ -242,5 +242,13 @@ def run_planning_review_retry_loop(
                 "Proceeding with current output. Consider human review."
             ),
         }
+        from backend.App.orchestration.application.enforcement.ring_escalation_recorder import (
+            record_ring_unresolved_escalation,
+        )
+        record_ring_unresolved_escalation(
+            state, step_id=step_id, verdict=verdict,
+            retries=retries, max_retries=allowed_retries,
+            reason=f"planning review {step_id} exhausted retries with NEEDS_WORK",
+        )
 
     enforce_planning_review_gate(state, step_id=step_id, review_output=review_output)

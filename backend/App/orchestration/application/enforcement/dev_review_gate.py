@@ -124,8 +124,24 @@ def run_dev_review_quality_gate(
                 "Proceeding to QA. Consider human review."
             ),
         }
+        from backend.App.orchestration.application.enforcement.ring_escalation_recorder import (
+            record_ring_unresolved_escalation,
+        )
+        record_ring_unresolved_escalation(
+            state, step_id="review_dev", verdict=verdict,
+            retries=dev_retries, max_retries=max_retries,
+            reason="review_dev exhausted retries with NEEDS_WORK — proceeding to QA",
+        )
 
     if decision == "escalate":
+        from backend.App.orchestration.application.enforcement.ring_escalation_recorder import (
+            record_ring_unresolved_escalation,
+        )
+        record_ring_unresolved_escalation(
+            state, step_id="review_dev", verdict=verdict,
+            retries=dev_retries, max_retries=max_retries,
+            reason="review_dev decision=escalate",
+        )
         if is_human_gate_in_pipeline(state, "human_dev"):
             raise HumanApprovalRequired(
                 step="review_dev",

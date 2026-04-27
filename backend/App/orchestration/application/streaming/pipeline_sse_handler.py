@@ -36,6 +36,53 @@ from backend.App.orchestration.application.streaming.stream_finalise import (
 
 logger = logging.getLogger(__name__)
 
+_RUNTIME_STATE_KEYS_FOR_DISK: tuple[str, ...] = (
+    "pipeline_metrics",
+    "verification_gates",
+    "verification_gate_warnings",
+    "verification_contract",
+    "open_defects",
+    "clustered_open_defects",
+    "dev_manifest",
+    "dev_workspace_diff",
+    "deliverable_write_mapping",
+    "filesystem_truth",
+    "must_exist_files",
+    "production_paths",
+    "spec_symbols",
+    "placeholder_allow_list",
+    "step_retries",
+    "workspace_writes",
+    "workspace_root",
+    "task_id",
+    "agent_config",
+    "input",
+    "user_task",
+)
+
+
+def _merge_runtime_state_into_snapshot(
+    pipeline_snapshot: dict[str, Any],
+    final_pipeline_state: dict[str, Any],
+) -> None:
+    if not isinstance(final_pipeline_state, dict) or not final_pipeline_state:
+        return
+    for state_key in _RUNTIME_STATE_KEYS_FOR_DISK:
+        if state_key not in final_pipeline_state:
+            continue
+        runtime_value = final_pipeline_state[state_key]
+        if runtime_value is None:
+            continue
+        if state_key in pipeline_snapshot:
+            existing_value = pipeline_snapshot[state_key]
+            if isinstance(existing_value, dict) and existing_value:
+                continue
+            if isinstance(existing_value, list) and existing_value:
+                continue
+            if isinstance(existing_value, str) and existing_value.strip():
+                continue
+        pipeline_snapshot[state_key] = runtime_value
+
 
 class PipelineSSEHandler:
     def __init__(
@@ -87,8 +134,16 @@ class PipelineSSEHandler:
         workspace_apply_writes: bool,
         cancel_event: Optional[threading.Event],
     ) -> Generator[str, None, None]:
+        final_pipeline_state: dict[str, Any] = {}
         try:
-            for event in events_gen:
+            while True:
+                try:
+                    event = next(events_gen)
+                except StopIteration as pipeline_completed:
+                    if isinstance(pipeline_completed.value, dict):
+                        final_pipeline_state = pipeline_completed.value
+                    break
+
                 if "agent" not in event:
                     msg_ev = str(event.get("message") or "")
                     if msg_ev:
@@ -242,6 +297,8 @@ class PipelineSSEHandler:
             yield build_done(now, request_model)
             yield "data: [DONE]\n\n"
             return
+
+        _merge_runtime_state_into_snapshot(pipeline_snapshot, final_pipeline_state)
 
         yield from stream_finalise(
             task_id,

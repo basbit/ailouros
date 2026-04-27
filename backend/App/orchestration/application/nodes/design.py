@@ -26,6 +26,7 @@ from backend.App.orchestration.application.nodes._shared import (
     _project_knowledge_block,
     _stream_progress_emit,
     _swarm_prompt_prefix,
+    _web_research_guidance_block,
     planning_mcp_tool_instruction,
     _remote_api_client_kwargs_for_role,
     _skills_extra_for_role_cfg,
@@ -80,6 +81,7 @@ def _run_planning_role_node(
         ctx
         + _swarm_prompt_prefix(state)
         + _documentation_locale_line(state)
+        + _web_research_guidance_block(state, role=role_id)
         + planning_mcp_tool_instruction(state)
         + _project_knowledge_block(state)
         + instruction
@@ -463,3 +465,10 @@ def audio_generator_node(state: PipelineState) -> dict[str, Any]:
         model_key="audio_generator_model",
         provider_key="audio_generator_provider",
     )
+
+
+def asset_fetcher_node(state: PipelineState) -> dict[str, Any]:
+    from backend.App.orchestration.application.nodes.asset_fetcher import (
+        run_asset_fetcher,
+    )
+    return run_asset_fetcher(state)
