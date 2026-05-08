@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 
 import pytest
 
-from backend.App.paths import artifacts_root
+from backend.App.paths import APP_ROOT, artifacts_root
 from backend.App.testing.application.use_cases.run_visual_probe import RunVisualProbe
 from backend.App.testing.domain.ports import VisualProbeConfig
 from backend.App.testing.infrastructure.visual_probe import (
@@ -15,6 +16,24 @@ from backend.App.testing.infrastructure.visual_probe import (
 )
 
 
+def _playwright_runtime_available() -> bool:
+    bin_name = "playwright.cmd" if os.name == "nt" else "playwright"
+    candidate_node_modules = (
+        APP_ROOT / "frontend" / "node_modules" / ".bin" / bin_name,
+        APP_ROOT / "node_modules" / ".bin" / bin_name,
+    )
+    if not any(candidate.is_file() for candidate in candidate_node_modules):
+        return False
+    chromium_cache = Path.home() / ".cache" / "ms-playwright"
+    if not chromium_cache.is_dir():
+        return False
+    return any(chromium_cache.glob("chromium-*"))
+
+
+@pytest.mark.skipif(
+    not _playwright_runtime_available(),
+    reason="Playwright npm package or chromium browser is not installed locally",
+)
 def test_visual_probe_golden_static_page_with_har_and_trace(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
