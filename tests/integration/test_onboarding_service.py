@@ -15,6 +15,7 @@ from backend.App.integrations.application.onboarding_service import (
     _default_mcp_recommendations,
     _detect_stack,
     _parse_preconfigure_response,
+    _resolve_default_base_model,
     _sanitize_mcp_recommendations,
     _suggest_context_mode,
     _workspace_has_git_repo,
@@ -360,3 +361,25 @@ def test_run_ai_preconfigure_custom_model(tmp_path):
     ):
         result = run_ai_preconfigure(str(tmp_path), base_model="my-custom-model")
     assert result.base_model == "my-custom-model"
+
+
+# ---------------------------------------------------------------------------
+# _resolve_default_base_model
+# ---------------------------------------------------------------------------
+
+def test_resolve_default_base_model_explicit_env_wins(monkeypatch):
+    monkeypatch.setenv("SWARM_ONBOARDING_BASE_MODEL", "openai/custom")
+    monkeypatch.setenv("AILOUROS_DESKTOP", "1")
+    assert _resolve_default_base_model() == "openai/custom"
+
+
+def test_resolve_default_base_model_desktop_default(monkeypatch):
+    monkeypatch.delenv("SWARM_ONBOARDING_BASE_MODEL", raising=False)
+    monkeypatch.setenv("AILOUROS_DESKTOP", "1")
+    assert _resolve_default_base_model() == "openai/local-default"
+
+
+def test_resolve_default_base_model_web_default(monkeypatch):
+    monkeypatch.delenv("SWARM_ONBOARDING_BASE_MODEL", raising=False)
+    monkeypatch.delenv("AILOUROS_DESKTOP", raising=False)
+    assert _resolve_default_base_model() == "lm_studio/allenai/olmo-3-32b-think"

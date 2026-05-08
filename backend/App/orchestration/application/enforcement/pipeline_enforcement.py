@@ -4,10 +4,15 @@ import logging
 from collections.abc import Callable, Generator
 from typing import Any
 
+from backend.App.orchestration.application.enforcement.dev_patch_errors_enforcer import (
+    enforce_dev_patch_errors,
+)
 from backend.App.orchestration.application.enforcement.dev_review_gate import run_dev_review_quality_gate
 from backend.App.orchestration.application.enforcement.dev_verification_gate import run_post_dev_verification_gates
 from backend.App.orchestration.application.enforcement.enforcement_policy import (
     critical_review_step_to_output_key,
+    dev_verification_step_id,
+    devops_script_contract_step_ids,
     is_empty_review as _is_empty_review,
     max_planning_review_retries as _max_planning_review_retries,
     min_review_content_chars as _min_review_content_chars_fn,
@@ -26,6 +31,12 @@ from backend.App.orchestration.application.enforcement.planning_review_enforcer 
     enter_fix_cycle_or_escalate,
     run_planning_review_retry_loop,
 )
+from backend.App.orchestration.application.enforcement.devops_script_contract import (
+    enforce_devops_script_contract,
+)
+from backend.App.orchestration.application.enforcement.pre_review_blockers import (
+    enforce_pre_review_blockers,
+)
 from backend.App.orchestration.application.enforcement.review_qa_gate import run_qa_review_quality_gate
 from backend.App.orchestration.application.enforcement.swarm_file_enforcer import enforce_swarm_file_tags
 from backend.App.orchestration.application.enforcement.verification_contract import (
@@ -43,6 +54,8 @@ _logger = logging.getLogger(__name__)
 _CRITICAL_REVIEW_STEP_TO_OUTPUT_KEY: dict[str, str] = critical_review_step_to_output_key()
 _MIN_REVIEW_CONTENT_CHARS: int = _min_review_content_chars_fn()
 _ARTIFACT_OUTPUT_KEY_BY_STEP: dict[str, str] = dict(ARTIFACT_AGENT_OUTPUT_KEYS)
+_DEV_VERIFICATION_STEP_ID: str = dev_verification_step_id()
+_DEVOPS_SCRIPT_CONTRACT_STEP_IDS: frozenset[str] = devops_script_contract_step_ids()
 
 _should_block_for_human = is_human_gate_in_pipeline
 
@@ -64,7 +77,7 @@ def run_post_step_enforcement(
             resolve_step, run_step_with_stream_progress, emit_completed,
         )
 
-    if step_id == "dev":
+    if step_id == _DEV_VERIFICATION_STEP_ID:
         yield from enforce_swarm_file_tags(
             state,
             resolve_step=resolve_step,
@@ -73,6 +86,18 @@ def run_post_step_enforcement(
             emit_completed=emit_completed,
         )
         gate_results = run_post_dev_verification_gates(state)
+        while state.get("_dev_patch_errors_for_retry"):
+            previous_retry_count = int(state.get("_dev_patch_retry_count") or 0)
+            yield from enforce_dev_patch_errors(
+                state,
+                resolve_step=resolve_step,
+                base_agent_config=base_agent_config,
+                run_step_with_stream_progress=run_step_with_stream_progress,
+                emit_completed=emit_completed,
+            )
+            if int(state.get("_dev_patch_retry_count") or 0) == previous_retry_count:
+                break
+            gate_results = run_post_dev_verification_gates(state)
         transition_pipeline_phase(state, machine, PipelinePhase.VERIFY, source="verification_layer")
         if gate_results:
             yield {
@@ -80,6 +105,12 @@ def run_post_step_enforcement(
                 "status": "completed",
                 "message": verification_layer_status_message(gate_results),
             }
+        enforce_pre_review_blockers(state)
+
+    if step_id in _DEVOPS_SCRIPT_CONTRACT_STEP_IDS:
+        enforce_devops_script_contract(state)
+        if state.get("_failed_trusted_gates"):
+            enforce_pre_review_blockers(state)
 
     if step_id == "review_dev":
         yield from run_dev_review_quality_gate(

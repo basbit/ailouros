@@ -1,0 +1,96 @@
+{
+  "id": "research_brief",
+  "title": "Research Brief",
+  "category": "research",
+  "description": "Produce a cited research brief end to end: clarify the question, plan angles via PM/BA, gather sources via web_researcher, judge credibility via source_reviewer, synthesize into brief.md, then fact-check every claim against its source.",
+  "pipeline_steps": [
+    "clarify_input",
+    "pm",
+    "review_pm",
+    "ba",
+    "review_ba",
+    "crole_web_researcher",
+    "crole_source_reviewer",
+    "crole_synthesis_writer",
+    "crole_fact_checker"
+  ],
+  "default_gates": [],
+  "expected_artifacts": [
+    "pipeline.json",
+    "agents/pm.txt",
+    "agents/ba.txt",
+    "agents/crole_web_researcher.txt",
+    "agents/crole_source_reviewer.txt",
+    "agents/crole_synthesis_writer.txt",
+    "agents/crole_fact_checker.txt"
+  ],
+  "required_tools": ["web_search"],
+  "workspace_write_default": false,
+  "recommended_models": {
+    "planner": "strong",
+    "research": "fast",
+    "synthesis": "strong"
+  },
+  "agent_config_defaults": {
+    "custom_roles": {
+      "web_researcher": {
+        "prompt_text": "You are a Web Researcher. Given the BA spec above, list 5-8 candidate sources that would answer the research question. For each source emit a JSON object with keys: title, url_or_query, source_type (academic | industry_report | news | docs | blog | dataset | other), why_relevant (1-2 sentences), freshness_required (true|false). Output a single ```json fenced array of those objects. Do NOT invent specific URLs unless you are confident they exist; if uncertain emit a search-query string in url_or_query and note 'unverified' in why_relevant."
+      },
+      "source_reviewer": {
+        "prompt_text": "You are a Source Reviewer. Given the candidate sources from web_researcher above, judge each source's credibility on three axes: authority (who wrote it), recency (how fresh), and bias (any obvious slant). Emit a single ```json fenced array of objects with keys: title, authority (high|medium|low), recency (current|recent|stale|unknown), bias (none|moderate|high), keep (true|false), reason (1 sentence). Reject (keep=false) only when authority is low AND bias is high — be permissive but explicit."
+      },
+      "synthesis_writer": {
+        "prompt_text": "You are a Synthesis Writer. Using the kept sources from source_reviewer, produce a concise research brief in markdown with these sections: ## Question (one sentence), ## Key Findings (3-5 bullets), ## Evidence (table mapping claim → source title), ## Open Questions (2-4 bullets). Keep total length under 1200 words. Cite only sources that source_reviewer kept. Do NOT add new sources."
+      },
+      "fact_checker": {
+        "prompt_text": "You are a Fact Checker. Read the synthesis_writer brief above. For every factual claim in the Evidence table, verify it is supported by the listed source per source_reviewer's notes. Emit a ```json fenced object with keys: verified_claims (array of strings), unverified_claims (array of strings), source_count (int), keep_count (int from source_reviewer), recommendations (array of short strings). If any claim has no listed source, put it under unverified_claims."
+      }
+    }
+  },
+  "tags": ["research", "executable", "read_only"],
+  "inputs": [
+    {
+      "key": "prompt",
+      "label": "Research question",
+      "hint": "The question to investigate. Be specific about scope, audience, and freshness.",
+      "required": true
+    }
+  ],
+  "quality_checks": [
+    {
+      "id": "core_artifacts_present",
+      "type": "artifact_count",
+      "severity": "error",
+      "blocking": true,
+      "config": {"min": 5}
+    },
+    {
+      "id": "synthesis_substantive",
+      "type": "agent_output_min_chars",
+      "severity": "error",
+      "blocking": false,
+      "config": {"agent": "crole_synthesis_writer", "min_chars": 400}
+    },
+    {
+      "id": "fact_check_present",
+      "type": "agent_output_min_chars",
+      "severity": "warning",
+      "blocking": false,
+      "config": {"agent": "crole_fact_checker", "min_chars": 100}
+    },
+    {
+      "id": "min_kept_sources",
+      "type": "min_source_count",
+      "severity": "warning",
+      "blocking": false,
+      "config": {"agent": "crole_source_reviewer", "min": 3}
+    },
+    {
+      "id": "all_claims_have_sources",
+      "type": "no_unverified_claims",
+      "severity": "warning",
+      "blocking": false,
+      "config": {"agent": "crole_fact_checker"}
+    }
+  ]
+}

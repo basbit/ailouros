@@ -1,0 +1,77 @@
+{
+  "id": "fix_bug",
+  "title": "Fix Bug",
+  "category": "development",
+  "description": "Diagnose and fix a defect with minimal blast radius: clarify the symptom, analyze the code, plan the smallest patch, implement, and verify with QA before a final human gate.",
+  "pipeline_steps": [
+    "clarify_input",
+    "analyze_code",
+    "problem_spotter",
+    "dev_lead",
+    "review_dev_lead",
+    "dev",
+    "review_dev",
+    "qa",
+    "review_qa",
+    "human_qa"
+  ],
+  "default_gates": ["human_qa"],
+  "expected_artifacts": [
+    "pipeline.json",
+    "agents/analyze_code.txt",
+    "agents/problem_spotter.txt",
+    "agents/dev.txt",
+    "agents/qa.txt"
+  ],
+  "required_tools": ["workspace_write"],
+  "workspace_write_default": true,
+  "recommended_models": {
+    "analysis": "strong",
+    "dev": "strong",
+    "review": "fast"
+  },
+  "agent_config_defaults": {},
+  "tags": ["development", "bugfix", "writes_files"],
+  "inputs": [
+    {
+      "key": "prompt",
+      "label": "Bug report",
+      "hint": "Describe the symptom, reproduction steps, and expected behavior.",
+      "required": true
+    },
+    {
+      "key": "workspace_root",
+      "label": "Workspace path",
+      "hint": "Path to the affected repository.",
+      "required": true
+    },
+    {
+      "key": "workspace_write",
+      "label": "Allow writes to workspace",
+      "hint": "Needed to apply the patch."
+    }
+  ],
+  "quality_checks": [
+    {
+      "id": "core_artifacts_present",
+      "type": "artifact_count",
+      "severity": "error",
+      "blocking": true,
+      "config": {"min": 3}
+    },
+    {
+      "id": "analysis_output_substantive",
+      "type": "agent_output_min_chars",
+      "severity": "error",
+      "blocking": false,
+      "config": {"agent": "analyze_code", "min_chars": 150}
+    },
+    {
+      "id": "dev_output_substantive",
+      "type": "agent_output_min_chars",
+      "severity": "error",
+      "blocking": false,
+      "config": {"agent": "dev", "min_chars": 100}
+    }
+  ]
+}

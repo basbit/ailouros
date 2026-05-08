@@ -1,7 +1,9 @@
 """Extended tests for backend/App/integrations/infrastructure/llm/cache.py."""
 from unittest.mock import MagicMock, patch
 
+import pytest
 
+from backend.App.integrations.infrastructure.llm import cache as _cache_module
 from backend.App.integrations.infrastructure.llm.cache import (
     _redis_socket_timeout_params,
     cache_enabled,
@@ -10,6 +12,21 @@ from backend.App.integrations.infrastructure.llm.cache import (
     get_cached,
     set_cached,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_cache_module_state():
+    _cache_module._redis_unavailable = False
+    _cache_module._cached_redis_client = None
+    _cache_module._cached_redis_url = ""
+    _cache_module._lru_cache.clear()
+    _cache_module._lru_keys.clear()
+    yield
+    _cache_module._redis_unavailable = False
+    _cache_module._cached_redis_client = None
+    _cache_module._cached_redis_url = ""
+    _cache_module._lru_cache.clear()
+    _cache_module._lru_keys.clear()
 
 
 # ---------------------------------------------------------------------------

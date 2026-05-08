@@ -1,0 +1,7 @@
+{
+  "scenario_id": "code_review",
+  "model_profile": {
+    "analyze_code": "qwen2.5-coder",
+    "problem_spotter": "claude-3-5-haiku"
+  }
+}

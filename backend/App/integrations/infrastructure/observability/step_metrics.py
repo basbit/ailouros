@@ -160,20 +160,26 @@ def snapshot() -> dict[str, Any]:
 def snapshot_for_task(task_id: str) -> dict[str, Any]:
     task_key = str(task_id or "").strip()
     if not task_key:
-        return {"steps": {}, "role_model_top": [], "updated_at": time.time()}
+        return {"task_id": task_id, "steps": [], "role_model_top": [], "updated_at": time.time()}
     with _lock:
-        task_steps = {}
+        task_steps_list: list[dict[str, Any]] = []
         for sid, samples in _task_step_duration_ms.get(task_key, {}).items():
             if not samples:
                 continue
-            s = sorted(samples)
-            mid = s[len(s) // 2]
-            task_steps[sid] = {
+            sorted_samples = sorted(samples)
+            mid = sorted_samples[len(sorted_samples) // 2]
+            tokens_for_step = dict(_task_step_token_totals.get(task_key, {}).get(sid, {}))
+            task_steps_list.append({
+                "step_id": sid,
                 "count": _task_step_counts.get(task_key, {}).get(sid, 0),
                 "p50_ms": round(mid, 2),
-                "max_ms": round(max(s), 2),
-                "tokens": dict(_task_step_token_totals.get(task_key, {}).get(sid, {})),
-            }
+                "max_ms": round(max(sorted_samples), 2),
+                "input_tokens": int(tokens_for_step.get("input_tokens", 0) or 0),
+                "output_tokens": int(tokens_for_step.get("output_tokens", 0) or 0),
+                "retrieved_tokens": int(tokens_for_step.get("retrieved_tokens", 0) or 0),
+                "tool_calls_count": int(tokens_for_step.get("tool_calls_count", 0) or 0),
+                "tokens": tokens_for_step,
+            })
         rm = [
             {"step": a, "model": b, "calls": c}
             for (a, b), c in sorted(
@@ -182,7 +188,8 @@ def snapshot_for_task(task_id: str) -> dict[str, Any]:
             )[:80]
         ]
         return {
-            "steps": task_steps,
+            "task_id": task_id,
+            "steps": task_steps_list,
             "role_model_top": rm,
             "updated_at": time.time(),
         }

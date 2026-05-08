@@ -4,11 +4,15 @@ import logging
 import os
 import re
 import time
-from pathlib import Path
+from string import Template
 from typing import Any, Optional
 
 from backend.App.orchestration.infrastructure.agents.dev_agent import DevAgent
 from backend.App.integrations.infrastructure.pattern_memory import format_pattern_memory_block
+from backend.App.orchestration.application.enforcement.enforcement_policy import (
+    dev_runner_policy,
+    swarm_env_strings_that_mean_enabled,
+)
 from backend.App.orchestration.application.pipeline.ephemeral_state import ephemeral_as_dict
 from backend.App.orchestration.application.pipeline.pipeline_state import PipelineState
 from backend.App.orchestration.application.nodes._shared import (
@@ -43,99 +47,107 @@ from backend.App.orchestration.application.nodes.dev_subtasks import (
     _dev_devops_max_chars,
     _dev_spec_max_chars,
 )
+from backend.App.orchestration.application.nodes._dev_runner_paths import (
+    extract_subtask_workspace_contract as _extract_subtask_workspace_contract,
+    is_path_covered as _path_covered,
+)
+from backend.App.orchestration.application.nodes._dev_runner_small_task import (
+    read_last_mcp_writes as _read_last_mcp_writes,
+    small_task_missing_path_batches as _small_task_missing_path_batches,
+    small_task_profile as _small_task_profile,
+)
+from backend.App.shared.infrastructure.app_config_load import load_app_config_json
 
 logger = logging.getLogger(__name__)
 
 
-def _path_covered(expected: str, produced_paths: list[str]) -> bool:
-    exp_norm = expected.lstrip("./").replace("\\", "/")
-    exp_basename = exp_norm.rsplit("/", 1)[-1]
-    for p in produced_paths:
-        p_norm = p.lstrip("./").replace("\\", "/")
-        if p_norm == exp_norm:
-            return True
-        if p_norm.endswith("/" + exp_norm) or exp_norm.endswith("/" + p_norm):
-            return True
-        p_basename = p_norm.rsplit("/", 1)[-1]
-        if exp_basename and p_basename == exp_basename:
-            return True
+def _prompt_section(section_name: str) -> dict[str, Any]:
+    value = load_app_config_json("prompt_fragments.json").get(section_name)
+    if not isinstance(value, dict):
+        raise RuntimeError(f"prompt_fragments.{section_name} is not configured")
+    return value
+
+
+def _prompt_text(section_name: str, key: str) -> str:
+    value = str(_prompt_section(section_name).get(key) or "")
+    if not value:
+        raise RuntimeError(f"prompt_fragments.{section_name}.{key} is empty")
+    return value
+
+
+def _render_prompt_text(section_name: str, key: str, **values: Any) -> str:
+    return Template(_prompt_text(section_name, key)).safe_substitute(**values)
+
+
+def _dev_runner_prompt(key: str, **values: Any) -> str:
+    return _render_prompt_text("dev_runner_prompts", key, **values)
+
+
+def _dev_file_write_guidance(key: str) -> str:
+    return _prompt_text("dev_file_write_guidance", key)
+
+
+def _configured_bool(environment_key_name: str, default_key: str) -> bool:
+    policy = dev_runner_policy()
+    environment_key = str(policy.get(environment_key_name) or "").strip()
+    environment_value = os.environ.get(environment_key, "").strip().lower() if environment_key else ""
+    if environment_value:
+        return environment_value in swarm_env_strings_that_mean_enabled()
+    return bool(policy.get(default_key))
+
+
+def _configured_int(environment_key_name: str, default_key: str) -> int:
+    policy = dev_runner_policy()
+    environment_key = str(policy.get(environment_key_name) or "").strip()
+    environment_value = os.environ.get(environment_key, "").strip() if environment_key else ""
+    if environment_value:
+        try:
+            return int(environment_value)
+        except ValueError:
+            return int(policy.get(default_key) or 0)
+    return int(policy.get(default_key) or 0)
+
+
+def _workspace_action_pattern() -> re.Pattern[str]:
+    pattern = str(dev_runner_policy().get("workspace_action_pattern") or "")
+    if not pattern:
+        raise RuntimeError("pipeline_enforcement_policy.dev_runner.workspace_action_pattern is empty")
+    return re.compile(pattern, re.IGNORECASE)
+
+
+def _configured_refusal_markers() -> tuple[str, ...]:
+    policy = dev_runner_policy()
+    environment_key = str(policy.get("refusal_markers_environment_key") or "").strip()
+    environment_value = os.environ.get(environment_key, "").strip() if environment_key else ""
+    if environment_value:
+        return tuple(
+            marker.strip().lower()
+            for marker in environment_value.split(",")
+            if marker.strip()
+        )
+    configured_markers = policy.get("refusal_markers")
+    if not isinstance(configured_markers, list):
+        return tuple()
+    return tuple(
+        str(marker).strip().lower()
+        for marker in configured_markers
+        if str(marker).strip()
+    )
+
+
+def tasks_share_expected_paths(tasks: list[dict[str, Any]]) -> bool:
+    owners: dict[str, str] = {}
+    for idx, task in enumerate(tasks):
+        task_id = str(task.get("id") or idx + 1)
+        for raw_path in task.get("expected_paths") or []:
+            path = str(raw_path or "").strip().replace("\\", "/")
+            if not path:
+                continue
+            previous_owner = owners.get(path)
+            if previous_owner is not None and previous_owner != task_id:
+                return True
+            owners[path] = task_id
     return False
-
-
-def _normalize_produced_path(raw: str, workspace_root: str) -> str:
-    if not raw:
-        return raw
-    normalized = raw.replace("\\", "/")
-    if workspace_root:
-        ws = workspace_root.rstrip("/").replace("\\", "/") + "/"
-        if normalized.startswith(ws):
-            return normalized[len(ws):]
-        if normalized == ws.rstrip("/"):
-            return "."
-    return normalized
-
-
-def _extract_subtask_workspace_contract(
-    state: PipelineState,
-    output: str,
-    *,
-    mcp_actions: list[dict[str, Any]],
-) -> dict[str, Any]:
-    from backend.App.workspace.infrastructure.patch_parser import apply_workspace_pipeline
-
-    produced_paths: list[str] = []
-    workspace_root = str(state.get("workspace_root") or "").strip()
-    if workspace_root:
-        dry_run = apply_workspace_pipeline(
-            output or "",
-            Path(workspace_root),
-            dry_run=True,
-            run_shell=False,
-        )
-        for key in ("written", "patched", "udiff_applied"):
-            for rel in dry_run.get(key, []) or []:
-                norm = _normalize_produced_path(rel, workspace_root)
-                if norm and norm not in produced_paths:
-                    produced_paths.append(norm)
-    for action in mcp_actions:
-        if not isinstance(action, dict):
-            continue
-        raw = str(action.get("path") or "").strip()
-        norm = _normalize_produced_path(raw, workspace_root)
-        if norm and norm not in produced_paths:
-            produced_paths.append(norm)
-    return {
-        "produced_paths": produced_paths,
-    }
-
-
-def _small_task_profile(task: dict[str, Any]) -> dict[str, Any]:
-    expected_paths = [str(item or "").strip() for item in (task.get("expected_paths") or []) if str(item or "").strip()]
-    dependencies = [str(item or "").strip() for item in (task.get("dependencies") or []) if str(item or "").strip()]
-    is_small = len(expected_paths) <= 2 and len(dependencies) <= 2
-    return {
-        "enabled": is_small,
-        "spec_max_chars": int(os.environ.get("SWARM_DEV_SMALL_TASK_SPEC_MAX_CHARS", "6000")),
-        "code_analysis_max_chars": int(os.environ.get("SWARM_DEV_SMALL_TASK_CODE_ANALYSIS_MAX_CHARS", "2500")),
-        "duration_budget_sec": float(os.environ.get("SWARM_DEV_SMALL_TASK_DURATION_BUDGET_SEC", "120")),
-        "split_recovery_enabled": os.environ.get("SWARM_DEV_SMALL_TASK_SPLIT_RECOVERY", "1").strip() in ("1", "true", "yes"),
-        "escalation_model": os.environ.get("SWARM_DEV_SMALL_TASK_ESCALATION_MODEL", "").strip(),
-    }
-
-
-def _small_task_missing_path_batches(missing_paths: list[str]) -> list[list[str]]:
-    return [[path] for path in missing_paths if str(path or "").strip()]
-
-
-def _read_last_mcp_writes() -> tuple[int, list[dict[str, Any]]]:
-    try:
-        from backend.App.integrations.infrastructure.mcp.openai_loop.loop import _last_mcp_write_count
-        return (
-            int(getattr(_last_mcp_write_count, "count", 0) or 0),
-            list(getattr(_last_mcp_write_count, "actions", []) or []),
-        )
-    except Exception:
-        return 0, []
 
 
 def is_dev_retry_lean(state: Any) -> bool:
@@ -143,14 +155,11 @@ def is_dev_retry_lean(state: Any) -> bool:
     swarm_reprompt = bool(str(state.get("_swarm_file_reprompt") or "").strip())
     if not (prior_review or swarm_reprompt):
         return False
-    env_value = os.environ.get("SWARM_DEV_RETRY_LEAN", "1").strip().lower()
-    return env_value not in ("0", "false", "no", "off")
+    return _configured_bool("retry_lean_environment_key", "retry_lean_default")
 
 
 def is_progressive_context(state: Any) -> bool:
-    if os.environ.get("SWARM_PROGRESSIVE_CONTEXT", "0").strip().lower() not in (
-        "1", "true", "yes"
-    ):
+    if not _configured_bool("progressive_context_environment_key", "progressive_context_default"):
         return False
     from backend.App.orchestration.application.nodes._prompt_builders import (
         _workspace_context_mode_normalized,
@@ -218,10 +227,7 @@ def _run_dev_subtask(
     )
     _sem_ctx = _search_context(ephemeral_as_dict(state), f"{title} {scope[:200]}", top_k=2)
     if not scope:
-        scope = (
-            "Implement everything necessary according to the full specification within the meaning of this subtask "
-            f"({title}); if the scope is general — organize the work logically."
-        )
+        scope = _dev_runner_prompt("empty_scope_template", title=title)
     from backend.App.orchestration.application.context.context_budget import get_context_budget
     _dev_budget = get_context_budget(
         "dev",
@@ -234,23 +240,14 @@ def _run_dev_subtask(
     _progressive = not _retry_lean and is_progressive_context(state)
     if _retry_lean:
         mem = ""
-        retry_lean_note = (
-            "[Retry context] This is a re-run of the subtask after reviewer "
-            "feedback (or format-enforcement). The pattern/knowledge/sibling "
-            "context from the first run is unchanged — focus on the feedback "
-            "block below.\n\n"
-        )
+        retry_lean_note = _dev_runner_prompt("retry_lean_note")
         logger.info(
             "pipeline dev subtask %d/%d retry-lean: pattern/knowledge/sibling blocks dropped",
             i + 1, task_count,
         )
     elif _progressive:
         mem = ""
-        retry_lean_note = (
-            "[Progressive context — M-7] Pattern/knowledge/sibling blocks were not "
-            "pre-loaded (SWARM_PROGRESSIVE_CONTEXT=1, MCP mode). "
-            "Use the read_file tool to access .swarm/ if you need memory context.\n\n"
-        )
+        retry_lean_note = _dev_runner_prompt("progressive_context_note")
         logger.info(
             "pipeline dev subtask %d/%d progressive-context: memory/knowledge blocks skipped",
             i + 1, task_count,
@@ -264,20 +261,19 @@ def _run_dev_subtask(
         retry_lean_note = ""
     prior_feedback_block = ""
     if prior_review:
-        prior_feedback_block = (
-            "\n\n## Prior review feedback (NEEDS_WORK — address all issues below)\n"
-            f"{prior_review[:2000]}\n"
-            "\n## CRITICAL OUTPUT FORMAT REQUIREMENT\n"
-            "You MUST write ALL code inside <swarm_file path=\"...\">...</swarm_file> tags "
-            "or <swarm_patch path=\"...\">SEARCH/REPLACE blocks</swarm_patch>.\n"
-            "Text descriptions WITHOUT code tags will be REJECTED.\n"
+        prior_feedback_block = _dev_runner_prompt(
+            "prior_feedback_template",
+            prior_review=prior_review[:2000],
         )
     if _swarm_file_reprompt:
-        prior_feedback_block += (
-            "\n\n## IMPORTANT: File tagging correction required\n"
-            f"{_swarm_file_reprompt}\n"
+        prior_feedback_block += _dev_runner_prompt(
+            "swarm_file_reprompt_template",
+            reprompt=_swarm_file_reprompt,
         )
-    _use_summary = os.environ.get("SWARM_DEV_SUBTASK_SPEC_SUMMARY", "1").strip() != "0"
+    _use_summary = _configured_bool(
+        "subtask_spec_summary_environment_key",
+        "subtask_spec_summary_default",
+    )
     if _use_summary and scope:
         subtask_spec = spec_summary_for_subtask(spec, scope)
         logger.info(
@@ -286,24 +282,33 @@ def _run_dev_subtask(
         )
     else:
         subtask_spec = spec
-    _subtask_spec_max = int(os.environ.get("SWARM_DEV_SUBTASK_SPEC_MAX_CHARS", "0").strip() or "0")
+    _subtask_spec_max = _configured_int(
+        "subtask_spec_max_chars_environment_key",
+        "subtask_spec_max_chars_default",
+    )
     if _subtask_spec_max > 0 and len(subtask_spec) > _subtask_spec_max:
+        subtask_spec_limit_key = str(
+            dev_runner_policy().get("subtask_spec_max_chars_environment_key") or ""
+        ).strip()
         logger.info(
-            "dev subtask %d/%d: spec capped from %d to %d chars (SWARM_DEV_SUBTASK_SPEC_MAX_CHARS)",
-            i + 1, task_count, len(subtask_spec), _subtask_spec_max,
+            "dev subtask %d/%d: spec capped from %d to %d chars (%s)",
+            i + 1, task_count, len(subtask_spec), _subtask_spec_max, subtask_spec_limit_key,
         )
-        subtask_spec = subtask_spec[:_subtask_spec_max] + "\n…[subtask spec capped — set SWARM_DEV_SUBTASK_SPEC_MAX_CHARS=0 to disable]"
+        subtask_spec = subtask_spec[:_subtask_spec_max] + _dev_runner_prompt(
+            "subtask_spec_capped_suffix_template",
+            environment_key=subtask_spec_limit_key,
+        )
     subtask_ca_block = ca_block
     if small_profile["enabled"]:
         if len(subtask_spec) > small_profile["spec_max_chars"]:
             subtask_spec = (
                 subtask_spec[: small_profile["spec_max_chars"]]
-                + "\n…[small-task compact spec snapshot]"
+                + _dev_runner_prompt("small_task_compact_spec_suffix")
             )
         if len(subtask_ca_block) > small_profile["code_analysis_max_chars"]:
             subtask_ca_block = (
                 subtask_ca_block[: small_profile["code_analysis_max_chars"]]
-                + "\n…[small-task compact code analysis]"
+                + _dev_runner_prompt("small_task_compact_code_analysis_suffix")
             )
     prompt = (
         mem
@@ -315,33 +320,35 @@ def _run_dev_subtask(
         + ("" if (_retry_lean or _progressive) else _project_knowledge_block(state, step_id="dev"))
         + ("" if (_retry_lean or _progressive) else _dev_sibling_tasks_block(tasks, i))
         + retry_lean_note
-        + "[Pipeline rule] Implement according to the **stack and boundaries from the Architect section** "
-        + "in the spec below; do not substitute with PM/BA assumptions.\n\n"
-        + "[Increment] This is a **narrow subtask** for a fast model: do the **minimum** work "
-        + "for the block below, do not rewrite the whole project and do not take anything from the spec outside the scope.\n\n"
-        + "User task:\n"
-        + f"{user_ctx}\n\n"
-        + "Full specification (BA + Architect):\n"
-        + f"{subtask_spec}\n"
+        + _dev_runner_prompt("pipeline_rule")
+        + _dev_runner_prompt("increment_rule")
+        + _dev_runner_prompt("user_task_template", user_context=user_ctx)
+        + _dev_runner_prompt("full_spec_template", spec=subtask_spec)
         + f"{devops_block}"
         + f"{subtask_ca_block}\n"
         + f"{conventions_block}"
         + f"{find_reference_file(ca, scope, str(state.get('workspace_root') or ''))}"
-        + (f"\n## Relevant pipeline context\n{_sem_ctx}\n" if _sem_ctx else "")
-        + f"## Development subtask [{subtask_id}] {title}\n"
-        + f"{scope}\n"
         + (
-            "Expected workspace paths for this subtask (must be written or edited in this run):\n"
-            + "\n".join(f"- {path}" for path in expected_paths)
-            + "\n\n"
+            _dev_runner_prompt("relevant_pipeline_context_template", context=_sem_ctx)
+            if _sem_ctx else ""
+        )
+        + _dev_runner_prompt(
+            "development_subtask_template",
+            subtask_id=subtask_id,
+            title=title,
+            scope=scope,
+        )
+        + (
+            _dev_runner_prompt(
+                "expected_paths_template",
+                expected_paths="\n".join(f"- {path}" for path in expected_paths),
+            )
             if expected_paths
             else ""
         )
         + f"{prior_feedback_block}"
         + (
-            "[Small-task profile]\n"
-            "This subtask has a strict latency budget. Do the smallest correct patch, "
-            "touch only the declared files, and prefer one focused edit over broad rewrites.\n\n"
+            _dev_runner_prompt("small_task_profile")
             if small_profile["enabled"]
             else ""
         )
@@ -389,20 +396,8 @@ def _run_dev_subtask(
     if output:
         output = sanitize_control_tokens(output)
 
-    _refusal_env = os.getenv("SWARM_REFUSAL_MARKERS", "").strip()
-    _REFUSAL_MARKERS: tuple[str, ...] = (
-        tuple(m.strip().lower() for m in _refusal_env.split(",") if m.strip())
-        if _refusal_env
-        else (
-            "i'm sorry, but i can't",
-            "i cannot continue",
-            "i'm unable to",
-            "i apologize, but i",
-            "as an ai language model",
-            "i can't assist with",
-        )
-    )
-    if output and any(m in output.lower() for m in _REFUSAL_MARKERS):
+    refusal_markers = _configured_refusal_markers()
+    if output and any(marker in output.lower() for marker in refusal_markers):
         logger.warning(
             "pipeline dev subtask %d/%d: model refusal detected — retrying with "
             "directive prompt. task_id=%s preview=%r",
@@ -414,18 +409,18 @@ def _run_dev_subtask(
             state,
             f"Dev {i + 1}/{task_count}: model refusal detected — retrying with directive prompt…",
         )
-        _refusal_retry_prompt = (
-            f"[CRITICAL] You MUST write code for this task. Do NOT refuse or apologize.\n"
-            f"Task: {title}\n{scope}\n\n"
-            f"Write ONLY code using <swarm_file> or <swarm_patch> tags. No explanations.\n"
-            + swarm_file_guidance
+        _refusal_retry_prompt = _dev_runner_prompt(
+            "refusal_retry_prompt_template",
+            title=title,
+            scope=scope,
+            file_write_guidance=swarm_file_guidance,
         )
         output = _agent_run_for_verify(_refusal_retry_prompt)
         if output:
             output = sanitize_control_tokens(output)
 
-    _enforce = os.getenv("SWARM_ENFORCE_WRITE_FORMAT", "1").strip() in ("1", "true", "yes")
-    _has_swarm_tags = bool(re.search(r"<swarm_file|<swarm_patch|<swarm_udiff", output or "", re.IGNORECASE))
+    _enforce = _configured_bool("enforce_write_format_environment_key", "enforce_write_format_default")
+    _has_swarm_tags = bool(_workspace_action_pattern().search(output or ""))
     _mcp_writes, _mcp_actions = _read_last_mcp_writes()
     accumulated_mcp_writes += int(_mcp_writes or 0)
     accumulated_mcp_actions.extend(_mcp_actions)
@@ -440,21 +435,10 @@ def _run_dev_subtask(
             "pipeline dev subtask %d/%d: no <swarm_file> or MCP write in output (%d chars, mcp_writes=%d) — retrying with explicit instruction",
             i + 1, task_count, len(output), _mcp_writes,
         )
-        _retry_prompt = (
-            prompt
-            + "\n\n[CRITICAL] Your previous response contained NO file write operations.\n"
-            "You MUST write actual code files NOW. Start with the MOST IMPORTANT file for this subtask.\n"
-            "If the file already exists, use <swarm_patch> SEARCH/REPLACE blocks. "
-            "Use <swarm_file> only for new files or unavoidable full rewrites.\n"
-            "Do NOT plan. Do NOT explain. Just write code.\n\n"
-            "Example format:\n"
-            '<swarm_patch path="src/Service/MyService.php">\n'
-            "<<<<<<< SEARCH\nold code\n=======\nnew code\n>>>>>>> REPLACE\n"
-            "</swarm_patch>\n"
-        )
+        _retry_prompt = prompt + _dev_runner_prompt("missing_writes_retry_template")
         output = _agent_run_for_verify(_retry_prompt)
 
-        _has_swarm_tags_2 = bool(re.search(r"<swarm_file|<swarm_patch|<swarm_udiff", output or "", re.IGNORECASE))
+        _has_swarm_tags_2 = bool(_workspace_action_pattern().search(output or ""))
         _mcp_writes_2, _mcp_actions = _read_last_mcp_writes()
         accumulated_mcp_writes += int(_mcp_writes_2 or 0)
         accumulated_mcp_actions.extend(_mcp_actions)
@@ -473,7 +457,10 @@ def _run_dev_subtask(
             )
         _mcp_writes = _mcp_writes_2
 
-    _dialogue_rounds = int(os.environ.get("SWARM_DEV_DIALOGUE_ROUNDS", "0").strip() or "0")
+    _dialogue_rounds = _configured_int(
+        "dialogue_rounds_environment_key",
+        "dialogue_rounds_default",
+    )
     if _dialogue_rounds > 1 and output and apply_writes and not (output or "").startswith("[EC-3"):
         try:
             from backend.App.orchestration.application.agents.dialogue_loop import (
@@ -535,19 +522,16 @@ def _run_dev_subtask(
             elapsed_sec,
         )
     if apply_writes and expected_paths and missing_paths:
-        _retry_prompt = (
-            prompt
-            + "\n\n[CRITICAL] Your previous response did not write the required paths for this subtask. "
-            f"Missing expected_paths: {', '.join(missing_paths)}. "
-            "You MUST edit or create those exact files now. "
-            "Return executable workspace edits only."
-            + (
-                " You are over the small-task budget, so do not re-explain or redesign anything; "
-                "emit the minimum patch immediately."
-                if small_profile["enabled"]
-                and elapsed_sec > float(small_profile["duration_budget_sec"])
-                else ""
-            )
+        small_task_suffix = (
+            _dev_runner_prompt("small_task_budget_suffix")
+            if small_profile["enabled"]
+            and elapsed_sec > float(small_profile["duration_budget_sec"])
+            else ""
+        )
+        _retry_prompt = prompt + _dev_runner_prompt(
+            "missing_paths_retry_template",
+            missing_paths=", ".join(missing_paths),
+            small_task_suffix=small_task_suffix,
         )
         output = _agent_run_for_verify(_retry_prompt)
         _mcp_writes, _mcp_actions = _read_last_mcp_writes()
@@ -579,13 +563,9 @@ def _run_dev_subtask(
 
         outputs = [output]
         for batch in _small_task_missing_path_batches(missing_paths):
-            split_prompt = (
-                prompt
-                + "\n\n[LOW-YIELD RECOVERY]\n"
-                + "Previous attempts under-produced writes for this small subtask. "
-                + "Do not redesign the solution. Touch only the following path(s) now:\n"
-                + "\n".join(f"- {path}" for path in batch)
-                + "\n\nReturn only executable workspace edits for those path(s)."
+            split_prompt = prompt + _dev_runner_prompt(
+                "split_recovery_template",
+                paths="\n".join(f"- {path}" for path in batch),
             )
             split_output, used_model, used_provider = _llm_build_agent_run(recovery_agent, split_prompt, state)
             outputs.append(split_output)
@@ -605,7 +585,10 @@ def _run_dev_subtask(
                 break
 
     if apply_writes and expected_paths and missing_paths:
-        _strict = os.environ.get("SWARM_DEV_STRICT_EXPECTED_PATHS", "").strip() in ("1", "true", "yes")
+        _strict = _configured_bool(
+            "strict_expected_paths_environment_key",
+            "strict_expected_paths_default",
+        )
         if _strict:
             raise RuntimeError(
                 f"dev_node: subtask [{subtask_id}] {title!r} did not produce required expected_paths: {missing_paths}"
@@ -695,17 +678,19 @@ def dev_node(state: PipelineState) -> dict[str, Any]:
         devops_ctx = devops_ctx_full[:devops_limit] + "\n…[devops truncated]"
     else:
         devops_ctx = devops_ctx_full
-    devops_block = (
-        f"\n\n## DevOps context (bootstrap / runbook)\n{devops_ctx}\n"
-        if devops_ctx
-        else ""
-    )
+    devops_block = _dev_runner_prompt(
+        "devops_context_template",
+        devops_context=devops_ctx,
+    ) if devops_ctx else ""
     _ca_raw = state.get("code_analysis")
     ca: dict[str, Any] = _ca_raw if isinstance(_ca_raw, dict) else {}
     ca_block = ""
     conventions_block = ""
     if not _code_analysis_is_weak(ca):
-        ca_block = "\n## Existing code analysis\n" + _compact_code_analysis_for_prompt(ca, max_chars=8000) + "\n"
+        ca_block = _dev_runner_prompt(
+            "code_analysis_template",
+            code_analysis=_compact_code_analysis_for_prompt(ca, max_chars=8000),
+        )
         conventions_block = format_conventions_for_prompt(ca)
     dev_ctx = _pipeline_context_block(state, "dev")
     langs = _swarm_languages_line(state)
@@ -720,42 +705,11 @@ def dev_node(state: PipelineState) -> dict[str, Any]:
     swarm_file_guidance = ""
     if ws_block.strip():
         if apply_writes and use_mcp:
-            swarm_file_guidance = (
-                "\n\n[FILE WRITE INSTRUCTIONS — priority order]\n"
-                "1. **PREFERRED for existing files:** Use `workspace__edit_file(path, edits)` with targeted edits. "
-                "Use `workspace__write_file(path, content)` mainly for new files. Always use **absolute paths**.\n"
-                "2. **FALLBACK:** If tools fail, use `<swarm_patch>` for existing files and `<swarm_file>` for new files:\n"
-                '   `<swarm_patch path="relative/path.ext">` with SEARCH/REPLACE blocks for existing files\n'
-                '   `<swarm_file path="relative/path.ext">`…full file…`</swarm_file>`\n'
-                "3. **NEVER:** Do not rewrite an existing file with a full-file block unless absolutely necessary. "
-                "If you do, include a `<dev_manifest>` with `rewrite_justifications` for that path.\n"
-                "4. **NEVER:** Do not write code only in markdown fences without a tool call "
-                "or `<swarm_file>` tag — it will **NOT** be saved to disk.\n"
-            )
+            swarm_file_guidance = _dev_file_write_guidance("with_mcp")
         elif apply_writes:
-            swarm_file_guidance = (
-                "\n\n[FILE WRITE INSTRUCTIONS]\n"
-                "You have no direct disk access. The orchestrator parses your reply. "
-                "Prefer `<swarm_patch>` for existing files and `<swarm_file>` for new files.\n"
-                "For partial edits use:\n"
-                '<swarm_patch path="relative/path.ext">\n'
-                "<<<<<<< SEARCH\nold fragment\n=======\nnew fragment\n>>>>>>> REPLACE\n"
-                "</swarm_patch>\n"
-                "Only when creating a new file or when a full rewrite is unavoidable, use:\n"
-                '<swarm_file path="relative/path.ext">\n'
-                "…contents…\n"
-                "</swarm_file>\n"
-                "If you fully rewrite an existing file, include a `<dev_manifest>` with `rewrite_justifications` for that path.\n"
-                "(no `..` in path). Plain ``` without `<swarm_file>`/`<swarm_patch>` will **NOT** be saved to disk.\n"
-            )
+            swarm_file_guidance = _dev_file_write_guidance("without_mcp")
         else:
-            swarm_file_guidance = (
-                "\n\n[Local context — no auto-write]\n"
-                "The project root is provided for context only; **auto-write to disk is disabled**. "
-                "Keep the response **brief**: initialization commands, minimal code snippets in markdown, "
-                "and if needed one or two `<swarm_file>` blocks for manual copying. "
-                "**Do not** expand the entire project file by file — that was not requested and bloats the response.\n"
-            )
+            swarm_file_guidance = _dev_file_write_guidance("no_auto_write")
 
     raw_roles = (state.get("agent_config") or {}).get("dev_roles")
     dev_roles: list[dict[str, Any]] = [
@@ -803,26 +757,31 @@ def dev_node(state: PipelineState) -> dict[str, Any]:
                 f"crole_{role_name}",
                 state.get("agent_config") if isinstance(state.get("agent_config"), dict) else None,
             )
-            role_prompt = (
-                format_pattern_memory_block(
+            role_prompt = _dev_runner_prompt(
+                "role_prompt_template",
+                memory=format_pattern_memory_block(
                     state,
                     f"{pipeline_user_task(state)}\n{role_name}",
                     max_chars=_crole_budget.pattern_memory_chars,
-                )
-                + dev_ctx
-                + _swarm_prompt_prefix(state)
-                + _documentation_locale_line(state)
-                + f"{langs}"
-                + swarm_file_guidance
-                + focus_block
-                + "[Pipeline rule] Implement according to the **stack and boundaries from the Architect section** "
-                "in the spec below; do not substitute with PM/BA assumptions.\n\n"
-                "User task:\n"
-                f"{pipeline_user_task(state) if use_mcp else build_phase_pipeline_user_context(state)}\n\n"
-                "Full specification (BA + Architect):\n"
-                f"{spec}"
-                f"{devops_block}"
-                f"{ca_block}\n"
+                ),
+                dev_context=dev_ctx,
+                swarm_prefix=_swarm_prompt_prefix(state),
+                locale=_documentation_locale_line(state),
+                languages=f"{langs}",
+                file_write_guidance=swarm_file_guidance,
+                focus_block=focus_block,
+                pipeline_rule=_dev_runner_prompt("pipeline_rule"),
+                user_task_block=_dev_runner_prompt(
+                    "user_task_template",
+                    user_context=(
+                        pipeline_user_task(state)
+                        if use_mcp
+                        else build_phase_pipeline_user_context(state)
+                    ),
+                ),
+                spec_block=_dev_runner_prompt("full_spec_template", spec=spec),
+                devops_block=devops_block,
+                code_analysis_block=ca_block,
             )
             role_prompt += ws_block
             logger.info(
@@ -839,8 +798,11 @@ def dev_node(state: PipelineState) -> dict[str, Any]:
                 f"→ HTTP-вызов LLM (model={getattr(agent, 'model', '') or '?'})…",
             )
             output, used_model, used_provider = _llm_build_agent_run(agent, role_prompt, state)
-            _enforce_role = os.getenv("SWARM_ENFORCE_WRITE_FORMAT", "1").strip() in ("1", "true", "yes")
-            _has_tags_role = bool(re.search(r"<swarm_file|<swarm_patch|<swarm_udiff", output or "", re.IGNORECASE))
+            _enforce_role = _configured_bool(
+                "enforce_write_format_environment_key",
+                "enforce_write_format_default",
+            )
+            _has_tags_role = bool(_workspace_action_pattern().search(output or ""))
             _mcp_w_role = 0
             try:
                 from backend.App.integrations.infrastructure.mcp.openai_loop.loop import _last_mcp_write_count
@@ -854,10 +816,7 @@ def dev_node(state: PipelineState) -> dict[str, Any]:
                 )
                 output, used_model, used_provider = _llm_build_agent_run(
                     agent,
-                    role_prompt
-                    + "\n\n[CRITICAL] Your previous response contained NO file write operations. "
-                    "You MUST edit existing files via <swarm_patch> or workspace__edit_file, "
-                    "and use <swarm_file> / workspace__write_file mainly for new files.",
+                    role_prompt + _dev_runner_prompt("missing_writes_retry_template"),
                     state,
                 )
             logger.info(
@@ -921,12 +880,33 @@ def dev_node(state: PipelineState) -> dict[str, Any]:
         use_mcp=use_mcp,
     )
 
-    _force_sequential = os.environ.get("SWARM_DEV_FORCE_SEQUENTIAL", "").strip() in ("1", "true", "yes")
+    _force_sequential = _configured_bool(
+        "force_sequential_environment_key",
+        "force_sequential_default",
+    )
+    _overlapping_expected_paths = tasks_share_expected_paths(tasks)
+    if _overlapping_expected_paths and not _force_sequential:
+        logger.warning(
+            "dev_node: overlapping expected_paths detected; running subtasks sequentially "
+            "to avoid conflicting writes. task_id=%s",
+            (state.get("task_id") or "")[:36],
+        )
+        _stream_progress_emit(
+            state,
+            "Dev subtasks share expected_paths — running sequentially to avoid write conflicts.",
+        )
     if not _force_sequential and task_count > 1:
+        if _overlapping_expected_paths:
+            _force_sequential = True
+    if not _force_sequential and task_count > 1:
+        force_sequential_key = str(
+            dev_runner_policy().get("force_sequential_environment_key") or ""
+        ).strip()
         logger.info(
             "dev_node: running %d subtasks in parallel "
-            "(SWARM_DEV_FORCE_SEQUENTIAL=1 to disable). task_id=%s",
+            "(%s=1 to disable). task_id=%s",
             task_count,
+            force_sequential_key,
             (state.get("task_id") or "")[:36],
         )
         max_workers = min(swarm_max_parallel_tasks(), task_count)

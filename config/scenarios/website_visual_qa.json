@@ -1,0 +1,65 @@
+{
+  "id": "website_visual_qa",
+  "title": "Website Visual QA",
+  "category": "visual_qa",
+  "description": "Inspect a running website or frontend build using browser evidence: capture screenshots, review the visual design, and produce a prioritized defect list. No file writes by default.",
+  "pipeline_steps": [
+    "clarify_input",
+    "ux_researcher",
+    "visual_probe",
+    "visual_design_review",
+    "qa",
+    "review_qa",
+    "human_qa"
+  ],
+  "default_gates": ["human_qa"],
+  "expected_artifacts": [
+    "pipeline.json",
+    "agents/ux_researcher.txt",
+    "agents/visual_probe.txt",
+    "agents/visual_design_review.txt",
+    "agents/qa.txt"
+  ],
+  "required_tools": [],
+  "workspace_write_default": false,
+  "recommended_models": {
+    "review": "strong"
+  },
+  "agent_config_defaults": {
+    "swarm": {
+      "visual_probe": {
+        "enabled": true
+      }
+    }
+  },
+  "tags": ["visual_qa", "browser_evidence", "read_only"],
+  "inputs": [
+    {
+      "key": "prompt",
+      "label": "Audience and intent",
+      "hint": "Who the site is for and what visual issues to focus on.",
+      "required": true
+    },
+    {
+      "key": "workspace_root",
+      "label": "Project path (optional)",
+      "hint": "Path to the project. Used when start_command runs locally."
+    }
+  ],
+  "quality_checks": [
+    {
+      "id": "core_artifacts_present",
+      "type": "artifact_count",
+      "severity": "error",
+      "blocking": true,
+      "config": {"min": 3}
+    },
+    {
+      "id": "visual_review_substantive",
+      "type": "agent_output_min_chars",
+      "severity": "error",
+      "blocking": false,
+      "config": {"agent": "visual_design_review", "min_chars": 120}
+    }
+  ]
+}

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import logging
+import os
 import uuid as _uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from backend.App.integrations.application.rest_misc_service import (
@@ -35,8 +37,11 @@ from backend.App.integrations.application.user_settings_service import (
 from backend.UI.REST.controllers.user_settings import (
     router as _router_user_settings,
 )
+from backend.UI.REST.controllers.scenarios import router as _router_scenarios
+from backend.UI.REST.controllers.voice import router as _router_voice
 from backend.UI.REST.controllers.wiki import router as _router_wiki
 from backend.UI.REST.controllers.workspace import router as _router_workspace
+from backend.UI.REST.controllers.asset_upload import router as _router_asset_upload
 from backend.App.shared.infrastructure.rest.task_instance import (
     ARTIFACTS_ROOT,
     task_store as _task_store_instance,
@@ -65,6 +70,17 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="AIlourOS Orchestrator", version="0.1.0", lifespan=lifespan)
 
 
+if os.getenv("AILOUROS_DESKTOP", "").strip() == "1":
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["X-Request-ID"],
+    )
+
+
 @app.middleware("http")
 async def _request_id_middleware(request: Request, call_next: Any) -> Any:
 
@@ -86,6 +102,7 @@ if _UI_ASSETS_ROOT.is_dir():
     )
 
 
+app.include_router(_router_scenarios)
 app.include_router(_router_misc)
 app.include_router(_router_memory)
 app.include_router(_router_onboarding)
@@ -98,3 +115,5 @@ app.include_router(_router_wiki)
 app.include_router(_router_pipelines)
 app.include_router(_router_project_settings)
 app.include_router(_router_user_settings)
+app.include_router(_router_asset_upload)
+app.include_router(_router_voice)

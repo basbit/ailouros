@@ -8,16 +8,47 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional
 
+from backend.App.shared.infrastructure.app_config_load import load_app_config_json
+
 logger = logging.getLogger(__name__)
 
-WORKSPACE_WRITE_ROLES: frozenset[str] = frozenset(
-    os.getenv("SWARM_WORKSPACE_WRITE_ROLES", "dev,devops").split(",")
-)
+
+def _policy() -> dict[str, Any]:
+    value = load_app_config_json("pipeline_enforcement_policy.json").get(
+        "incremental_workspace_writes",
+    )
+    if not isinstance(value, dict):
+        raise RuntimeError("pipeline_enforcement_policy.incremental_workspace_writes is not configured")
+    return value
+
+
+def _string_list(key: str) -> list[str]:
+    value = _policy().get(key)
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def workspace_write_roles() -> frozenset[str]:
+    policy = _policy()
+    environment_key = str(policy.get("write_roles_environment_key") or "").strip()
+    environment_value = os.getenv(environment_key, "").strip() if environment_key else ""
+    if environment_value:
+        return frozenset(role.strip() for role in environment_value.split(",") if role.strip())
+    return frozenset(_string_list("write_roles_default"))
 
 
 def stream_incremental_workspace_enabled() -> bool:
-    v = os.getenv("SWARM_STREAM_INCREMENTAL_WORKSPACE", "1").strip().lower()
-    return v not in ("0", "false", "no", "off")
+    policy = _policy()
+    environment_key = str(policy.get("stream_enabled_environment_key") or "").strip()
+    environment_value = os.getenv(environment_key, "").strip().lower() if environment_key else ""
+    if environment_value:
+        enabled_values = {
+            str(value).strip().lower()
+            for value in _string_list("enabled_environment_values")
+        }
+        return environment_value in enabled_values
+    return bool(policy.get("stream_enabled_default"))
 
 
 @contextmanager
@@ -38,7 +69,7 @@ def should_apply_incremental_write(
         workspace_path
         and workspace_apply_writes
         and workspace_write_allowed()
-        and agent in WORKSPACE_WRITE_ROLES
+        and agent in workspace_write_roles()
         and agent_output.strip()
     )
 
@@ -59,7 +90,9 @@ def apply_incremental_workspace_write(
     )
     from backend.App.workspace.infrastructure.patch_parser import (
         apply_workspace_pipeline,
+        blocked_workspace_write_result,
         extract_shell_commands,
+        validate_workspace_pipeline_before_apply,
     )
     from backend.App.orchestration.infrastructure.shell_approval import request_shell_approval
     from backend.App.orchestration.infrastructure.manual_shell_approval import request_manual_execution
@@ -155,7 +188,16 @@ def apply_incremental_workspace_write(
                 message="continuing after shell-gate",
             )
 
-    partial = apply_workspace_pipeline(agent_output, workspace_path, run_shell=run_shell_flag)
+    validation = validate_workspace_pipeline_before_apply(agent_output, workspace_path)
+    if not validation.get("ok"):
+        partial = blocked_workspace_write_result(validation)
+        yield (
+            f"[orchestrator] incremental workspace after {agent}: "
+            "pre-validation failed; no writes applied. "
+            f"errors={partial.get('errors')!r}\n"
+        )
+    else:
+        partial = apply_workspace_pipeline(agent_output, workspace_path, run_shell=run_shell_flag)
     yield (
         f"[orchestrator] incremental workspace after {agent}: "
         f"written={partial.get('written')!r} "

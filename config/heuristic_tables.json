@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "stub_patterns": [
+    "\\bTODO\\b",
+    "\\bFIXME\\b",
+    "\\bplaceholder\\b",
+    "\\bdummy\\b",
+    "\\bfake\\b",
+    "\\bnot\\s+implemented\\b",
+    "\\bmock[_ ]data\\b",
+    "return\\s+\\[\\s*\\]",
+    "return\\s+None\\b",
+    "return\\s+null\\b",
+    "return\\s+\\{\\s*\\}",
+    "pass\\s*$",
+    "raise\\s+NotImplementedError"
+  ],
+  "fake_tool_call_patterns": [
+    "<\\|tool_call\\|?>",
+    "\\bcall:workspace_[a-z_]+\\b",
+    "\\bworkspace_edit_file\\b",
+    "\\bworkspace_write_file\\(",
+    "<\\|im_start\\|>tool_call"
+  ],
+  "patch_marker_patterns": [
+    "^---\\s+",
+    "^\\+\\+\\+\\s+",
+    "^@@[^\\n]+@@",
+    "^<{7}\\s",
+    "^={7}\\s*$",
+    "^>{7}\\s"
+  ]
+}

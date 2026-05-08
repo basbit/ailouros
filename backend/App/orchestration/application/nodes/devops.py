@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import os
+from functools import lru_cache
+from string import Template
 from typing import Any
 
 from backend.App.orchestration.infrastructure.agents.devops_agent import DevopsAgent
@@ -34,11 +36,42 @@ from backend.App.orchestration.application.nodes._shared import (
     embedded_pipeline_input_for_review,
     embedded_review_artifact,
 )
+from backend.App.shared.application.settings_resolver import get_setting_bool
+from backend.App.shared.infrastructure.app_config_load import load_app_config_json
 
 logger = logging.getLogger(__name__)
 
 
+@lru_cache(maxsize=1)
+def _prompt_fragments() -> dict[str, Any]:
+    return load_app_config_json("prompt_fragments.json")
+
+
+def _prompt_fragment(key: str) -> str:
+    value = str(_prompt_fragments().get(key) or "")
+    if not value:
+        raise RuntimeError(f"prompt_fragments.{key} is empty")
+    return value
+
+
 def devops_node(state: PipelineState) -> dict[str, Any]:
+    workspace_root = str(state.get("workspace_root") or "").strip()
+    if not workspace_root:
+        require_repo_path = get_setting_bool(
+            "devops.require_repo_path",
+            env_key="SWARM_DEVOPS_REQUIRE_REPO_PATH",
+            default=True,
+        )
+        if require_repo_path:
+            raise RuntimeError(
+                "devops_node: workspace_root is not set; DevOps step requires a "
+                "repository path so repo_evidence can be validated. Set "
+                "agent_config.workspace_root or remove devops from the pipeline."
+            )
+        logger.warning(
+            "devops_node: workspace_root is empty and "
+            "SWARM_DEVOPS_REQUIRE_REPO_PATH=0 — continuing without repo evidence."
+        )
     agent_config = state.get("agent_config") or {}
     cfg = agent_config.get("devops") or agent_config.get("dev") or {}
     if not isinstance(cfg, dict):
@@ -57,39 +90,25 @@ def devops_node(state: PipelineState) -> dict[str, Any]:
     use_mcp = _should_use_mcp_for_workspace(state)
     ca_block = ""
     if not use_mcp and not _code_analysis_is_weak(code_analysis):
-        ca_block = "[Existing code analysis]\n" + _compact_code_analysis_for_prompt(code_analysis, max_chars=6000) + "\n\n"
-    prompt = (
-        ctx
-        + _swarm_prompt_prefix(state)
-        + _documentation_locale_line(state)
-        + planning_mcp_tool_instruction(state)
-        + _project_knowledge_block(state, step_id="devops")
-        + "[Pipeline rule] Based on the **approved specification** (below), prepare the "
-        "**operational bootstrap**: discover the real project commands, validate local "
-        "prerequisites, and provide executable launch/build/smoke commands. The stack "
-        "comes from repository evidence and the Architect section.\n"
-        "Commands for **auto-execution** on the host — only in `<swarm_shell>` or `<swarm-command>` "
-        "**outside** `` ``` `` fences; inside fences the orchestrator will NOT execute them.\n\n"
-        "For runnable application tasks, do not stop at CI/CD prose. Include the command(s) "
-        "that should actually launch, build, or smoke-test the app from the workspace. "
-        "If execution is impossible, return `BLOCKED` with the exact missing tool, path, "
-        "credential, emulator/device, or approval.\n\n"
-        f"User task:\n{pipeline_user_task(state) if use_mcp else build_phase_pipeline_user_context(state)}\n\n"
-        f"Specification:\n{_spec_for_build_mcp_safe(state)}\n\n"
-        f"{ca_block}"
-        "Evidence contract:\n"
-        "If you claim that the repository already uses a runtime, package manager, test runner, "
-        "build system, deployment mechanism, or existing automation, add a final ```json``` block "
-        "with this schema:\n"
-        '{'
-        '"repo_evidence":[{"path":"relative/path","start_line":1,"end_line":3,'
-        '"excerpt":"exact text copied from the repository","why":"what this proves"}],'
-        '"unverified_claims":["claim that cannot be proven from the repository yet"]'
-        '}\n'
-        "Rules:\n"
-        "- Every repo-based tech claim must be backed by `repo_evidence` or moved to `unverified_claims`.\n"
-        "- `excerpt` must exactly match the referenced file lines.\n"
-        "- Do not omit the JSON block.\n"
+        ca_block = (
+            _prompt_fragment("devops_existing_code_analysis_heading")
+            + "\n"
+            + _compact_code_analysis_for_prompt(code_analysis, max_chars=6000)
+            + "\n\n"
+        )
+    prompt = Template(_prompt_fragment("devops_node_prompt_template")).safe_substitute(
+        context=ctx,
+        swarm_prefix=_swarm_prompt_prefix(state),
+        locale=_documentation_locale_line(state),
+        mcp_instruction=planning_mcp_tool_instruction(state),
+        knowledge=_project_knowledge_block(state, step_id="devops"),
+        user_task=(
+            pipeline_user_task(state)
+            if use_mcp
+            else build_phase_pipeline_user_context(state)
+        ),
+        spec=_spec_for_build_mcp_safe(state),
+        code_analysis=ca_block,
     )
     prompt += ws
     devops_result, _, _ = _llm_planning_agent_run(agent, prompt, state)
@@ -101,14 +120,10 @@ def devops_node(state: PipelineState) -> dict[str, Any]:
             _devops_min,
             str(state.get("task_id") or "")[:36],
         )
-        _retry_prompt = (
-            "The previous attempt produced no output. Please try again.\n\n"
-            "Describe the bootstrap steps (dependency install, project init) "
-            "and provide any needed setup commands in <swarm_shell> tags. "
-            "Keep the response concise.\n\n"
-            + prompt
-        )
-        devops_result, _, _ = _llm_planning_agent_run(agent, _retry_prompt, state)
+        retry_prompt = Template(
+            _prompt_fragment("devops_retry_prompt_template")
+        ).safe_substitute(base_prompt=prompt)
+        devops_result, _, _ = _llm_planning_agent_run(agent, retry_prompt, state)
     devops_result, validated_repo_evidence = ensure_validated_repo_evidence(
         raw_output=devops_result,
         base_prompt=prompt,
@@ -159,23 +174,12 @@ def review_devops_node(state: PipelineState) -> dict[str, Any]:
         if isinstance(execution_contract, dict)
         else "{}"
     )
-    prompt = (
-        "Step: devops (bootstrap, dependencies, runbook after spec).\n"
-        "Checklist — issue VERDICT: NEEDS_WORK if ANY item fails:\n"
-        "[ ] All shell commands use <swarm_shell> tags (not fenced code blocks)\n"
-        "[ ] Runnable/write-capable tasks include actual launch/build/smoke command evidence, not only CI/CD prose\n"
-        "[ ] A numbered runbook of the same commands is present after <swarm_shell> blocks\n"
-        "[ ] Commands are realistic for the Architect stack (no wrong package manager/runtime)\n"
-        "[ ] Repo-based runtime/build/test/tooling claims are backed by validated repo_evidence or explicitly marked unverified\n"
-        "[ ] No heavy platform automation (e.g. full cluster/IaC, full CI matrix, security suites) unless explicitly in the spec\n"
-        "[ ] E2E/UI tooling matches the **declared** stack (do not assume browser automation for native-only specs)\n\n"
-        f"User task:\n{user_block}\n\n"
-        f"Specification:\n{spec_art}\n\n"
-        "Validated repo evidence artifact:\n"
-        f"{format_repo_evidence_for_prompt(repo_evidence_artifact)}\n\n"
-        "DevOps execution contract:\n"
-        f"{execution_contract_text}\n\n"
-        f"DevOps output:\n{devops_art}"
+    prompt = Template(_prompt_fragment("review_devops_prompt_template")).safe_substitute(
+        user_task=user_block,
+        spec=spec_art,
+        repo_evidence=format_repo_evidence_for_prompt(repo_evidence_artifact),
+        execution_contract=execution_contract_text,
+        devops_output=devops_art,
     )
     return run_reviewer_or_moa(
         state,
@@ -189,9 +193,9 @@ def review_devops_node(state: PipelineState) -> dict[str, Any]:
 
 
 def human_devops_node(state: PipelineState) -> dict[str, Any]:
-    bundle = (
-        f"DevOps:\n{state['devops_output']}\n\n"
-        f"Review:\n{state['devops_review_output']}"
+    bundle = Template(_prompt_fragment("human_devops_bundle_template")).safe_substitute(
+        devops_output=state["devops_output"],
+        review_output=state["devops_review_output"],
     )
     agent = _make_human_agent(state, "devops")
     return {"devops_human_output": agent.run(bundle)}

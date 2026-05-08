@@ -1,0 +1,100 @@
+{
+  "id": "data_analysis",
+  "title": "Data Analysis",
+  "category": "data",
+  "description": "Plan and document a reproducible data analysis: profile the dataset, propose deterministic transformations, run the analysis, plan charts, and review insights with explicit caveats.",
+  "pipeline_steps": [
+    "clarify_input",
+    "pm",
+    "review_pm",
+    "ba",
+    "review_ba",
+    "crole_data_profiler",
+    "crole_data_cleaner",
+    "crole_data_analyst",
+    "crole_chart_planner",
+    "crole_insight_reviewer"
+  ],
+  "default_gates": [],
+  "expected_artifacts": [
+    "pipeline.json",
+    "agents/pm.txt",
+    "agents/ba.txt",
+    "agents/crole_data_profiler.txt",
+    "agents/crole_data_cleaner.txt",
+    "agents/crole_data_analyst.txt",
+    "agents/crole_chart_planner.txt",
+    "agents/crole_insight_reviewer.txt"
+  ],
+  "required_tools": [],
+  "workspace_write_default": false,
+  "recommended_models": {
+    "analyst": "strong",
+    "review": "fast"
+  },
+  "agent_config_defaults": {
+    "custom_roles": {
+      "data_profiler": {
+        "prompt_text": "You are a Data Profiler. Without inventing values, describe what fields the dataset is expected to have based on the user task and any sample shown. Emit ```json with keys: declared_fields (array of {name, dtype_guess, role: id | metric | dimension | timestamp | text | other}), suspected_quality_issues (array of strings: missing values, outliers, units mismatch, etc.), profiling_recipe (array of pseudo-code steps the analyst should run before computing metrics)."
+      },
+      "data_cleaner": {
+        "prompt_text": "You are a Data Cleaning Planner. Using the profiler output, write a deterministic, reproducible cleaning recipe. Emit ```json with keys: drop_rows_rules (array of strings, each a logical filter), null_handling (object: field → strategy 'drop' | 'fill_constant:<v>' | 'fill_median' | 'flag'), type_coercions (object: field → target dtype), unit_conversions (array of strings). Each rule must be deterministic and reproducible (no LLM-only judgement)."
+      },
+      "data_analyst": {
+        "prompt_text": "You are a Data Analyst. Using the profile and cleaning recipe, list the calculations needed to answer the user task. Emit ```json with keys: metrics (array of {name, formula_pseudo, group_by: [...], filter_pseudo}), expected_units (array of {metric, unit}), assumptions (array of strings), uncertainty_sources (array of strings)."
+      },
+      "chart_planner": {
+        "prompt_text": "You are a Chart Planner. Map each metric from data_analyst to a chart. Emit ```json with keys: charts (array of {metric, chart_type: line | bar | scatter | hist | heatmap, x, y, group_by, title}), chart_count (int), why_each_chart (array of strings, one per chart, ≤25 words). Pick the simplest chart that answers the question; do not over-design."
+      },
+      "insight_reviewer": {
+        "prompt_text": "You are an Insight Reviewer. Read everything above. Emit ```json with keys: confirmed_insights (array of strings, each ≤30 words and tied to a specific metric), caveats (array of strings: missing values, sample size, biases), follow_ups (array of strings), confidence (low | medium | high), reasoning (one paragraph). Be honest about what the data does NOT support."
+      }
+    }
+  },
+  "tags": ["data", "analysis", "executable", "read_only"],
+  "inputs": [
+    {
+      "key": "prompt",
+      "label": "Dataset + analysis question",
+      "hint": "Describe the dataset(s), the analysis question, desired metrics, chart preference, target audience.",
+      "required": true
+    }
+  ],
+  "quality_checks": [
+    {
+      "id": "core_artifacts_present",
+      "type": "artifact_count",
+      "severity": "error",
+      "blocking": true,
+      "config": {"min": 6}
+    },
+    {
+      "id": "analyst_substantive",
+      "type": "agent_output_min_chars",
+      "severity": "error",
+      "blocking": false,
+      "config": {"agent": "crole_data_analyst", "min_chars": 250}
+    },
+    {
+      "id": "insight_review_substantive",
+      "type": "agent_output_min_chars",
+      "severity": "warning",
+      "blocking": false,
+      "config": {"agent": "crole_insight_reviewer", "min_chars": 200}
+    },
+    {
+      "id": "calculations_have_formula",
+      "type": "calculations_have_formula",
+      "severity": "warning",
+      "blocking": false,
+      "config": {"agent": "crole_data_analyst"}
+    },
+    {
+      "id": "min_charts",
+      "type": "charts_minimum",
+      "severity": "warning",
+      "blocking": false,
+      "config": {"agent": "crole_chart_planner", "min": 1}
+    }
+  ]
+}

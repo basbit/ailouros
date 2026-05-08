@@ -1,0 +1,16 @@
+{
+  "pipeline_steps_contains": [
+    "clarify_input",
+    "pm",
+    "ba",
+    "crole_ticket_classifier",
+    "crole_kb_searcher",
+    "crole_response_drafter",
+    "crole_escalation_reviewer",
+    "human_qa"
+  ],
+  "default_gates": ["human_qa"],
+  "required_tools": [],
+  "workspace_write": false,
+  "warnings_count": 0
+}

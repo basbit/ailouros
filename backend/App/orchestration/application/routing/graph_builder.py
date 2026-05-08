@@ -15,6 +15,9 @@ from backend.App.orchestration.application.pipeline.pipeline_runtime_support imp
     load_defect_report as _load_defect_report,
     merge_defect_reports as _merge_defect_reports,
 )
+from backend.App.orchestration.application.enforcement.enforcement_policy import (
+    is_quality_gate_enabled,
+)
 from backend.App.orchestration.application.enforcement.pipeline_enforcement import (
     enforce_planning_review_gate as _enforce_planning_review_gate,
     enter_fix_cycle_or_escalate as _enter_fix_cycle_or_escalate,
@@ -33,12 +36,11 @@ from backend.App.orchestration.infrastructure.langgraph_adapter import LangGraph
 
 logger = logging.getLogger(__name__)
 
-_QUALITY_GATE_ENABLED_DEFAULT = os.getenv("SWARM_AUTO_RETRY_ON_NEEDS_WORK", "1") == "1"
 _MAX_STEP_RETRIES = int(os.getenv("SWARM_MAX_STEP_RETRIES", "2"))
 
 
 def _quality_gate_env_default() -> bool:
-    return os.getenv("SWARM_AUTO_RETRY_ON_NEEDS_WORK", "1") == "1"
+    return is_quality_gate_enabled(None)
 
 
 def _max_step_retries_env() -> int:
@@ -52,18 +54,7 @@ _approval_policy = load_approval_policy_from_env()
 
 
 def _quality_gate_enabled(state: Any) -> bool:
-    agent_config = state.get("agent_config") or {}
-    swarm = agent_config.get("swarm") if isinstance(agent_config, dict) else None
-    if isinstance(swarm, dict) and "quality_gate_enabled" in swarm:
-        val = swarm["quality_gate_enabled"]
-        if isinstance(val, bool):
-            return val
-        if isinstance(val, str):
-            return val.strip().lower() in ("1", "true", "yes", "on")
-    _env_val = os.getenv("SWARM_AUTO_RETRY_ON_NEEDS_WORK", "").strip()
-    if _env_val:
-        return _env_val == "1"
-    return _QUALITY_GATE_ENABLED_DEFAULT
+    return is_quality_gate_enabled(state)
 
 
 def _with_approval_gate(step_id: str, node_fn: Callable) -> Callable:

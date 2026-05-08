@@ -169,9 +169,15 @@ def _token_score(query: str, chunk: WikiChunk) -> float:
         return 0.0
     body_tokens = _tokens(chunk.text)
     section_tokens = _tokens(chunk.section)
+    path_tokens = _tokens(chunk.rel_path.replace("/", " "))
     intersection_body = len(query_tokens & body_tokens)
     intersection_section = len(query_tokens & section_tokens)
-    score = float(intersection_body) + 0.5 * float(intersection_section)
+    intersection_path = len(query_tokens & path_tokens)
+    score = (
+        float(intersection_body)
+        + 0.5 * float(intersection_section)
+        + 0.75 * float(intersection_path)
+    )
     if query.lower() and query.lower() in chunk.text.lower():
         score += 3.0
     return score
@@ -325,7 +331,8 @@ def search(
             for chunk, vector in zip(index.chunks, index.vectors):
                 similarity = _cosine(query_vec, vector)
                 lex = _token_score(query, chunk)
-                combined = similarity + 0.12 * min(lex, 8.0)
+                lex_boost = 2.0 + 0.25 * min(lex, 8.0) if lex > 0.0 else 0.0
+                combined = similarity + lex_boost
                 if combined > 0.0:
                     scored.append(WikiHit(chunk=chunk, score=combined))
 

@@ -44,7 +44,7 @@ def _build_anthropic_client(
 
 
 def _ask_anthropic(
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],
     model: str,
     temperature: float,
     *,
@@ -95,7 +95,7 @@ def _ask_anthropic(
 
 
 def _ask_litellm(
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],
     model: str,
     temperature: float,
     *,

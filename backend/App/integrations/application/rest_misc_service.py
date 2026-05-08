@@ -2,10 +2,23 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def _is_desktop_mode() -> bool:
+    return os.getenv("AILOUROS_DESKTOP", "").strip() == "1"
+
+
+def _local_default_model_id() -> str:
+    explicit = os.getenv("SWARM_MODEL", "").strip()
+    if explicit:
+        return explicit
+    return "local-default"
+
 
 _FRONTEND_ROLE_ORDER: tuple[str, ...] = (
     "pm",
@@ -57,8 +70,12 @@ _PROMPT_DEFAULTS: dict[str, str] = {
     "app_store_optimizer": "marketing/marketing-app-store-optimizer.md",
 }
 
+_LOCAL_MODEL_PLACEHOLDER = "local-default"
+
+
 _MODEL_DEFAULTS: dict[str, dict[str, str]] = {
     role: {
+        "local": _LOCAL_MODEL_PLACEHOLDER,
         "ollama": "qwen2.5-coder:14b",
         "lmstudio": "qwen2.5-coder:14b",
         "cloud": "claude-3-5-sonnet-latest",
@@ -68,52 +85,73 @@ _MODEL_DEFAULTS: dict[str, dict[str, str]] = {
 _MODEL_DEFAULTS.update(
     {
         "pm": {
+            "local": _LOCAL_MODEL_PLACEHOLDER,
             "ollama": "qwen3-coder:30b",
             "lmstudio": "qwen3-coder:30b",
             "cloud": "claude-3-5-sonnet-latest",
         },
         "dev_lead": {
+            "local": _LOCAL_MODEL_PLACEHOLDER,
             "ollama": "qwen3-coder:30b",
             "lmstudio": "qwen3-coder:30b",
             "cloud": "claude-3-5-sonnet-latest",
         },
         "ux_researcher": {
+            "local": _LOCAL_MODEL_PLACEHOLDER,
             "ollama": "qwen2.5:14b",
             "lmstudio": "qwen2.5:14b",
             "cloud": "claude-3-5-sonnet-latest",
         },
         "ui_designer": {
+            "local": _LOCAL_MODEL_PLACEHOLDER,
             "ollama": "qwen2.5:14b",
             "lmstudio": "qwen2.5:14b",
             "cloud": "claude-3-5-sonnet-latest",
         },
         "image_generator": {
+            "local": _LOCAL_MODEL_PLACEHOLDER,
             "ollama": "qwen2.5:14b",
             "lmstudio": "qwen2.5:14b",
             "cloud": "gpt-4o",
         },
         "audio_generator": {
+            "local": _LOCAL_MODEL_PLACEHOLDER,
             "ollama": "qwen2.5:14b",
             "lmstudio": "qwen2.5:14b",
             "cloud": "gpt-4o",
         },
         "seo_specialist": {
+            "local": _LOCAL_MODEL_PLACEHOLDER,
             "ollama": "qwen2.5:14b",
             "lmstudio": "qwen2.5:14b",
             "cloud": "claude-3-5-sonnet-latest",
         },
         "ai_citation_strategist": {
+            "local": _LOCAL_MODEL_PLACEHOLDER,
             "ollama": "qwen2.5:14b",
             "lmstudio": "qwen2.5:14b",
             "cloud": "claude-3-5-sonnet-latest",
         },
         "app_store_optimizer": {
+            "local": _LOCAL_MODEL_PLACEHOLDER,
             "ollama": "qwen2.5:14b",
             "lmstudio": "qwen2.5:14b",
             "cloud": "claude-3-5-sonnet-latest",
         },
     }
 )
+
+
+def _resolve_model_defaults_for_response() -> dict[str, dict[str, str]]:
+    local_id = _local_default_model_id()
+    resolved: dict[str, dict[str, str]] = {}
+    for role, providers in _MODEL_DEFAULTS.items():
+        resolved_row = dict(providers)
+        if "local" in resolved_row:
+            resolved_row["local"] = local_id
+        resolved[role] = resolved_row
+    return resolved
+
 
 _PROMPT_CHOICES: dict[str, list[tuple[str, str]]] = {
     role: [
@@ -172,6 +210,10 @@ def start_update_check_background() -> None:
 
 async def health_payload(task_store: Any) -> tuple[dict[str, Any], int]:
     from backend.App.integrations.application.system_metrics import metrics_payload
+    from backend.App.shared.application.desktop_mode import (
+        backend_port,
+        is_desktop_mode,
+    )
 
     try:
         tasks = task_store.list_tasks() if hasattr(task_store, "list_tasks") else []
@@ -180,11 +222,17 @@ async def health_payload(task_store: Any) -> tuple[dict[str, Any], int]:
         tasks = []
 
     active = sum(1 for t in tasks if isinstance(t, dict) and t.get("status") == "running")
-    payload = {
+    payload: dict[str, Any] = {
         "status": "ok",
         "active_tasks": active,
         **metrics_payload(),
     }
+    if is_desktop_mode():
+        payload["desktop"] = {
+            "enabled": True,
+            "backend_port": backend_port(),
+            "task_store": type(task_store).__name__,
+        }
     return payload, 200
 
 
@@ -215,6 +263,9 @@ def observability_metrics_payload() -> dict[str, Any]:
 
 def defaults_payload() -> dict[str, Any]:
     from backend.App.integrations.infrastructure.agent_registry import load_registry_raw
+    from backend.App.orchestration.application.enforcement.enforcement_policy import (
+        step_dependencies,
+    )
     from backend.App.orchestration.application.routing.step_registry import (
         DEFAULT_PIPELINE_STEP_IDS,
     )
@@ -224,10 +275,20 @@ def defaults_payload() -> dict[str, Any]:
     for role in registry.get("roles", {}):
         if role not in roles:
             roles.append(role)
+    desktop = _is_desktop_mode()
+    fallback_environment = os.getenv("SWARM_DEFAULT_ENVIRONMENT", "").strip()
+    if fallback_environment:
+        default_environment = fallback_environment
+    elif desktop:
+        default_environment = "local"
+    else:
+        default_environment = "ollama"
+    default_swarm_provider = "local" if desktop else "ollama"
+    resolved_defaults = _resolve_model_defaults_for_response()
     return {
         "defaults": registry.get("defaults", {}),
         "roles": roles,
-        "model_defaults": {role: _MODEL_DEFAULTS.get(role, {}) for role in roles},
+        "model_defaults": {role: resolved_defaults.get(role, {}) for role in roles},
         "prompt_defaults": {role: _PROMPT_DEFAULTS.get(role, "") for role in roles},
         "prompt_choices": {role: _PROMPT_CHOICES.get(role, []) for role in roles},
         "remote_api_base_presets": {
@@ -253,9 +314,14 @@ def defaults_payload() -> dict[str, Any]:
         "default_pipeline_order": [
             step_id for step_id in DEFAULT_PIPELINE_STEP_IDS if step_id != "e2e"
         ],
-        "default_role_environment": "ollama",
+        "step_dependencies": {
+            step_id: list(prerequisites)
+            for step_id, prerequisites in step_dependencies().items()
+        },
+        "default_role_environment": default_environment,
         "default_remote_api_provider": "anthropic",
-        "default_swarm_provider": "ollama",
+        "default_swarm_provider": default_swarm_provider,
+        "desktop": desktop,
     }
 
 

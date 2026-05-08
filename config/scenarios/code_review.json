@@ -1,0 +1,64 @@
+{
+  "id": "code_review",
+  "title": "Code Review",
+  "category": "code_quality",
+  "description": "Read-only review of a workspace: analyze the code, spot problems, draft a refactor plan, and stop for a human review without writing files.",
+  "pipeline_steps": [
+    "clarify_input",
+    "analyze_code",
+    "problem_spotter",
+    "refactor_plan",
+    "human_code_review"
+  ],
+  "default_gates": ["human_code_review"],
+  "expected_artifacts": [
+    "pipeline.json",
+    "agents/analyze_code.txt",
+    "agents/problem_spotter.txt",
+    "agents/refactor_plan.txt"
+  ],
+  "required_tools": [],
+  "workspace_write_default": false,
+  "recommended_models": {
+    "review": "strong"
+  },
+  "agent_config_defaults": {},
+  "tags": ["code_quality", "read_only", "safe"],
+  "inputs": [
+    {
+      "key": "prompt",
+      "label": "Review focus",
+      "hint": "What to focus on (security, performance, tests, architecture).",
+      "required": true
+    },
+    {
+      "key": "workspace_root",
+      "label": "Workspace path",
+      "hint": "Path to the repository to review. Read-only.",
+      "required": true
+    }
+  ],
+  "quality_checks": [
+    {
+      "id": "core_artifacts_present",
+      "type": "artifact_count",
+      "severity": "error",
+      "blocking": true,
+      "config": {"min": 3}
+    },
+    {
+      "id": "problem_spotter_substantive",
+      "type": "agent_output_min_chars",
+      "severity": "error",
+      "blocking": false,
+      "config": {"agent": "problem_spotter", "min_chars": 100}
+    },
+    {
+      "id": "refactor_plan_substantive",
+      "type": "agent_output_min_chars",
+      "severity": "warning",
+      "blocking": false,
+      "config": {"agent": "refactor_plan", "min_chars": 80}
+    }
+  ]
+}

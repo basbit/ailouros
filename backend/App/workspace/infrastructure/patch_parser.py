@@ -4,6 +4,7 @@ import logging
 import os
 import re
 from pathlib import Path
+from string import Template
 from typing import Any, Optional
 
 from backend.App.shared.infrastructure.app_config_load import load_app_config_json
@@ -15,6 +16,13 @@ from backend.App.workspace.infrastructure.workspace_io import (
     _ShellAction,
     _UdiffAction,
     command_exec_allowed,
+)
+from backend.App.workspace.infrastructure._patch_parser_extraction import (
+    any_snapshot_output_has_swarm as _any_snapshot_output_has_swarm,
+    collect_workspace_source_chunks as _collect_workspace_source_chunks_impl,
+    extract_commands_from_bare_bash_fences as _extract_commands_from_bare_bash_fences,
+    merged_workspace_source_text as _merged_workspace_source_text_impl,
+    text_contains_swarm_workspace_actions as _text_contains_swarm_workspace_actions,
 )
 
 from backend.App.workspace.infrastructure.swarm_tag_parsers import (
@@ -30,6 +38,7 @@ from backend.App.workspace.infrastructure.swarm_tag_parsers import (
     _lift_swarm_shell_from_bash_sh_fences,
     _lift_swarm_shell_from_prompt_style_xml_fences,
     _markdown_fence_spans,
+    _neutralize_inline_code_tags,
     _position_inside_fences,
     _run_shell_block,
     _shell_block_body_from_match,
@@ -58,6 +67,9 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 _PATCH_PARSER_CONFIG = load_app_config_json("workspace_patch_parser.json")
+
+any_snapshot_output_has_swarm = _any_snapshot_output_has_swarm
+text_contains_swarm_workspace_actions = _text_contains_swarm_workspace_actions
 
 _PLACEHOLDER_SWARM_FILE_BODY = re.compile(
     r"^[\s.·…]{1,40}$",
@@ -98,7 +110,14 @@ _PAT_SWARM_FILE_COMMENT_FENCE = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 _BASE_FENCE_EXTENSIONS: str = str(_PATCH_PARSER_CONFIG["fence_base_extensions"])
-_extra_fence_extensions = os.environ.get("SWARM_PATCH_PARSER_EXTRA_EXTENSIONS", "").strip()
+_extra_fence_extensions_environment_key = str(
+    _PATCH_PARSER_CONFIG.get("extra_fence_extensions_environment_key") or ""
+).strip()
+_extra_fence_extensions = (
+    os.environ.get(_extra_fence_extensions_environment_key, "").strip()
+    if _extra_fence_extensions_environment_key
+    else ""
+)
 _fence_ext_pattern = _BASE_FENCE_EXTENSIONS + (
     "|" + _extra_fence_extensions.replace(",", "|") if _extra_fence_extensions else ""
 )
@@ -171,6 +190,159 @@ def _is_binary_asset_path(rel: str) -> bool:
 
 def _patch_body_has_search_markers(body: str) -> bool:
     return "<<<<<<< SEARCH" in body
+
+
+def _write_safety_policy() -> dict[str, Any]:
+    value = _PATCH_PARSER_CONFIG.get("workspace_write_safety")
+    if not isinstance(value, dict):
+        raise RuntimeError("workspace_patch_parser.workspace_write_safety is not configured")
+    return value
+
+
+def _write_safety_text(key: str) -> str:
+    value = str(_write_safety_policy().get(key) or "")
+    if not value:
+        raise RuntimeError(f"workspace_patch_parser.workspace_write_safety.{key} is empty")
+    return value
+
+
+def _is_environment_enabled(name: str, *, default: bool) -> bool:
+    if not name:
+        return default
+    environment_value = os.getenv(name, "").strip().lower()
+    if not environment_value:
+        return default
+    enabled_values = _write_safety_policy().get("enabled_environment_values")
+    if not isinstance(enabled_values, list):
+        return default
+    return environment_value in {
+        str(value).strip().lower() for value in enabled_values if str(value).strip()
+    }
+
+
+def _full_rewrite_safety_enabled() -> bool:
+    policy = _write_safety_policy()
+    return _is_environment_enabled(
+        str(policy.get("block_unjustified_full_rewrite_environment_key") or ""),
+        default=bool(policy.get("block_unjustified_full_rewrite_default")),
+    )
+
+
+def _parse_rewrite_justification_paths(text: str, root: Path) -> set[str]:
+    import json
+
+    match = re.search(_write_safety_text("dev_manifest_pattern"), text, re.DOTALL)
+    if not match:
+        return set()
+    try:
+        data = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return set()
+    if not isinstance(data, dict):
+        return set()
+
+    justified: set[str] = set()
+    justifications_key = _write_safety_text("rewrite_justifications_key")
+    path_key = _write_safety_text("rewrite_path_key")
+    reason_key = _write_safety_text("rewrite_reason_key")
+    for entry in data.get(justifications_key) or []:
+        if not isinstance(entry, dict):
+            continue
+        path = str(entry.get(path_key) or "").strip()
+        reason = str(entry.get(reason_key) or "").strip()
+        if not path or not reason:
+            continue
+        try:
+            justified.add(safe_relative_path(root, path).relative_to(root).as_posix())
+        except ValueError:
+            continue
+    return justified
+
+
+def _unsafe_full_rewrite_errors(
+    *,
+    text: str,
+    root: Path,
+    validation_result: dict[str, Any],
+) -> list[str]:
+    if not _full_rewrite_safety_enabled():
+        return []
+
+    write_actions = validation_result.get("write_actions")
+    if not isinstance(write_actions, list):
+        return []
+
+    justified_paths = _parse_rewrite_justification_paths(text, root)
+    created_paths: set[str] = set()
+    errors: list[str] = []
+    for action in write_actions:
+        if not isinstance(action, dict):
+            continue
+        path = str(action.get("path") or "").strip()
+        mode = str(action.get("mode") or "").strip()
+        if not path:
+            continue
+        if mode == "create_file":
+            created_paths.add(path)
+
+    for action in write_actions:
+        if not isinstance(action, dict):
+            continue
+        path = str(action.get("path") or "").strip()
+        mode = str(action.get("mode") or "").strip()
+        if mode != "overwrite_file" or not path:
+            continue
+        if path in created_paths or path in justified_paths:
+            continue
+        errors.append(
+            Template(_write_safety_text("full_rewrite_error_template")).safe_substitute(
+                path=path,
+            )
+        )
+    return errors
+
+
+def validate_workspace_pipeline_before_apply(text: str, root: Path) -> dict[str, Any]:
+    root = root.resolve()
+    validation_result = apply_workspace_pipeline(
+        text,
+        root,
+        dry_run=True,
+        run_shell=False,
+    )
+    errors = list(validation_result.get("errors") or [])
+    errors.extend(
+        _unsafe_full_rewrite_errors(
+            text=text,
+            root=root,
+            validation_result=validation_result,
+        )
+    )
+    return {
+        "ok": not errors,
+        "errors": errors,
+        "validation_result": validation_result,
+    }
+
+
+def blocked_workspace_write_result(validation: dict[str, Any]) -> dict[str, Any]:
+    dry_run_result = validation.get("validation_result")
+    if not isinstance(dry_run_result, dict):
+        dry_run_result = {}
+    return {
+        "written": [],
+        "patched": [],
+        "udiff_applied": [],
+        "write_actions": [],
+        "shell_runs": [],
+        "errors": list(validation.get("errors") or []),
+        "parsed": int(dry_run_result.get("parsed", 0) or 0),
+        "healed_patches": [],
+        "binary_assets_requested": list(dry_run_result.get("binary_assets_requested") or []),
+        "asset_requests": list(dry_run_result.get("asset_requests") or []),
+        "blocked_write_actions": list(dry_run_result.get("write_actions") or []),
+        "note": _write_safety_text("blocked_note"),
+    }
 
 
 def apply_workspace_pipeline(
@@ -424,23 +596,13 @@ _SWARM_ACTION_MARKERS: tuple[str, ...] = (
 )
 
 
-def _extract_commands_from_bare_bash_fences(text: str) -> list[str]:
-    commands: list[str] = []
-    for match in _PAT_BASH_FENCE.finditer(text):
-        for line in match.group(1).splitlines():
-            line_text = line.strip()
-            if not line_text or line_text.startswith("#") or "<swarm_" in line_text.lower():
-                continue
-            commands.append(line_text)
-    return commands
-
-
 def extract_shell_commands(text: str) -> list[str]:
     lifted = _lift_swarm_shell_from_prompt_style_xml_fences(text)
     lifted = _lift_swarm_shell_from_bash_sh_fences(lifted)
+    neutralized = _neutralize_inline_code_tags(lifted)
     fence_spans = _markdown_fence_spans(lifted)
     commands: list[str] = []
-    for match in _PAT_SHELL.finditer(lifted):
+    for match in _PAT_SHELL.finditer(neutralized):
         if _position_inside_fences(match.start(), fence_spans):
             continue
         for line in _shell_block_body_from_match(match).splitlines():
@@ -453,82 +615,18 @@ def extract_shell_commands(text: str) -> list[str]:
     return commands
 
 
-def text_contains_swarm_workspace_actions(text: str) -> bool:
-    return any(marker in text for marker in _SWARM_ACTION_MARKERS)
-
-
-def any_snapshot_output_has_swarm(state: dict[str, Any]) -> bool:
-    for key, value in state.items():
-        if isinstance(key, str) and key.endswith("_output") and isinstance(value, str):
-            if text_contains_swarm_workspace_actions(value):
-                return True
-    for list_key in ("dev_task_outputs", "qa_task_outputs"):
-        arr = state.get(list_key)
-        if isinstance(arr, list):
-            for piece in arr:
-                if isinstance(piece, str) and text_contains_swarm_workspace_actions(piece):
-                    return True
-    return False
-
-
 def collect_workspace_source_chunks(state: dict[str, Any]) -> list[str]:
-    chunks: list[str] = []
-    seen_keys: set[str] = set()
-
-    steps = state.get("pipeline_steps")
-    if isinstance(steps, list):
-        for raw_step in steps:
-            step_id = str(raw_step).strip()
-            if not step_id:
-                continue
-            key = f"{step_id}_output"
-            text = state.get(key)
-            if isinstance(text, str) and text.strip():
-                chunks.append(text)
-                seen_keys.add(key)
-
-    if not chunks:
-        for key in WORKSPACE_SWARM_FILE_SOURCE_KEYS:
-            text = state.get(key)
-            if isinstance(text, str) and text.strip():
-                chunks.append(text)
-                seen_keys.add(key)
-
-    if "dev_output" not in seen_keys:
-        arr = state.get("dev_task_outputs")
-        if isinstance(arr, list):
-            for piece in arr:
-                if isinstance(piece, str) and piece.strip():
-                    chunks.append(piece)
-
-    if "qa_output" not in seen_keys:
-        arr = state.get("qa_task_outputs")
-        if isinstance(arr, list):
-            for piece in arr:
-                if isinstance(piece, str) and piece.strip():
-                    chunks.append(piece)
-
-    for key in sorted(state.keys()):
-        if not isinstance(key, str) or not key.endswith("_output"):
-            continue
-        if key in seen_keys:
-            continue
-        text = state.get(key)
-        if not isinstance(text, str) or not text.strip():
-            continue
-        if not text_contains_swarm_workspace_actions(text):
-            continue
-        chunks.append(text)
-        seen_keys.add(key)
-
-    return chunks
+    return _collect_workspace_source_chunks_impl(
+        state,
+        workspace_swarm_file_source_keys=WORKSPACE_SWARM_FILE_SOURCE_KEYS,
+    )
 
 
 def merged_workspace_source_text(state: dict[str, Any]) -> str:
-    chunks = collect_workspace_source_chunks(state)
-    if not chunks:
-        return ""
-    return "\n\n".join(chunks)
+    return _merged_workspace_source_text_impl(
+        state,
+        workspace_swarm_file_source_keys=WORKSPACE_SWARM_FILE_SOURCE_KEYS,
+    )
 
 
 def apply_from_devops_and_dev_outputs(
@@ -551,16 +649,22 @@ def apply_from_devops_and_dev_outputs(
         }
     merged = "\n\n".join(chunks)
     if not dry_run:
-        validation_result = apply_workspace_pipeline(merged, root, dry_run=True, run_shell=False)
-        validation_errors = list(validation_result.get("errors") or [])
+        validation = validate_workspace_pipeline_before_apply(merged, root)
+        validation_errors = list(validation.get("errors") or [])
         if validation_errors:
-            error_detail = "; ".join(validation_errors[:10])
-            raise RuntimeError(
-                f"workspace_write_pre_validation_failed: patch validation errors detected before any files were written — "
-                f"operation=apply_from_devops_and_dev_outputs "
-                f"errors_count={len(validation_errors)} "
-                f"errors={error_detail!r} "
-                f"expected=all patches and writes are valid "
-                f"actual=VALIDATION_FAILED"
+            error_detail = "; ".join(str(error) for error in validation_errors[:10])
+            logger.warning(
+                "workspace_write_pre_validation: %d patch/write issue(s) detected — "
+                "aborting workspace apply so partial writes cannot corrupt the tree. "
+                "errors=%s",
+                len(validation_errors), error_detail,
             )
-    return apply_workspace_pipeline(merged, root, dry_run=dry_run, run_shell=run_shell)
+            return blocked_workspace_write_result(validation)
+    apply_result = apply_workspace_pipeline(merged, root, dry_run=dry_run, run_shell=run_shell)
+    if not dry_run and validation_errors:
+        merged_errors = list(apply_result.get("errors") or [])
+        for validation_error in validation_errors:
+            if validation_error not in merged_errors:
+                merged_errors.append(validation_error)
+        apply_result["errors"] = merged_errors
+    return apply_result

@@ -1,0 +1,83 @@
+{
+  "id": "content_article",
+  "title": "Content Article",
+  "category": "content",
+  "description": "Produce a publishable article end to end: define audience and tone, outline, draft, edit, and SEO-review.",
+  "pipeline_steps": [
+    "clarify_input",
+    "pm",
+    "review_pm",
+    "ba",
+    "review_ba",
+    "crole_audience_strategist",
+    "crole_content_outline",
+    "crole_writer",
+    "crole_editor",
+    "seo_specialist",
+    "review_seo_specialist"
+  ],
+  "default_gates": [],
+  "expected_artifacts": [
+    "pipeline.json",
+    "agents/crole_audience_strategist.txt",
+    "agents/crole_content_outline.txt",
+    "agents/crole_writer.txt",
+    "agents/crole_editor.txt",
+    "agents/seo_specialist.txt"
+  ],
+  "required_tools": [],
+  "workspace_write_default": false,
+  "recommended_models": {
+    "planner": "fast",
+    "writer": "strong",
+    "editor": "strong"
+  },
+  "agent_config_defaults": {
+    "custom_roles": {
+      "audience_strategist": {
+        "prompt_text": "You are an Audience Strategist. From the user task, distil the target audience and the article's job-to-be-done. Emit ```json with keys: audience (one sentence), reader_pain (1-2 sentences), reader_goal (one sentence), tone (formal | conversational | technical | playful), reading_level (general | informed | expert), success_criteria (array of 3-5 short strings)."
+      },
+      "content_outline": {
+        "prompt_text": "You are a Content Outline Architect. Using the audience and tone above, produce a markdown outline: ## Headline (one strong working title + 2 alternates), ## Hook (≤2 sentences), ## Sections (numbered headings with 1-2 bullet sub-points each, 4-7 sections total), ## Closing (call to action). Keep total outline under 400 words."
+      },
+      "writer": {
+        "prompt_text": "You are the Writer. Produce the full article in markdown using the outline above. Match the chosen tone and reading level exactly. Use short paragraphs, concrete examples, and at most one rhetorical question per section. Stay between 800 and 1800 words. Do NOT invent sources; if a factual claim needs a source, mark it [needs-source] inline. End with the call-to-action from the outline."
+      },
+      "editor": {
+        "prompt_text": "You are the Editor. Review the writer's draft. Emit ```json with keys: changes (array of {section, before, after, reason}), remaining_concerns (array of strings), [needs-source] markers (array of strings), final_draft (markdown of the polished version). Final draft must keep the chosen tone, fix any [needs-source] you can resolve from the writer's text alone, and tighten verbose passages. Do NOT add new factual claims."
+      }
+    }
+  },
+  "tags": ["content", "marketing", "executable", "read_only"],
+  "inputs": [
+    {
+      "key": "prompt",
+      "label": "Topic, audience, tone, length",
+      "hint": "Describe the topic, target audience, tone of voice, target length, keywords, source policy, output channel.",
+      "required": true
+    }
+  ],
+  "quality_checks": [
+    {
+      "id": "core_artifacts_present",
+      "type": "artifact_count",
+      "severity": "error",
+      "blocking": true,
+      "config": {"min": 5}
+    },
+    {
+      "id": "writer_draft_substantive",
+      "type": "agent_output_min_chars",
+      "severity": "error",
+      "blocking": false,
+      "config": {"agent": "crole_writer", "min_chars": 800}
+    },
+    {
+      "id": "editor_pass_present",
+      "type": "agent_output_min_chars",
+      "severity": "warning",
+      "blocking": false,
+      "config": {"agent": "crole_editor", "min_chars": 200}
+    }
+  ]
+}

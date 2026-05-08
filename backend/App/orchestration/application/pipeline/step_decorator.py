@@ -73,8 +73,11 @@ def hook_wrap(
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0
             try:
                 _observability.record_metric(step_id, elapsed_ms)
-            except Exception:
-                pass
+            except Exception as record_metric_exc:
+                logger.warning(
+                    "step_decorator: record_metric failed for step=%s — metrics may be incomplete. error=%s",
+                    step_id, record_metric_exc,
+                )
 
             output_with_metrics = dict(step_output)
             if _has_usage_tracker:
@@ -85,8 +88,11 @@ def hook_wrap(
                         output_with_metrics[_TOKEN_KEY_INPUT] = token_usage["input_tokens"]
                     if token_usage.get("output_tokens"):
                         output_with_metrics[_TOKEN_KEY_OUTPUT] = token_usage["output_tokens"]
-                except Exception:
-                    pass
+                except Exception as usage_tracker_exc:
+                    logger.warning(
+                        "step_decorator: token usage extraction failed for step=%s — Tokens panel will show 0. error=%s",
+                        step_id, usage_tracker_exc,
+                    )
             try:
                 from backend.App.integrations.infrastructure.mcp.openai_loop.loop import (
                     _last_mcp_telemetry,
@@ -103,8 +109,11 @@ def hook_wrap(
                     output_with_metrics[_TOKEN_KEY_FILE_READ_CACHE_MISSES] = _cache_misses
                 _last_mcp_telemetry.file_read_cache_hits = 0
                 _last_mcp_telemetry.file_read_cache_misses = 0
-            except Exception:
-                pass
+            except Exception as mcp_telemetry_exc:
+                logger.warning(
+                    "step_decorator: MCP telemetry extraction failed for step=%s. error=%s",
+                    step_id, mcp_telemetry_exc,
+                )
 
             try:
                 _observability.trace_step(
@@ -115,19 +124,28 @@ def hook_wrap(
                         "step_delta": output_with_metrics,
                     },
                 )
-            except Exception:
-                pass
+            except Exception as trace_step_exc:
+                logger.error(
+                    "step_decorator: trace_step failed for step=%s task_id=%s — Tokens panel will be empty. error=%s",
+                    step_id, str(base.get("task_id") or ""), trace_step_exc,
+                )
             return combined_output
         finally:
             pop_ephemeral(state, "_current_step_id")
             try:
                 _cs._current_agent_config.reset(_cs_cfg_token)
-            except Exception:
-                pass
+            except Exception as agent_config_reset_error:
+                logger.debug(
+                    "step_decorator: failed to reset _current_agent_config token for step=%s: %s",
+                    step_id, agent_config_reset_error,
+                )
             try:
                 _cs._current_step_id.reset(_cs_step_token)
-            except Exception:
-                pass
+            except Exception as step_id_reset_error:
+                logger.debug(
+                    "step_decorator: failed to reset _current_step_id token for step=%s: %s",
+                    step_id, step_id_reset_error,
+                )
 
     return wrapped
 

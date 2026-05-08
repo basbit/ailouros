@@ -1,0 +1,14 @@
+{
+  "pipeline_steps_contains": [
+    "clarify_input",
+    "ux_researcher",
+    "visual_probe",
+    "visual_design_review",
+    "qa",
+    "human_qa"
+  ],
+  "default_gates": ["human_qa"],
+  "required_tools": [],
+  "workspace_write": false,
+  "warnings_count": 0
+}

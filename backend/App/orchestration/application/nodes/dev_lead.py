@@ -28,9 +28,11 @@ from backend.App.orchestration.application.nodes._shared import (
     pipeline_user_task,
 )
 from backend.App.orchestration.application.nodes._prompt_builders import (
+    _prompt_fragment,
     _run_agent_with_boundary as _canonical_run_agent_with_boundary,
     _validate_agent_boundary as _canonical_validate_agent_boundary,
 )
+from string import Template
 from backend.App.orchestration.application.nodes.dev_subtasks import (
     normalize_dev_qa_tasks_to_count,
     parse_dev_lead_plan,
@@ -160,61 +162,28 @@ def dev_lead_node(state: PipelineState) -> dict[str, Any]:
     _missing_sections_block = ""
     _missing_sections = state.get("_dev_lead_missing_sections")
     if _missing_sections:
-        _missing_sections_block = (
-            "\n\n## CRITICAL: Your previous output was REJECTED — missing required sections\n"
-            f"Missing: {_missing_sections}\n"
-            "You MUST include ALL of the following in the `deliverables` object of your JSON response: "
-            f"{_missing_sections}. "
-            "Do NOT omit any of them. The pipeline cannot proceed without these sections.\n"
-        )
+        _missing_sections_block = Template(
+            _prompt_fragment("dev_lead_missing_sections_block_template")
+        ).safe_substitute(missing=_missing_sections)
 
-    prompt = (
-        _swarm_prompt_prefix(state)
-        + _documentation_locale_line(state)
-        + "[Pipeline rule] You have the **approved specification** (BA + Architect). "
-        "Create a **subtask plan**: each one is **one short Dev run** and a narrow QA run. "
-        "Dev/QA are **small fast models** and should not re-process the entire spec.\n\n"
-        "**Required:** `development_scope` and `testing_scope` must be **self-contained checklists**: "
-        "files/classes/endpoints, steps, readiness criteria; no 'implement per spec'. "
-        "Each subtask should take **minutes**, not hours.\n\n"
-        "**Independence:** subtasks should be maximally **parallelizable** "
-        "(different files/modules; specify dependencies only when absolutely required).\n\n"
-        f"{langs}"
-        "Decompose by modules/features (typically 2–6; one only if the scope is atomic).\n"
-        f"{_bare_repo_scaffold_instruction(state)}"
-        "If the repository still lacks runnable automated checks for the **Architect** stack — **first** subtask = "
-        "minimal bootstrap (dependencies + first smoke test / lint as appropriate); subsequent ones = features.\n\n"
-        "User task:\n"
-        f"{pipeline_user_task(state)}\n\n"
-        "Approved specification (BA + Architect):\n"
-        f"{_spec_for_build_mcp_safe(state)}\n"
-        f"{source_research_block}"
-        f"{research_advisory_block}"
-        "Planning review status artifact (required context; derive subtasks only from approved artifacts):\n"
-        f"{json.dumps(planning_reviews_artifact, ensure_ascii=False, indent=2)}\n"
-        f"{devops_block}"
-        f"{code_hint}"
-        f"{count_rule}"
-        "Respond with **only** a JSON object inside a ```json ... ``` block, no text outside.\n"
-        "Schema:\n"
-        '{'
-        '"tasks":[{"id":"short_id","title":"title","development_scope":"what Dev implements (boundaries, files, API)","testing_scope":"what QA verifies (scenarios, criteria)","expected_paths":["workspace-relative file path this subtask must write or edit"],"dependencies":["subtask ids that must complete first"]}],'
-        '"deliverables":{"must_exist_files":["path/from/workspace"],"spec_symbols":["ClassName","InterfaceName","methodName"],'
-        '"verification_commands":[{"command":"build_gate|spec_gate|consistency_gate|stub_gate|diff_risk_gate","expected":"why this trusted gate must pass"}],'
-        '"assumptions":["explicit assumption that still needs verification"],'
-        '"production_paths":["workspace-relative file or directory that contains production logic for this task"],'
-        '"placeholder_allow_list":[{"path":"workspace-relative file or directory","pattern":"exact placeholder pattern to allow","reason":"why this is explicitly allowed"}]}'
-        '}\n'
-        "Rules for `deliverables`:\n"
-        "- `must_exist_files`: only files that MUST exist after implementation according to approved spec.\n"
-        "- `spec_symbols`: only key symbols/contracts that MUST exist after implementation.\n"
-        "- `verification_commands`: only trusted verification gate names from the allowed system set.\n"
-        "- `assumptions`: explicit unknowns; empty list if none.\n"
-        "- `production_paths`: explicit production files/directories where placeholder guardrails apply; use [] only when the approved scope has no production-path implementation.\n"
-        "- `placeholder_allow_list`: explicit allow-list for temporary placeholders that are intentionally permitted by the approved task; otherwise [].\n"
-        "- Each task must include non-empty `expected_paths` for the concrete files it is expected to touch; use workspace-relative paths only.\n"
-        "- Use `dependencies` only when a subtask truly cannot start before another subtask.\n"
-        + _missing_sections_block
+    prompt = Template(
+        _prompt_fragment("dev_lead_node_prompt_template")
+    ).safe_substitute(
+        swarm_prefix=_swarm_prompt_prefix(state),
+        locale=_documentation_locale_line(state),
+        languages=langs,
+        bare_repo_scaffold=_bare_repo_scaffold_instruction(state),
+        user_task=pipeline_user_task(state),
+        spec=_spec_for_build_mcp_safe(state),
+        source_research=source_research_block,
+        research_advisory=research_advisory_block,
+        planning_reviews=json.dumps(
+            planning_reviews_artifact, ensure_ascii=False, indent=2,
+        ),
+        devops_block=devops_block,
+        code_hint=code_hint,
+        count_rule=count_rule,
+        missing_sections=_missing_sections_block,
     )
     _DEV_LEAD_CONFIG_KEYS = ("dev_lead", "pm_tasks", "pm")
     dev_lead_cfg: dict[str, Any] = {}
@@ -304,12 +273,12 @@ def dev_lead_node(state: PipelineState) -> dict[str, Any]:
                 workspace_root_str,
                 _abs_violations[:5],
             )
-            _boundary_retry_prompt = (
-                prompt
-                + f"\n\n[CRITICAL] Your previous response contained expected_paths with absolute filesystem paths "
-                f"from a DIFFERENT project (e.g. {_abs_violations[0]!r}). "
-                f"You MUST use ONLY workspace-relative paths (relative to workspace_root={workspace_root_str!r}). "
-                "Do NOT reference absolute paths or paths from other projects."
+            _boundary_retry_prompt = Template(
+                _prompt_fragment("dev_lead_boundary_retry_template")
+            ).safe_substitute(
+                base_prompt=prompt,
+                example=repr(_abs_violations[0]),
+                workspace_root=repr(workspace_root_str),
             )
             dev_lead_output = _run_agent_with_boundary(state, agent, _boundary_retry_prompt)
             plan = parse_dev_lead_plan(dev_lead_output)
@@ -343,13 +312,12 @@ def dev_lead_node(state: PipelineState) -> dict[str, Any]:
                 entry.name for entry in _workspace_path.iterdir()
                 if entry.is_dir() and not entry.name.startswith(".")
             )[:12]
-            _path_contract_retry_prompt = (
-                prompt
-                + f"\n\n[CRITICAL] Your previous response contained expected_paths that reference "
-                f"directories that do NOT exist in the workspace (e.g. {_nonexistent_roots[0]!r}). "
-                f"You MUST only use paths inside directories that already exist. "
-                f"Existing top-level directories in workspace: {_existing_dirs}. "
-                "Do NOT invent new top-level directories."
+            _path_contract_retry_prompt = Template(
+                _prompt_fragment("dev_lead_path_contract_retry_template")
+            ).safe_substitute(
+                base_prompt=prompt,
+                example=repr(_nonexistent_roots[0]),
+                existing_dirs=str(_existing_dirs),
             )
             dev_lead_output = _run_agent_with_boundary(state, agent, _path_contract_retry_prompt)
             plan = parse_dev_lead_plan(dev_lead_output)
@@ -374,11 +342,11 @@ def dev_lead_node(state: PipelineState) -> dict[str, Any]:
                     "PM keywords: %s, dev_lead titles: %s. Retrying with constraint.",
                     _pm_keywords[:5], [t.get("title", "")[:60] for t in tasks[:5]],
                 )
-                _retry_prompt = (
-                    prompt
-                    + "\n\n[CRITICAL] Your subtask list does NOT match the PM-approved tasks. "
-                    "You MUST decompose ONLY the tasks listed by PM. Do not invent new features. "
-                    f"PM tasks keywords: {', '.join(_pm_keywords[:8])}"
+                _retry_prompt = Template(
+                    _prompt_fragment("dev_lead_pm_overlap_retry_template")
+                ).safe_substitute(
+                    base_prompt=prompt,
+                    keywords=", ".join(_pm_keywords[:8]),
                 )
                 dev_lead_output = _run_agent_with_boundary(state, agent, _retry_prompt)
                 plan = parse_dev_lead_plan(dev_lead_output)
@@ -472,24 +440,13 @@ def review_dev_lead_node(state: PipelineState) -> dict[str, Any]:
         default_max=60_000,
         mcp_max=3_000,
     )
-    prompt = (
-        "Step: dev_lead (subtask plan Dev/QA after merged specification).\n"
-        "Checklist — issue VERDICT: NEEDS_WORK if ANY item fails:\n"
-        "[ ] Each subtask has a narrow, single-feature scope (not a copy of the entire spec)\n"
-        "[ ] Each subtask includes both a development scope and a testing scope\n"
-        "[ ] Each subtask includes explicit expected_paths for the files it is supposed to touch\n"
-        "[ ] No subtask mixes multiple unrelated features\n"
-        "[ ] Subtask count is proportional to scope (XS task → 1-2 subtasks, not 10+)\n"
-        "[ ] A valid JSON object with `tasks` and `deliverables` is present in the output\n"
-        "[ ] `deliverables.must_exist_files` lists only files explicitly required by the approved spec\n"
-        "[ ] `deliverables.spec_symbols` lists only key contracts/symbols justified by the approved spec\n\n"
-        "[ ] `deliverables.production_paths` explicitly marks the production files/directories that placeholder guardrails must protect\n"
-        "[ ] `deliverables.placeholder_allow_list` is empty unless the approved task explicitly allows a placeholder with a stated reason\n\n"
-        "[ ] The plan is derived only from approved planning artifacts; it does not silently inherit reviewer-rejected assumptions\n\n"
-        f"User task:\n{user_block}\n\n"
-        f"Specification:\n{spec_art}\n\n"
-        f"Planning review status artifact:\n{_format_planning_review_artifact(state)}\n\n"
-        f"Dev Lead plan:\n{lead_art}"
+    prompt = Template(
+        _prompt_fragment("review_dev_lead_prompt_template")
+    ).safe_substitute(
+        user_block=user_block,
+        spec_artifact=spec_art,
+        planning_reviews=_format_planning_review_artifact(state),
+        lead_artifact=lead_art,
     )
     return run_reviewer_or_moa(
         state,

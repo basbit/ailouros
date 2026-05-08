@@ -410,6 +410,28 @@ def analyze_workspace(
     conventions = _extract_project_conventions(root, files_out, by_lang)
 
     tree_sitter_file_count = sum(1 for f in files_out if (f.get("tree_sitter") or {}).get("enabled"))
+
+    from backend.App.workspace.infrastructure.code_analysis.duplicate_symbols import (
+        find_duplicate_symbols,
+        summarize_duplicates,
+    )
+    flat_entities: list[dict[str, Any]] = []
+    for file_entry in files_out:
+        for entity in file_entry.get("entities") or []:
+            if not isinstance(entity, dict):
+                continue
+            merged = dict(entity)
+            merged.setdefault("file", file_entry.get("path"))
+            flat_entities.append(merged)
+    duplicates = find_duplicate_symbols(flat_entities)
+
+    weak_files: list[str] = []
+    for file_entry in files_out:
+        path = str(file_entry.get("path") or "")
+        entities = file_entry.get("entities") or []
+        if path and not entities:
+            weak_files.append(path)
+
     return {
         "schema": "swarm_code_analysis/v1",
         "root": str(root),
@@ -422,6 +444,7 @@ def analyze_workspace(
             "by_language": by_lang,
             "max_files_cap": _MAX_FILES,
             "tree_sitter_files": tree_sitter_file_count,
+            "weak_files_no_entities": len(weak_files),
         },
         "tree_sitter": {
             "enabled": tree_sitter_file_count > 0,
@@ -433,6 +456,9 @@ def analyze_workspace(
             ),
         },
         "conventions": conventions,
+        "duplicate_symbols": [duplicate.to_dict() for duplicate in duplicates],
+        "duplicate_symbols_summary": summarize_duplicates(duplicates),
+        "weak_files": weak_files,
     }
 
 

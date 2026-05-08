@@ -15,6 +15,7 @@ Multi-agent pipeline (Python · FastAPI · LangGraph) — runs fully locally wit
 - Developers who want a local-first multi-agent coding pipeline
 - Teams exploring structured AI workflows with explicit review and approval gates
 - Builders who need an OpenAI-compatible API plus a browser UI for orchestration
+- Operators who want ready-to-run research, content, data, product, support, and visual QA workflows
 
 ## Repository layout
 
@@ -50,9 +51,17 @@ Between steps the system passes **validated JSON artifacts** (not raw text), so 
 - **Workspace context modes** — `retrieve` (MCP), `full`, `priority_paths`, `index_only`, and more
 - **Autonomous features** — deep planning, self-verify, auto-retry, auto-approve, dream/consolidation
 - **Human gates** — pause and approve/reject after any step; configurable per-role
+- **Ready-to-run scenarios** — twelve bundled workflows with defaults, gates, artifacts, and quality checks
+- **Runtime evidence** — scenario artifacts, source panels, findings, screenshots, score, and capability checks
+- **Pre-review reliability blockers** — zero-write runs, failed trusted gates, and source-corruption / fake-tool-call writes halt the pipeline before review/QA (see `wiki/architecture/pipeline-quality.md`)
+- **Run-end notifications** — opt-in webhook / email / Telegram / Slack / Discord adapters with redaction, severity floor, rate limiting, and quiet hours (see `wiki/architecture/notifications.md`)
+- **Voice dictation in the prompt** — Web Speech API mic button next to the textarea; locale follows `<html lang>`; hidden when the API is unavailable
+- **Asset pipeline** — upload user assets and route requested media through explicit asset manifests
+- **Media generation step** — provider-backed abstraction for image/audio generation, with concrete providers tracked separately
 - **Pattern memory** — cross-task learning stored across runs
 - **Real-time streaming** — SSE + WebSocket events feed in the UI
-- **Structured artifacts** — every pipeline run writes `pipeline.json`, per-agent outputs, and logs to `var/artifacts/<task_id>/`
+- **Structured artifacts** — every pipeline run writes `pipeline.json`, per-agent outputs, runtime telemetry (`runtime.json`), and logs to `var/artifacts/<task_id>/`
+- **Cross-project observability** — 14-day sparkline charts on top of the existing aggregate stats card (sidebar `Advanced` toggle)
 
 ---
 
@@ -232,7 +241,59 @@ SWARM_ROUTE_BUILD=ollama
 SWARM_MODEL_BUILD=qwen2.5-coder:14b
 ```
 
-Full environment variable reference: [`docs/AIlourOS.md § 11`](docs/AIlourOS.md).
+### Reliability blockers
+
+```env
+# Halt the pipeline before review/QA when dev produced 0 writes (default: on)
+SWARM_REQUIRE_DEV_WRITES=1
+
+# Halt before review/QA when a trusted verification gate failed (default: on)
+SWARM_REQUIRE_TRUSTED_GATES_PASS=1
+
+# Fail the run when source-corruption / fake-tool-call markers land in the
+# workspace (default: on)
+SWARM_FAIL_ON_SOURCE_CORRUPTION=1
+
+# DevOps step refuses to run with empty workspace_root (default: on)
+SWARM_DEVOPS_REQUIRE_REPO_PATH=1
+```
+
+### Notifications
+
+Run-end notifications are opt-in. Enable + configure adapters via env or
+the global Settings drawer (`features/global-settings/GlobalNotificationSettings.vue`):
+
+```env
+SWARM_NOTIFY_ENABLED=1
+SWARM_NOTIFY_MIN_SEVERITY=warning
+SWARM_NOTIFY_RATE_LIMIT_PER_MIN=30
+
+# Generic webhook
+SWARM_NOTIFY_WEBHOOK_URL=https://example.com/hook
+SWARM_NOTIFY_WEBHOOK_TOKEN=...
+
+# Email (SMTP)
+SWARM_NOTIFY_SMTP_HOST=smtp.example.com
+SWARM_NOTIFY_SMTP_PORT=587
+SWARM_NOTIFY_SMTP_TLS=1
+SWARM_NOTIFY_EMAIL_SENDER=bot@example.com
+SWARM_NOTIFY_EMAIL_RECIPIENTS=alice@example.com,bob@example.com
+SWARM_NOTIFY_SMTP_USER=...
+SWARM_NOTIFY_SMTP_PASSWORD=...
+
+# Telegram
+SWARM_NOTIFY_TELEGRAM_BOT_TOKEN=...
+SWARM_NOTIFY_TELEGRAM_CHAT_ID=...
+
+# Slack / Discord
+SWARM_NOTIFY_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
+SWARM_NOTIFY_DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+```
+
+See `wiki/architecture/notifications.md` for the full domain port,
+redaction patterns, and policy semantics.
+
+Full environment variable reference: [`docs/AIlourOS.md § 12`](../docs/AIlourOS.md).
 
 ---
 
@@ -264,6 +325,38 @@ curl http://localhost:8000/v1/chat/completions \
 ```
 
 Track progress: `GET /tasks/{task_id}` — returns status, step, and artifact paths.
+
+---
+
+## Ready-to-run scenarios
+
+Pick a scenario in the UI or pass `scenario_id` through
+`/v1/chat/completions`. If no scenario is selected, the advanced development
+swarm remains the default.
+
+Bundled scenarios:
+
+- `build_feature`, `fix_bug`, `code_review`
+- `research_brief`, `deep_research_report`, `competitor_analysis`
+- `content_article`, `seo_aeo_geo_audit`
+- `data_analysis`, `product_prd`, `support_triage`
+- `website_visual_qa`
+
+Scenario API:
+
+```bash
+curl http://localhost:8000/v1/scenarios
+curl http://localhost:8000/v1/runtime/capabilities
+```
+
+Per-run evidence:
+
+- `GET /v1/tasks/{task_id}/scenario-artifacts`
+- `GET /v1/tasks/{task_id}/scenario-quality-checks`
+- `GET /v1/tasks/{task_id}/scenario-score`
+- `POST /v1/tasks/{task_id}/reveal`
+
+Operational details live in [`wiki/architecture/scenarios.md`](../wiki/architecture/scenarios.md).
 
 ---
 

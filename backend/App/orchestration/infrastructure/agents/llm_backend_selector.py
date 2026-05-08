@@ -59,9 +59,19 @@ def _local_base_url_from_environment(environment: str) -> tuple[str, str]:
             os.getenv("LMSTUDIO_BASE_URL", LMSTUDIO_BASE_URL),
             os.getenv("LMSTUDIO_API_KEY", "lm-studio"),
         )
+    if env_key in {"local", "llamacpp", "llama_cpp"}:
+        return (
+            os.getenv("AILOUROS_LLM_BASE_URL")
+            or os.getenv("OPENAI_BASE_URL")
+            or os.getenv("OPENAI_API_BASE")
+            or "http://localhost:8080/v1",
+            os.getenv("AILOUROS_LLM_API_KEY")
+            or os.getenv("OPENAI_API_KEY")
+            or "sk-no-key-required",
+        )
     return (
-        os.getenv("OPENAI_BASE_URL", OLLAMA_BASE_URL),
-        os.getenv("OPENAI_API_KEY", "ollama"),
+        os.getenv("OLLAMA_BASE_URL", OLLAMA_BASE_URL),
+        os.getenv("OLLAMA_API_KEY", "ollama"),
     )
 
 
@@ -81,7 +91,14 @@ class LLMBackendSelector:
         env_key = (environment or "").lower()
         cfg = LLMBackendConfig(base_url="", api_key="", model=model, max_tokens=max_tokens)
 
-        if env_key in {"lmstudio", "lm_studio", "ollama", ""}:
+        if env_key in {"local", "llamacpp", "llama_cpp"}:
+            base_url, api_key = _local_base_url_from_environment(environment)
+            cfg.base_url = base_url
+            cfg.api_key = api_key
+            cfg.llm_route = "openai"
+            cfg.provider_label = "local:llamacpp"
+
+        elif env_key in {"lmstudio", "lm_studio", "ollama", ""}:
             base_url, api_key = _local_base_url_from_environment(environment)
             cfg.base_url = base_url
             cfg.api_key = api_key

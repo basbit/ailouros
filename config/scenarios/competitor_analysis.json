@@ -1,0 +1,85 @@
+{
+  "id": "competitor_analysis",
+  "title": "Competitor Analysis",
+  "category": "research",
+  "description": "Compare a product against competitors: identify the market, gather competitor data, judge sources, analyse positioning and pricing, and synthesise opportunities.",
+  "pipeline_steps": [
+    "clarify_input",
+    "pm",
+    "review_pm",
+    "ba",
+    "review_ba",
+    "crole_market_researcher",
+    "crole_competitor_researcher",
+    "crole_source_reviewer",
+    "crole_positioning_analyst",
+    "crole_pricing_analyst",
+    "crole_opportunity_synth"
+  ],
+  "default_gates": [],
+  "expected_artifacts": [
+    "pipeline.json",
+    "agents/pm.txt",
+    "agents/ba.txt",
+    "agents/crole_market_researcher.txt",
+    "agents/crole_competitor_researcher.txt",
+    "agents/crole_source_reviewer.txt",
+    "agents/crole_positioning_analyst.txt",
+    "agents/crole_pricing_analyst.txt",
+    "agents/crole_opportunity_synth.txt"
+  ],
+  "required_tools": ["web_search"],
+  "workspace_write_default": false,
+  "recommended_models": {
+    "planner": "strong",
+    "research": "fast",
+    "synthesis": "strong"
+  },
+  "agent_config_defaults": {
+    "custom_roles": {
+      "market_researcher": {
+        "prompt_text": "You are a Market Researcher. From the user task, define the market context: bounded market segment, region/language, target audience, comparison dimensions. Emit ```json with keys: market (one sentence), region, audience, dimensions (array of 4-7 short strings to compare on)."
+      },
+      "competitor_researcher": {
+        "prompt_text": "You are a Competitor Researcher. Identify 3-7 relevant competitors (use any list from the user, then add discovered ones). For each competitor emit ```json: competitors (array of {name, url_or_query, segment_fit: tight | adjacent | distant, why_relevant (1 sentence), source_seeds (array of search queries or URLs)}). Do NOT invent specific URLs you cannot vouch for."
+      },
+      "source_reviewer": {
+        "prompt_text": "You are a Source Reviewer. Judge each source seed from competitor_researcher. Emit ```json array of {competitor, seed, authority (high|medium|low), recency (current|recent|stale|unknown), keep (bool), reason}. Be permissive but explicit."
+      },
+      "positioning_analyst": {
+        "prompt_text": "You are a Positioning Analyst. For each competitor, summarise positioning across the dimensions from market_researcher. Emit ```json: matrix (object: competitor → object: dimension → short text or 'unknown'), unique_strengths (object: competitor → array of strings), shared_weaknesses (array of strings). Mark anything not supported by a kept source as 'unknown' — do NOT guess."
+      },
+      "pricing_analyst": {
+        "prompt_text": "You are a Pricing Analyst. For each competitor, capture pricing structure. Emit ```json: pricing (object: competitor → {model: free | freemium | tiered | enterprise | unknown, headline_price_or_unknown, notes}). NEVER infer pricing from positioning — if no kept source mentions price, mark unknown."
+      },
+      "opportunity_synth": {
+        "prompt_text": "You are an Opportunity Synthesiser. Combine positioning_analyst's matrix with the user's product context to surface opportunities. Emit markdown: ## Opportunities (3-6 numbered, each with a 1-sentence claim grounded in matrix gaps), ## Threats (3-5 numbered), ## Recommended Next Moves (3-5 short bullets). Cite the specific matrix cell or competitor for every opportunity."
+      }
+    }
+  },
+  "tags": ["research", "competitor", "executable", "read_only"],
+  "inputs": [
+    {
+      "key": "prompt",
+      "label": "Product/company + competitors",
+      "hint": "Describe your product/company, the competitor list (or auto-discovery), market and target audience.",
+      "required": true
+    }
+  ],
+  "quality_checks": [
+    {
+      "id": "core_artifacts_present",
+      "type": "artifact_count",
+      "severity": "error",
+      "blocking": true,
+      "config": {"min": 7}
+    },
+    {
+      "id": "synth_substantive",
+      "type": "agent_output_min_chars",
+      "severity": "error",
+      "blocking": false,
+      "config": {"agent": "crole_opportunity_synth", "min_chars": 400}
+    }
+  ]
+}

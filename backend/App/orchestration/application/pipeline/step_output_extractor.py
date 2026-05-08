@@ -35,6 +35,8 @@ _AGENT_STATE_KEYS: dict[str, tuple[str, str, str]] = {
     "ui_designer": ("ui_designer_output", "ui_designer_model", "ui_designer_provider"),
     "image_generator": ("image_generator_output", "image_generator_model", "image_generator_provider"),
     "audio_generator": ("audio_generator_output", "audio_generator_model", "audio_generator_provider"),
+    "asset_fetcher": ("asset_fetcher_output", "asset_fetcher_model", "asset_fetcher_provider"),
+    "media_generator": ("media_generator_output", "", ""),
     "analyze_code": ("analyze_code_output", "", ""),
     "generate_documentation": (
         "generate_documentation_output",
@@ -56,6 +58,12 @@ _AGENT_STATE_KEYS: dict[str, tuple[str, str, str]] = {
     "dev": ("dev_output", "dev_model", "dev_provider"),
     "review_dev": ("dev_review_output", "dev_review_model", "dev_review_provider"),
     "human_dev": ("dev_human_output", "", ""),
+    "visual_probe": ("visual_probe_output", "", ""),
+    "visual_design_review": (
+        "visual_design_review_output",
+        "visual_design_review_model",
+        "visual_design_review_provider",
+    ),
     "qa": ("qa_output", "qa_model", "qa_provider"),
     "review_qa": ("qa_review_output", "qa_review_model", "qa_review_provider"),
     "human_qa": ("qa_human_output", "", ""),

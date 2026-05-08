@@ -26,6 +26,7 @@ from backend.App.orchestration.application.nodes._shared import (
     _project_knowledge_block,
     _stream_progress_emit,
     _swarm_prompt_prefix,
+    _web_research_guidance_block,
     planning_mcp_tool_instruction,
     _remote_api_client_kwargs_for_role,
     _skills_extra_for_role_cfg,
@@ -33,6 +34,10 @@ from backend.App.orchestration.application.nodes._shared import (
     embedded_pipeline_input_for_review,
     embedded_review_artifact,
 )
+from backend.App.orchestration.application.nodes._prompt_builders import (
+    _prompt_fragment,
+)
+from string import Template
 
 logger = logging.getLogger(__name__)
 
@@ -76,16 +81,18 @@ def _run_planning_role_node(
         state, role_id, default_prompt_path, fallback_prompt
     )
     ctx = _pipeline_context_block(state, role_id)
-    prompt = (
-        ctx
-        + _swarm_prompt_prefix(state)
-        + _documentation_locale_line(state)
-        + planning_mcp_tool_instruction(state)
-        + _project_knowledge_block(state)
-        + instruction
-        + "\n\n"
-        f"User task:\n{pipeline_user_task(state)}\n\n"
-        f"Specification:\n{_effective_spec_for_build(state)}\n\n"
+    prompt = Template(
+        _prompt_fragment("design_planning_role_prompt_template")
+    ).safe_substitute(
+        context=ctx,
+        swarm_prefix=_swarm_prompt_prefix(state),
+        locale=_documentation_locale_line(state),
+        research_guidance=_web_research_guidance_block(state, role=role_id),
+        mcp_instruction=planning_mcp_tool_instruction(state),
+        knowledge=_project_knowledge_block(state),
+        instruction=instruction,
+        user_task=pipeline_user_task(state),
+        spec=_effective_spec_for_build(state),
     )
     result, _, _ = _llm_planning_agent_run(agent, prompt, state)
     if not (result or "").strip():
@@ -112,18 +119,9 @@ def code_quality_architect_node(state: PipelineState) -> dict[str, Any]:
         state,
         role_id="code_quality_architect",
         default_prompt_path="engineering/code-quality-architect.md",
-        fallback_prompt=(
-            "You are a Code Quality Architect. Review architecture, code quality, "
-            "maintainability, and verification risks with concrete recommendations."
-        ),
+        fallback_prompt=_prompt_fragment("code_quality_architect_fallback"),
         progress_label="Code Quality Architect",
-        instruction=(
-            "[Pipeline rule] Review the current specification and available project context:\n"
-            "- Identify architecture risks, design drift, and ownership boundary issues\n"
-            "- Identify code quality and maintainability risks\n"
-            "- Surface missing tests, verification gaps, and operational risks\n"
-            "- Provide prioritized recommendations that can guide implementation\n"
-        ),
+        instruction=_prompt_fragment("code_quality_architect_instruction"),
         output_key="code_quality_architect_output",
         model_key="code_quality_architect_model",
         provider_key="code_quality_architect_provider",
@@ -143,19 +141,17 @@ def ux_researcher_node(state: PipelineState) -> dict[str, Any]:
         **_remote_api_client_kwargs_for_role(state, cfg),
     )
     ctx = _pipeline_context_block(state, "ux_researcher")
-    prompt = (
-        ctx
-        + _swarm_prompt_prefix(state)
-        + _documentation_locale_line(state)
-        + planning_mcp_tool_instruction(state)
-        + _project_knowledge_block(state)
-        + "[Pipeline rule] Based on the specification, conduct UX research:\n"
-        "- Create user personas based on the target audience\n"
-        "- Map user journeys and identify pain points\n"
-        "- Define usability testing criteria and success metrics\n"
-        "- Provide actionable research recommendations for design\n\n"
-        f"User task:\n{pipeline_user_task(state)}\n\n"
-        f"Specification:\n{_effective_spec_for_build(state)}\n\n"
+    prompt = Template(
+        _prompt_fragment("design_planning_role_no_research_prompt_template")
+    ).safe_substitute(
+        context=ctx,
+        swarm_prefix=_swarm_prompt_prefix(state),
+        locale=_documentation_locale_line(state),
+        mcp_instruction=planning_mcp_tool_instruction(state),
+        knowledge=_project_knowledge_block(state),
+        instruction=_prompt_fragment("ux_researcher_instruction"),
+        user_task=pipeline_user_task(state),
+        spec=_effective_spec_for_build(state),
     )
     result, _, _ = _llm_planning_agent_run(agent, prompt, state)
     if not (result or "").strip():
@@ -236,21 +232,17 @@ def ux_architect_node(state: PipelineState) -> dict[str, Any]:
     ctx = _pipeline_context_block(state, "ux_architect")
     ux_research = state.get("ux_researcher_output") or ""
     ux_block = f"UX Research findings:\n{ux_research}\n\n" if ux_research else ""
-    prompt = (
-        ctx
-        + _swarm_prompt_prefix(state)
-        + _documentation_locale_line(state)
-        + planning_mcp_tool_instruction(state)
-        + _project_knowledge_block(state)
-        + "[Pipeline rule] Based on the specification and UX research, create UX architecture:\n"
-        "- Design CSS variable system (colors, typography, spacing)\n"
-        "- Create layout framework with responsive breakpoints\n"
-        "- Define component architecture and naming conventions\n"
-        "- Establish information architecture and content hierarchy\n"
-        "- Include theme toggle (light/dark/system) specification\n\n"
-        f"User task:\n{pipeline_user_task(state)}\n\n"
-        f"Specification:\n{_effective_spec_for_build(state)}\n\n"
-        f"{ux_block}"
+    prompt = Template(
+        _prompt_fragment("design_planning_role_no_research_prompt_template")
+    ).safe_substitute(
+        context=ctx,
+        swarm_prefix=_swarm_prompt_prefix(state),
+        locale=_documentation_locale_line(state),
+        mcp_instruction=planning_mcp_tool_instruction(state),
+        knowledge=_project_knowledge_block(state),
+        instruction=_prompt_fragment("ux_architect_instruction"),
+        user_task=pipeline_user_task(state),
+        spec=_effective_spec_for_build(state) + ("\n\n" + ux_block if ux_block else ""),
     )
     result, _, _ = _llm_planning_agent_run(agent, prompt, state)
     if not (result or "").strip():
@@ -463,3 +455,10 @@ def audio_generator_node(state: PipelineState) -> dict[str, Any]:
         model_key="audio_generator_model",
         provider_key="audio_generator_provider",
     )
+
+
+def asset_fetcher_node(state: PipelineState) -> dict[str, Any]:
+    from backend.App.orchestration.application.nodes.asset_fetcher import (
+        run_asset_fetcher,
+    )
+    return run_asset_fetcher(state)

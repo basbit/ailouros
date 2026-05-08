@@ -234,8 +234,109 @@ def stream_finalise(
     pipeline_snapshot["automation_agents"] = post_run_reports["automation_agents"]
     pipeline_snapshot["agent_identity"] = post_run_reports["agent_identity"]
 
-    _final_status = "completed_no_writes" if pipeline_snapshot.get("_ec1_zero_writes") else "completed"
-    task_store.update_task(task_id, status=_final_status)
+    expected_artifacts = pipeline_snapshot.get("scenario_expected_artifacts")
+    artifact_status_objects: list[Any] = []
+    if isinstance(expected_artifacts, list) and expected_artifacts:
+        from backend.App.orchestration.application.scenarios.artifact_check import (
+            check_scenario_artifacts,
+            summarize_artifact_status,
+        )
+        artifact_status_objects = check_scenario_artifacts(expected_artifacts, task_dir)
+        pipeline_snapshot["scenario_artifact_status"] = [
+            entry.to_dict() for entry in artifact_status_objects
+        ]
+        pipeline_snapshot["scenario_artifact_summary"] = summarize_artifact_status(
+            artifact_status_objects
+        )
+
+    quality_specs_raw = pipeline_snapshot.get("scenario_quality_checks")
+    if isinstance(quality_specs_raw, list) and quality_specs_raw:
+        from backend.App.orchestration.application.scenarios.quality_check_runner import (
+            run_quality_checks,
+            summarize_quality_results,
+        )
+        from backend.App.orchestration.domain.scenarios.quality_checks import (
+            QualityCheckSpec,
+        )
+        specs: list[QualityCheckSpec] = []
+        for spec_dict in quality_specs_raw:
+            if not isinstance(spec_dict, dict):
+                continue
+            specs.append(
+                QualityCheckSpec(
+                    id=str(spec_dict.get("id") or ""),
+                    type=str(spec_dict.get("type") or ""),
+                    severity=str(spec_dict.get("severity") or "error"),
+                    blocking=bool(spec_dict.get("blocking", False)),
+                    config=dict(spec_dict.get("config") or {}),
+                )
+            )
+        warnings_raw = pipeline_snapshot.get("scenario_warnings") or []
+        warnings_list = [
+            str(warning) for warning in warnings_raw if isinstance(warning, str)
+        ]
+        snapshot_steps_raw = pipeline_snapshot.get("pipeline_steps") or []
+        snapshot_steps = [
+            str(step) for step in snapshot_steps_raw if isinstance(step, str)
+        ]
+        results = run_quality_checks(
+            specs, task_dir, artifact_status_objects, warnings_list,
+            pipeline_steps=snapshot_steps,
+        )
+        pipeline_snapshot["scenario_quality_check_results"] = [
+            result.to_dict() for result in results
+        ]
+        pipeline_snapshot["scenario_quality_check_summary"] = summarize_quality_results(
+            results
+        )
+
+    require_writes_block = get_setting_bool(
+        "swarm.require_dev_writes",
+        workspace_root=workspace_path,
+        env_key="SWARM_REQUIRE_DEV_WRITES",
+        default=True,
+    )
+    require_trusted_gates_pass = get_setting_bool(
+        "swarm.require_trusted_gates_pass",
+        workspace_root=workspace_path,
+        env_key="SWARM_REQUIRE_TRUSTED_GATES_PASS",
+        default=True,
+    )
+    failed_trusted_gates = list(pipeline_snapshot.get("_failed_trusted_gates") or [])
+    failed_trusted_gates_summary = str(
+        pipeline_snapshot.get("_failed_trusted_gates_summary") or ""
+    )
+
+    _final_status = "completed"
+    _final_error = ""
+    if pipeline_snapshot.get("_ec1_zero_writes"):
+        if require_writes_block:
+            _final_status = "failed"
+            _final_error = str(
+                pipeline_snapshot.get("_ec1_error")
+                or "Dev step produced 0 workspace writes with apply_writes=True."
+            )
+        else:
+            _final_status = "completed_no_writes"
+    if (
+        _final_status == "completed"
+        and require_trusted_gates_pass
+        and failed_trusted_gates
+    ):
+        _final_status = "failed"
+        _final_error = (
+            "Trusted verification gates failed: "
+            f"{failed_trusted_gates_summary or ', '.join(failed_trusted_gates)}"
+        )
+    if _final_status == "failed":
+        task_store.update_task(
+            task_id,
+            status="failed",
+            agent="orchestrator",
+            message=_final_error[:2000],
+        )
+    else:
+        task_store.update_task(task_id, status=_final_status)
     (task_dir / "pipeline.json").write_text(
         json.dumps(
             pipeline_snapshot_for_disk(pipeline_snapshot),
@@ -245,6 +346,13 @@ def stream_finalise(
         encoding="utf-8",
     )
     append_task_run_log(task_dir, "stream completed, pipeline.json written")
+    _emit_finalise_notification(
+        task_id=task_id,
+        final_status=_final_status,
+        final_error=_final_error,
+        pipeline_snapshot=pipeline_snapshot,
+        workspace_path=workspace_path,
+    )
 
     _dream_enabled = get_setting_bool(
         "dream.enabled",
@@ -274,3 +382,26 @@ def stream_finalise(
 
     yield build_done(now, request_model)
     yield "data: [DONE]\n\n"
+
+
+def _emit_finalise_notification(
+    *,
+    task_id: str,
+    final_status: str,
+    final_error: str,
+    pipeline_snapshot: dict[str, Any],
+    workspace_path: Optional[Path],
+) -> None:
+    try:
+        from backend.App.integrations.application.notifications.finalise_emitter import (
+            emit_finalise_notification,
+        )
+        emit_finalise_notification(
+            task_id=task_id,
+            final_status=final_status,
+            final_error=final_error,
+            pipeline_snapshot=pipeline_snapshot,
+            workspace_path=workspace_path,
+        )
+    except Exception as exc:
+        logger.warning("notification dispatch skipped: %s", exc)

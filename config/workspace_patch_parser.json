@@ -16,5 +16,17 @@
     ".psd", ".blend", ".fbx", ".glb", ".gltf", ".obj", ".dae",
     ".exe", ".dll", ".so", ".dylib", ".class", ".jar", ".wasm"
   ],
-  "fence_base_extensions": "tsx?|jsx?|vue|svelte|py|rs|go|md|jsonc?|ya?ml|yml|toml|css|scss|html|php|java|kt|swift|gradle|kts"
+  "fence_base_extensions": "tsx?|jsx?|vue|svelte|py|rs|go|md|jsonc?|ya?ml|yml|toml|css|scss|html|php|java|kt|swift|gradle|kts",
+  "extra_fence_extensions_environment_key": "SWARM_PATCH_PARSER_EXTRA_EXTENSIONS",
+  "workspace_write_safety": {
+    "block_unjustified_full_rewrite_environment_key": "SWARM_BLOCK_UNJUSTIFIED_FULL_REWRITE_BEFORE_APPLY",
+    "block_unjustified_full_rewrite_default": true,
+    "enabled_environment_values": ["1", "true", "yes", "on"],
+    "dev_manifest_pattern": "<dev_manifest>\\s*(.*?)\\s*</dev_manifest>",
+    "rewrite_justifications_key": "rewrite_justifications",
+    "rewrite_path_key": "path",
+    "rewrite_reason_key": "reason",
+    "full_rewrite_error_template": "write_safety_gate: $path: FULL_FILE_REWRITE_REQUIRES_JUSTIFICATION — existing files must be changed with <swarm_patch>; if a full rewrite is unavoidable, include dev_manifest.rewrite_justifications",
+    "blocked_note": "workspace_write_pre_validation_failed_no_writes_applied"
+  }
 }

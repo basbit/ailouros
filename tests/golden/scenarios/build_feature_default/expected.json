@@ -1,0 +1,28 @@
+{
+  "pipeline_steps": [
+    "clarify_input",
+    "pm",
+    "review_pm",
+    "ba",
+    "review_ba",
+    "architect",
+    "review_arch",
+    "spec_merge",
+    "review_spec",
+    "devops",
+    "review_devops",
+    "dev_lead",
+    "review_dev_lead",
+    "dev",
+    "review_dev",
+    "qa",
+    "review_qa",
+    "human_qa"
+  ],
+  "default_gates": ["human_qa"],
+  "required_tools": ["workspace_write"],
+  "workspace_write": true,
+  "warnings_count": 0,
+  "skipped_gates": [],
+  "model_profile_applied": {}
+}

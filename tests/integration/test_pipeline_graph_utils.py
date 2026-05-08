@@ -62,8 +62,8 @@ def test_quality_gate_router_disabled(monkeypatch):
     monkeypatch.setenv("SWARM_AUTO_RETRY_ON_NEEDS_WORK", "0")
     # Reload to pick up env change — patch the module-level attribute
     with patch(
-        "backend.App.orchestration.application.routing.graph_builder._QUALITY_GATE_ENABLED_DEFAULT",
-        False,
+        "backend.App.orchestration.application.routing.graph_builder.is_quality_gate_enabled",
+        return_value=False,
     ):
         result = _quality_gate_router({}, "review_dev")
     assert result == "continue"
@@ -76,8 +76,8 @@ def test_quality_gate_router_no_needs_work():
         }
     }
     with patch(
-        "backend.App.orchestration.application.routing.graph_builder._QUALITY_GATE_ENABLED_DEFAULT",
-        True,
+        "backend.App.orchestration.application.routing.graph_builder.is_quality_gate_enabled",
+        return_value=True,
     ):
         result = _quality_gate_router(state, "review_dev")
     assert result == "continue"
@@ -91,8 +91,8 @@ def test_quality_gate_router_needs_work_retry():
         "step_retries": {},
     }
     with patch(
-        "backend.App.orchestration.application.routing.graph_builder._QUALITY_GATE_ENABLED_DEFAULT",
-        True,
+        "backend.App.orchestration.application.routing.graph_builder.is_quality_gate_enabled",
+        return_value=True,
     ), patch(
         "backend.App.orchestration.application.routing.graph_builder._MAX_STEP_RETRIES",
         2,
@@ -112,8 +112,8 @@ def test_quality_gate_router_needs_work_escalate():
         "step_retries": {"review_dev": 2},
     }
     with patch(
-        "backend.App.orchestration.application.routing.graph_builder._QUALITY_GATE_ENABLED_DEFAULT",
-        True,
+        "backend.App.orchestration.application.routing.graph_builder.is_quality_gate_enabled",
+        return_value=True,
     ), patch(
         "backend.App.orchestration.application.routing.graph_builder._MAX_STEP_RETRIES",
         2,
@@ -127,8 +127,8 @@ def test_quality_gate_router_needs_work_escalate():
 
 def test_quality_gate_router_empty_state():
     with patch(
-        "backend.App.orchestration.application.routing.graph_builder._QUALITY_GATE_ENABLED_DEFAULT",
-        True,
+        "backend.App.orchestration.application.routing.graph_builder.is_quality_gate_enabled",
+        return_value=True,
     ):
         result = _quality_gate_router({}, "review_dev")
     assert result == "continue"  # no NEEDS_WORK verdict
@@ -141,8 +141,8 @@ def test_quality_gate_router_delegates_review_qa_to_structured_router():
         "qa_review_defect_report": {"defects": [{"id": "d2", "title": "bug2", "severity": "P1", "fixed": False}]},
     }
     with patch(
-        "backend.App.orchestration.application.routing.graph_builder._QUALITY_GATE_ENABLED_DEFAULT",
-        True,
+        "backend.App.orchestration.application.routing.graph_builder.is_quality_gate_enabled",
+        return_value=True,
     ), patch(
         "backend.App.orchestration.application.pipeline.pipeline_state_helpers.get_step_retries",
         return_value=0,
@@ -157,8 +157,8 @@ def test_quality_gate_router_delegates_review_qa_to_structured_router():
 
 def test_dev_review_router_disabled():
     with patch(
-        "backend.App.orchestration.application.routing.graph_builder._QUALITY_GATE_ENABLED_DEFAULT",
-        False,
+        "backend.App.orchestration.application.routing.graph_builder.is_quality_gate_enabled",
+        return_value=False,
     ):
         result = _dev_review_router({"dev_review_output": "VERDICT: NEEDS_WORK"})
     assert result == "continue"
@@ -167,8 +167,8 @@ def test_dev_review_router_disabled():
 def test_dev_review_router_ok_verdict():
     state = {"dev_review_output": "VERDICT: OK"}
     with patch(
-        "backend.App.orchestration.application.routing.graph_builder._QUALITY_GATE_ENABLED_DEFAULT",
-        True,
+        "backend.App.orchestration.application.routing.graph_builder.is_quality_gate_enabled",
+        return_value=True,
     ):
         result = _dev_review_router(state)
     assert result == "continue"
@@ -183,8 +183,8 @@ def test_dev_review_router_needs_work_retry():
         "step_retries": {},
     }
     with patch(
-        "backend.App.orchestration.application.routing.graph_builder._QUALITY_GATE_ENABLED_DEFAULT",
-        True,
+        "backend.App.orchestration.application.routing.graph_builder.is_quality_gate_enabled",
+        return_value=True,
     ), patch(
         "backend.App.orchestration.application.routing.graph_builder._MAX_STEP_RETRIES",
         2,
@@ -205,8 +205,8 @@ def test_dev_review_router_needs_work_exhausted():
         "step_retries": {"dev": 2},
     }
     with patch(
-        "backend.App.orchestration.application.routing.graph_builder._QUALITY_GATE_ENABLED_DEFAULT",
-        True,
+        "backend.App.orchestration.application.routing.graph_builder.is_quality_gate_enabled",
+        return_value=True,
     ), patch(
         "backend.App.orchestration.application.routing.graph_builder._MAX_STEP_RETRIES",
         2,
@@ -222,8 +222,8 @@ def test_dev_review_router_needs_work_exhausted():
 def test_dev_review_router_empty_review():
     state = {"dev_review_output": ""}
     with patch(
-        "backend.App.orchestration.application.routing.graph_builder._QUALITY_GATE_ENABLED_DEFAULT",
-        True,
+        "backend.App.orchestration.application.routing.graph_builder.is_quality_gate_enabled",
+        return_value=True,
     ):
         with pytest.raises(RuntimeError, match="review_dev: reviewer returned NEEDS_WORK"):
             _dev_review_router(state)
@@ -231,8 +231,8 @@ def test_dev_review_router_empty_review():
 
 def test_dev_review_router_requires_structured_blockers():
     with patch(
-        "backend.App.orchestration.application.routing.graph_builder._QUALITY_GATE_ENABLED_DEFAULT",
-        True,
+        "backend.App.orchestration.application.routing.graph_builder.is_quality_gate_enabled",
+        return_value=True,
     ):
         with pytest.raises(RuntimeError, match="review_dev: reviewer returned NEEDS_WORK without structured P0/P1 defects"):
             _dev_review_router({"dev_review_output": "VERDICT: NEEDS_WORK", "dev_defect_report": {"defects": []}})

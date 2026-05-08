@@ -104,6 +104,14 @@ def run_qa_review_quality_gate(
         decision = should_retry(verdict, qa_retries, max_retries)
 
     if decision == "escalate":
+        from backend.App.orchestration.application.enforcement.ring_escalation_recorder import (
+            record_ring_unresolved_escalation,
+        )
+        record_ring_unresolved_escalation(
+            state, step_id="review_qa", verdict=verdict,
+            retries=qa_retries, max_retries=max_retries,
+            reason="review_qa decision=escalate",
+        )
         if is_human_gate_in_pipeline(state, "human_qa"):
             raise HumanApprovalRequired(
                 step="review_qa",

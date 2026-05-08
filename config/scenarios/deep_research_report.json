@@ -1,0 +1,101 @@
+{
+  "id": "deep_research_report",
+  "title": "Deep Research Report",
+  "category": "research",
+  "description": "Produce a long-form research report with multiple perspectives: clarify the topic, plan angles, run parallel research streams, judge sources, map arguments, synthesize, fact-check, and emit an executive summary.",
+  "pipeline_steps": [
+    "clarify_input",
+    "pm",
+    "review_pm",
+    "ba",
+    "review_ba",
+    "architect",
+    "review_arch",
+    "ba_arch_debate",
+    "spec_merge",
+    "review_spec",
+    "crole_research_planner",
+    "crole_web_researcher",
+    "crole_source_reviewer",
+    "crole_argument_mapper",
+    "crole_synthesis_writer",
+    "crole_fact_checker",
+    "crole_executive_summary"
+  ],
+  "default_gates": [],
+  "expected_artifacts": [
+    "pipeline.json",
+    "agents/spec_merge.txt",
+    "agents/crole_research_planner.txt",
+    "agents/crole_web_researcher.txt",
+    "agents/crole_source_reviewer.txt",
+    "agents/crole_argument_mapper.txt",
+    "agents/crole_synthesis_writer.txt",
+    "agents/crole_fact_checker.txt",
+    "agents/crole_executive_summary.txt"
+  ],
+  "required_tools": ["web_search"],
+  "workspace_write_default": false,
+  "recommended_models": {
+    "planner": "strong",
+    "research": "fast",
+    "synthesis": "strong"
+  },
+  "agent_config_defaults": {
+    "custom_roles": {
+      "research_planner": {
+        "prompt_text": "You are a Research Planner. Given the merged spec above, decompose the research topic into 4-7 independent angles that together cover the topic. For each angle emit JSON with: angle_id (snake_case), question (one sentence), expected_evidence_type (data | expert_opinion | case_study | regulation | theory | other), priority (1=highest..3=lowest). Output a single ```json fenced array. Do not duplicate angles."
+      },
+      "web_researcher": {
+        "prompt_text": "You are a Web Researcher. For each angle from research_planner, list 3-5 candidate sources. For each source emit JSON: angle_id, title, url_or_query, source_type, why_relevant (1-2 sentences), freshness_required (bool). Output a single ```json fenced array. Do NOT invent URLs you cannot vouch for; emit a search-query string instead."
+      },
+      "source_reviewer": {
+        "prompt_text": "You are a Source Reviewer. Judge every candidate source from web_researcher on authority, recency, bias. Emit ```json array with keys: angle_id, title, authority (high|medium|low), recency (current|recent|stale|unknown), bias (none|moderate|high), keep (bool), reason."
+      },
+      "argument_mapper": {
+        "prompt_text": "You are an Argument Mapper. Read the kept sources and identify points of agreement and disagreement across the angles. Emit ```json with keys: agreements (array of {claim, supporting_angles: [...]}), disagreements (array of {claim_a, claim_b, supporting_angles_a, supporting_angles_b}), open_questions (array of strings). Be honest about genuine uncertainty."
+      },
+      "synthesis_writer": {
+        "prompt_text": "You are a Synthesis Writer. Produce a markdown report with sections: ## Topic (one sentence), ## Methodology (1 paragraph), ## Findings by Angle (one ## subsection per angle, each with 2-4 bullets and inline citations like [angle_id::source_title]), ## Convergence and Tension (from argument_mapper), ## Open Questions, ## Limitations. Keep under 3000 words. Cite only kept sources."
+      },
+      "fact_checker": {
+        "prompt_text": "You are a Fact Checker. Verify every cited claim in the synthesis_writer report against the kept sources from source_reviewer. Emit ```json with keys: verified_claims (int), unverified_claims (array of strings), missing_citations (array of strings), recommended_corrections (array of short strings)."
+      },
+      "executive_summary": {
+        "prompt_text": "You are the Executive Summary Writer. Read the full synthesis report. Produce a concise executive summary in markdown: 5-8 bullets, each ≤25 words, capturing the core finding, key tensions, and the top recommendation. End with one paragraph (≤100 words) describing the most important next decision the reader must make. No new claims — summarize only."
+      }
+    }
+  },
+  "tags": ["research", "long_form", "executable", "read_only"],
+  "inputs": [
+    {
+      "key": "prompt",
+      "label": "Research topic + audience + depth",
+      "hint": "Topic, audience, depth, time horizon, optional competitor/entity list.",
+      "required": true
+    }
+  ],
+  "quality_checks": [
+    {
+      "id": "core_artifacts_present",
+      "type": "artifact_count",
+      "severity": "error",
+      "blocking": true,
+      "config": {"min": 6}
+    },
+    {
+      "id": "synthesis_substantive",
+      "type": "agent_output_min_chars",
+      "severity": "error",
+      "blocking": false,
+      "config": {"agent": "crole_synthesis_writer", "min_chars": 800}
+    },
+    {
+      "id": "executive_summary_present",
+      "type": "agent_output_min_chars",
+      "severity": "warning",
+      "blocking": false,
+      "config": {"agent": "crole_executive_summary", "min_chars": 200}
+    }
+  ]
+}

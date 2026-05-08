@@ -1,0 +1,88 @@
+{
+  "id": "product_prd",
+  "title": "Product PRD",
+  "category": "product",
+  "description": "Turn an idea into a product requirements document: clarify the goal, define users and personas, scope requirements, set acceptance criteria, draft a roadmap, and finalise the PRD with risks.",
+  "pipeline_steps": [
+    "clarify_input",
+    "pm",
+    "review_pm",
+    "ba",
+    "review_ba",
+    "architect",
+    "review_arch",
+    "ba_arch_debate",
+    "spec_merge",
+    "review_spec",
+    "crole_user_persona_analyst",
+    "crole_acceptance_criteria_reviewer",
+    "crole_roadmap_planner",
+    "crole_risk_reviewer"
+  ],
+  "default_gates": [],
+  "expected_artifacts": [
+    "pipeline.json",
+    "agents/pm.txt",
+    "agents/ba.txt",
+    "agents/architect.txt",
+    "agents/spec_merge.txt",
+    "agents/crole_user_persona_analyst.txt",
+    "agents/crole_acceptance_criteria_reviewer.txt",
+    "agents/crole_roadmap_planner.txt",
+    "agents/crole_risk_reviewer.txt"
+  ],
+  "required_tools": [],
+  "workspace_write_default": false,
+  "recommended_models": {
+    "planner": "strong",
+    "review": "fast"
+  },
+  "agent_config_defaults": {
+    "custom_roles": {
+      "user_persona_analyst": {
+        "prompt_text": "You are a User Persona Analyst. Using the merged spec, define 2-4 distinct user personas relevant to this product. Emit ```json with keys: personas (array of {name, role, top_jobs (3-5 short strings), top_pain_points (2-4), success_signal (one sentence), risk_if_ignored}). Personas must be distinct on at least one of: role, sophistication, frequency-of-use."
+      },
+      "acceptance_criteria_reviewer": {
+        "prompt_text": "You are an Acceptance Criteria Reviewer. For every requirement in the merged spec, write Given/When/Then acceptance criteria. Emit markdown: each requirement gets one numbered block: '### REQ-N: <title>' then lines 'Given …', 'When …', 'Then …'. Every criterion must be testable and observable from outside. Reject (mark '⚠ vague') any requirement you cannot translate."
+      },
+      "roadmap_planner": {
+        "prompt_text": "You are a Roadmap Planner. Split the requirements into MVP (must-have for first ship) and Later (nice-to-have / v2+). Emit ```json with keys: mvp (array of REQ ids), later (array of REQ ids), reason (object: req_id → one-sentence justification), critical_path (array of REQ ids in execution order), risks_to_timeline (array of strings)."
+      },
+      "risk_reviewer": {
+        "prompt_text": "You are a Risk Reviewer. List the top 5-8 risks for this PRD. Emit ```json with keys: risks (array of {risk, likelihood: low | medium | high, impact: low | medium | high, mitigation, owner_hint}), top_risk_id (int index), assumptions (array of strings)."
+      }
+    }
+  },
+  "tags": ["product", "prd", "executable", "read_only"],
+  "inputs": [
+    {
+      "key": "prompt",
+      "label": "Product idea + constraints",
+      "hint": "Describe the product idea, target users, business goal, platform, constraints, optional existing docs.",
+      "required": true
+    }
+  ],
+  "quality_checks": [
+    {
+      "id": "core_artifacts_present",
+      "type": "artifact_count",
+      "severity": "error",
+      "blocking": true,
+      "config": {"min": 7}
+    },
+    {
+      "id": "acceptance_criteria_substantive",
+      "type": "agent_output_min_chars",
+      "severity": "error",
+      "blocking": false,
+      "config": {"agent": "crole_acceptance_criteria_reviewer", "min_chars": 400}
+    },
+    {
+      "id": "risk_review_present",
+      "type": "agent_output_min_chars",
+      "severity": "warning",
+      "blocking": false,
+      "config": {"agent": "crole_risk_reviewer", "min_chars": 200}
+    }
+  ]
+}

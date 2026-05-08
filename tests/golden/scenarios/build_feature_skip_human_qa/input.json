@@ -1,0 +1,4 @@
+{
+  "scenario_id": "build_feature",
+  "skip_gates": ["human_qa"]
+}

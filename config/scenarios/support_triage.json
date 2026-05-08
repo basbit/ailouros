@@ -1,0 +1,83 @@
+{
+  "id": "support_triage",
+  "title": "Support Triage",
+  "category": "support",
+  "description": "Classify a support ticket and draft a safe customer-facing response: triage urgency, search the knowledge base, draft a reply, review escalation criteria, and require human approval before any final response.",
+  "pipeline_steps": [
+    "clarify_input",
+    "pm",
+    "review_pm",
+    "ba",
+    "review_ba",
+    "crole_ticket_classifier",
+    "crole_kb_searcher",
+    "crole_response_drafter",
+    "crole_escalation_reviewer",
+    "human_qa"
+  ],
+  "default_gates": ["human_qa"],
+  "expected_artifacts": [
+    "pipeline.json",
+    "agents/pm.txt",
+    "agents/ba.txt",
+    "agents/crole_ticket_classifier.txt",
+    "agents/crole_kb_searcher.txt",
+    "agents/crole_response_drafter.txt",
+    "agents/crole_escalation_reviewer.txt"
+  ],
+  "required_tools": [],
+  "workspace_write_default": false,
+  "recommended_models": {
+    "classifier": "fast",
+    "drafter": "strong",
+    "review": "strong"
+  },
+  "agent_config_defaults": {
+    "custom_roles": {
+      "ticket_classifier": {
+        "prompt_text": "You are a Support Ticket Classifier. Read the ticket text from the user task. Emit ```json with keys: category (billing | bug | how_to | account | outage | feature_request | abuse | other), urgency (low | medium | high | critical), customer_sentiment (positive | neutral | frustrated | angry), red_flags (array of strings: legal_threat | refund_demand | data_loss | security | none), one_line_summary."
+      },
+      "kb_searcher": {
+        "prompt_text": "You are a Knowledge Base Searcher. Given the ticket and the classification above, list 3-6 internal KB articles or canonical answers that would address the issue. Emit ```json: candidates (array of {title_or_query, source_type: kb | runbook | known_issue | docs | other, why_relevant (1 sentence)}). If you cannot find a match for some part of the ticket, list it under unanswered (array of strings)."
+      },
+      "response_drafter": {
+        "prompt_text": "You are a Customer Response Drafter. Using the classifier's category/urgency and the kb_searcher's candidates, draft a customer-facing reply in markdown. Rules: match the customer's language; acknowledge the problem in the first sentence; cite the KB items only by title (not URL); never invent a refund, SLA, or commitment that isn't in the kb candidates; end with a clear next action or expected response time. Wrap the draft in 'BEGIN_DRAFT' / 'END_DRAFT' markers so the human approver can quote-extract it."
+      },
+      "escalation_reviewer": {
+        "prompt_text": "You are an Escalation Reviewer. Read the classifier output and the drafter's reply. Emit ```json: escalate (bool), escalation_reason (string or empty), escalation_target (tier2 | manager | engineering | trust_safety | legal | none), drafter_concerns (array of strings: any unsupported promises, tone risks, missing info), human_must_review (bool, default true), notes_for_approver (one short paragraph)."
+      }
+    }
+  },
+  "tags": ["support", "ticket", "executable", "human_required"],
+  "inputs": [
+    {
+      "key": "prompt",
+      "label": "Ticket text + customer context",
+      "hint": "Paste the ticket text and any relevant customer context, product area, or KB hint.",
+      "required": true
+    }
+  ],
+  "quality_checks": [
+    {
+      "id": "core_artifacts_present",
+      "type": "artifact_count",
+      "severity": "error",
+      "blocking": true,
+      "config": {"min": 5}
+    },
+    {
+      "id": "drafter_substantive",
+      "type": "agent_output_min_chars",
+      "severity": "error",
+      "blocking": false,
+      "config": {"agent": "crole_response_drafter", "min_chars": 200}
+    },
+    {
+      "id": "escalation_review_present",
+      "type": "agent_output_min_chars",
+      "severity": "warning",
+      "blocking": false,
+      "config": {"agent": "crole_escalation_reviewer", "min_chars": 100}
+    }
+  ]
+}

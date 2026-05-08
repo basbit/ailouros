@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
+from string import Template
 from typing import Any, Optional
+
+from backend.App.orchestration.application.nodes._prompt_builders import (
+    _prompt_fragment,
+)
 
 from backend.App.orchestration.infrastructure.agents.qa_agent import QAAgent
 from backend.App.orchestration.application.agents.review_moa import run_reviewer_or_moa
@@ -63,6 +69,7 @@ def qa_node(state: PipelineState) -> dict[str, Any]:
     ca_block = ""
     if not _code_analysis_is_weak(ca):
         ca_block = "\n[Existing code analysis]\n" + _compact_code_analysis_for_prompt(ca, max_chars=6000) + "\n"
+    visual_block = _visual_evidence_prompt_block(state)
 
     dev_out_limit = _qa_dev_output_max_chars()
 
@@ -98,6 +105,7 @@ def qa_node(state: PipelineState) -> dict[str, Any]:
             + "User task:\n"
             f"{pipeline_user_task(state) if use_mcp else build_phase_pipeline_user_context(state)}\n\n"
             f"{ca_block}"
+            f"{visual_block}"
             "Development output:\n"
             f"{dev_out_for_prompt}"
             "\n\nOutput contract:\n"
@@ -131,17 +139,9 @@ def qa_node(state: PipelineState) -> dict[str, Any]:
                 "QA output too short (%d chars) — retrying with tool-use instruction",
                 len(qa_output),
             )
-            _qa_retry_prompt = (
-                prompt
-                + "\n\n[CRITICAL] Your previous QA report was too brief and contained no evidence "
-                "of actual verification. You MUST:\n"
-                "1. Analyze the dev output above for completeness — check that all specified files "
-                "were created with proper <swarm_file> tags\n"
-                "2. Verify code correctness by reviewing the content of each file in the dev output\n"
-                "3. Check that all acceptance criteria from the specification are addressed\n"
-                "4. Report what you found — file completeness, code correctness, missing pieces\n"
-                "Write a detailed QA report with evidence from the dev output analysis."
-            )
+            _qa_retry_prompt = Template(
+                _prompt_fragment("qa_short_retry_template")
+            ).safe_substitute(base_prompt=prompt)
             qa_output, qa_model_out, qa_provider_out = _llm_build_agent_run(agent, _qa_retry_prompt, state)
         _stream_progress_emit(
             state, f"QA: готово ({len(qa_output or '')} симв.)"
@@ -220,6 +220,7 @@ def qa_node(state: PipelineState) -> dict[str, Any]:
             "User task:\n"
             f"{pipeline_user_task(state) if use_mcp else build_phase_pipeline_user_context(state)}\n\n"
             f"{ca_block}"
+            f"{visual_block}"
             f"## Subtask [{subtask_id}] {title}\n"
             f"Testing focus:\n{focus}\n\n"
             "Dev output for this subtask:\n"
@@ -258,13 +259,9 @@ def qa_node(state: PipelineState) -> dict[str, Any]:
                 "QA subtask %d/%d output too short (%d chars) — retrying with tool-use instruction",
                 i + 1, task_count, len(output),
             )
-            _qa_retry = (
-                prompt
-                + "\n\n[CRITICAL] Your previous QA report was too brief. You MUST "
-                "analyze the dev output for completeness, verify code correctness "
-                "by reviewing each file's content, and check all acceptance criteria. "
-                "Write a detailed report with evidence from the dev output."
-            )
+            _qa_retry = Template(
+                _prompt_fragment("qa_subtask_short_retry_template")
+            ).safe_substitute(base_prompt=prompt)
             output, used_model, used_provider = _llm_build_agent_run(agent, _qa_retry, state)
         _stream_progress_emit(
             state,
@@ -347,6 +344,34 @@ def _review_spec_max_chars() -> int:
     return 40_000
 
 
+def _visual_evidence_prompt_block(
+    state: PipelineState,
+    *,
+    max_chars: int = 18_000,
+) -> str:
+    manifest = state.get("visual_probe_manifest")
+    visual_probe_output = str(state.get("visual_probe_output") or "").strip()
+    visual_design_review = str(state.get("visual_design_review_output") or "").strip()
+
+    chunks: list[str] = []
+    if isinstance(manifest, dict) and manifest:
+        chunks.append(
+            "Visual probe manifest:\n"
+            + json.dumps(manifest, ensure_ascii=False, indent=2)
+        )
+    elif visual_probe_output:
+        chunks.append("Visual probe output:\n" + visual_probe_output)
+    if visual_design_review:
+        chunks.append("Visual design review:\n" + visual_design_review)
+    if not chunks:
+        return ""
+
+    text = "\n\n".join(chunks)
+    if len(text) > max_chars:
+        text = text[:max_chars] + "\n...[visual evidence truncated]"
+    return "\n[Visual runtime evidence]\n" + text + "\n\n"
+
+
 def review_qa_node(state: PipelineState) -> dict[str, Any]:
     task_id = (state.get("task_id") or "")[:36]
     use_mcp = _should_use_mcp_for_workspace(state)
@@ -376,6 +401,7 @@ def review_qa_node(state: PipelineState) -> dict[str, Any]:
         qa_output = qa_output_full
 
     user_block = embedded_pipeline_input_for_review(state, log_node="review_qa_node")
+    visual_block = _visual_evidence_prompt_block(state, max_chars=20_000)
     prompt = (
         "Step: qa (tests / report).\n"
         "Checklist — issue VERDICT: NEEDS_WORK if ANY item fails:\n"
@@ -383,12 +409,16 @@ def review_qa_node(state: PipelineState) -> dict[str, Any]:
         "[ ] Exit criteria are explicit (pass/fail conditions defined)\n"
         "[ ] Negative/edge-case scenarios are covered, not only happy paths\n"
         "[ ] Tests reference the actual Dev output (not generic stubs)\n"
+        "[ ] For browser/UI tasks, visual runtime evidence exists or is explicitly skipped for a non-UI reason\n"
+        "[ ] For browser/UI tasks, visual evidence has no startup failures, blank pages, console errors, network failures, or responsive overflow\n"
+        "[ ] For browser/UI tasks, screenshots cover at least desktop and mobile unless the spec says otherwise\n"
         "[ ] No web E2E tests for native-mobile stack without explicit requirement\n\n"
         "Output contract:\n"
         "1. Human-readable QA review summary.\n"
         "2. A machine-readable `<defect_report>...</defect_report>` JSON block.\n"
         "3. Final line `VERDICT: OK` or `VERDICT: NEEDS_WORK`.\n\n"
         f"User task:\n{user_block}\n\n"
+        f"{visual_block}"
         f"Dev artifact:\n{dev_output}\n\n"
         f"QA artifact:\n{qa_output}"
     )

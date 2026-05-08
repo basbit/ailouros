@@ -31,6 +31,9 @@ class InMemoryTaskStore:
         status: Optional[str] = None,
         agent: Optional[str] = None,
         message: Optional[str] = None,
+        scenario_id: Optional[str] = None,
+        scenario_title: Optional[str] = None,
+        scenario_category: Optional[str] = None,
     ) -> dict[str, Any]:
         if status is not None:
             payload["status"] = status
@@ -45,6 +48,12 @@ class InMemoryTaskStore:
                     "message": message,
                 }
             )
+        if scenario_id is not None:
+            payload["scenario_id"] = scenario_id
+        if scenario_title is not None:
+            payload["scenario_title"] = scenario_title
+        if scenario_category is not None:
+            payload["scenario_category"] = scenario_category
         payload["updated_at"] = utc_now_iso()
         payload["version"] = payload.get("version", 0) + 1
         return payload
@@ -89,10 +98,21 @@ class InMemoryTaskStore:
         status: Optional[str] = None,
         agent: Optional[str] = None,
         message: Optional[str] = None,
+        scenario_id: Optional[str] = None,
+        scenario_title: Optional[str] = None,
+        scenario_category: Optional[str] = None,
     ) -> dict[str, Any]:
         task_id = str(task_id)
         payload = self.get_task(task_id)
-        payload = self._apply_update(payload, status=status, agent=agent, message=message)
+        payload = self._apply_update(
+            payload,
+            status=status,
+            agent=agent,
+            message=message,
+            scenario_id=scenario_id,
+            scenario_title=scenario_title,
+            scenario_category=scenario_category,
+        )
         self._save(payload)
         return payload
 

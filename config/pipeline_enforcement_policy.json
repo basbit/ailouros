@@ -1,10 +1,117 @@
 {
   "min_review_content_chars": 120,
+  "min_review_content_chars_environment_key": "SWARM_MIN_REVIEW_CONTENT_CHARS",
   "default_stale_review_similarity_threshold": 0.85,
   "max_planning_review_retries_default": 2,
+  "max_planning_review_retries_environment_keys": [
+    "SWARM_MAX_PLANNING_RETRIES",
+    "SWARM_MAX_STEP_RETRIES"
+  ],
   "required_non_empty_output_steps": ["ux_researcher"],
+  "dev_verification_step_id": "dev",
+  "devops_script_contract_step_ids": ["devops"],
+  "pre_review_blockers": {
+    "human_step_id": "human_dev",
+    "resume_pipeline_step": "dev"
+  },
+  "repair_contract": {
+    "human_step_id": "human_dev",
+    "resume_pipeline_step": "human_dev"
+  },
   "swarm_file_tag_min_lines_default": 20,
+  "swarm_file_tag_min_lines_environment_key": "SWARM_FILE_TAG_MIN_LINES",
   "swarm_file_tag_pattern": "<swarm_file\\s+path=",
   "code_fence_pattern": "```(?P<lang>[a-zA-Z0-9_.+-]*)\\n(?P<body>.*?)```",
-  "swarm_env_strings_that_mean_enabled": ["1", "true", "yes", "on"]
+  "swarm_env_strings_that_mean_enabled": ["1", "true", "yes", "on"],
+  "workspace_preflight": {
+    "write_step_ids": ["dev", "devops"],
+    "setting_path": "swarm.preflight_source_integrity",
+    "enabled_environment_key": "SWARM_PREFLIGHT_SOURCE_INTEGRITY",
+    "enabled_default": true,
+    "max_files_environment_key": "SWARM_PREFLIGHT_SOURCE_MAX_FILES",
+    "max_files_default": 2000,
+    "preview_count": 5,
+    "agent_name": "preflight",
+    "passed_message": "Workspace source-integrity preflight passed",
+    "failed_gate_name": "preflight_source_corruption",
+    "failed_summary_template": "preflight_source_corruption: $count marker(s) detected before $step_id; $preview",
+    "failed_detail_template": "preflight_blocker: workspace already contains source corruption before $step_id; repair the tree first. $preview"
+  },
+  "source_integrity": {
+    "max_file_bytes": 2000000,
+    "snippet_start_extra_chars": 20,
+    "snippet_width_chars": 80,
+    "extra_ignored_directory_names": [".swarm", ".swarm_backups", "artifacts", "var"],
+    "binary_extensions": [
+      ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".pdf",
+      ".zip", ".tar", ".gz", ".bz2", ".7z",
+      ".mp3", ".mp4", ".wav", ".ogg", ".webm",
+      ".woff", ".woff2", ".ttf", ".eot", ".otf",
+      ".db", ".sqlite", ".bin"
+    ],
+    "preflight_text_extensions": [
+      ".cs", ".py", ".pyi", ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte",
+      ".java", ".kt", ".kts", ".swift", ".go", ".rs", ".php", ".rb", ".sh",
+      ".bash", ".zsh", ".ps1", ".c", ".cc", ".cpp", ".h", ".hpp", ".m",
+      ".mm", ".scala", ".gradle", ".html", ".css", ".scss", ".json", ".jsonc",
+      ".toml", ".xml"
+    ]
+  },
+  "secret_detection": {
+    "max_bytes": 1500000,
+    "binary_extensions": [
+      ".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf", ".zip", ".gz",
+      ".mp3", ".mp4", ".wav", ".webm", ".woff", ".woff2", ".ttf"
+    ]
+  },
+  "dev_patch_errors": {
+    "max_retries_environment_key": "SWARM_MAX_DEV_PATCH_RETRIES",
+    "max_retries_fallback_environment_key": "SWARM_MAX_STEP_RETRIES",
+    "max_retries_default": 2,
+    "force_swarm_file_after_failures_environment_key": "SWARM_FORCE_SWARM_FILE_AFTER_N_FAILS",
+    "force_swarm_file_after_failures_default": 0,
+    "file_content_max_chars_environment_key": "SWARM_PATCH_REPROMPT_FILE_CONTENT_MAX_CHARS",
+    "file_content_max_chars_default": 6000,
+    "file_content_min_chars": 200,
+    "patch_error_file_pattern": "patch\\s+'([^']+)'",
+    "truncated_file_suffix_template": "\n…[file truncated at $max_chars chars]",
+    "progress_agent_name": "orchestrator",
+    "retry_agent_name": "dev",
+    "retry_in_progress_message": "dev (patch errors retry)"
+  },
+  "dev_runner": {
+    "retry_lean_environment_key": "SWARM_DEV_RETRY_LEAN",
+    "retry_lean_default": true,
+    "progressive_context_environment_key": "SWARM_PROGRESSIVE_CONTEXT",
+    "progressive_context_default": false,
+    "subtask_spec_summary_environment_key": "SWARM_DEV_SUBTASK_SPEC_SUMMARY",
+    "subtask_spec_summary_default": true,
+    "subtask_spec_max_chars_environment_key": "SWARM_DEV_SUBTASK_SPEC_MAX_CHARS",
+    "subtask_spec_max_chars_default": 0,
+    "refusal_markers_environment_key": "SWARM_REFUSAL_MARKERS",
+    "refusal_markers": [
+      "i'm sorry, but i can't",
+      "i cannot continue",
+      "i'm unable to",
+      "i apologize, but i",
+      "as an ai language model",
+      "i can't assist with"
+    ],
+    "enforce_write_format_environment_key": "SWARM_ENFORCE_WRITE_FORMAT",
+    "enforce_write_format_default": true,
+    "workspace_action_pattern": "<swarm_file|<swarm_patch|<swarm_udiff",
+    "dialogue_rounds_environment_key": "SWARM_DEV_DIALOGUE_ROUNDS",
+    "dialogue_rounds_default": 0,
+    "strict_expected_paths_environment_key": "SWARM_DEV_STRICT_EXPECTED_PATHS",
+    "strict_expected_paths_default": false,
+    "force_sequential_environment_key": "SWARM_DEV_FORCE_SEQUENTIAL",
+    "force_sequential_default": false
+  },
+  "incremental_workspace_writes": {
+    "write_roles_environment_key": "SWARM_WORKSPACE_WRITE_ROLES",
+    "write_roles_default": ["dev", "devops"],
+    "stream_enabled_environment_key": "SWARM_STREAM_INCREMENTAL_WORKSPACE",
+    "stream_enabled_default": true,
+    "enabled_environment_values": ["1", "true", "yes", "on"]
+  }
 }

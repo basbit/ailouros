@@ -40,8 +40,43 @@ def run_post_dev_verification_gates(state: PipelineState) -> list[dict[str, Any]
     workspace_writes: dict[str, Any] = {"written": [], "patched": [], "udiff_applied": [], "parsed": 0}
 
     if bool(state.get("workspace_apply_writes")):
+        from backend.App.workspace.infrastructure.workspace_backup import (
+            snapshot_before_writes as _snapshot_before,
+            finalize_change_manifest as _finalize_manifest,
+            is_versioned as _is_versioned,
+        )
+        changed_files_hint_raw = state.get("dev_changed_files_hint")
+        changed_files_hint = (
+            changed_files_hint_raw if isinstance(changed_files_hint_raw, list) else []
+        )
+        snapshot_paths_pre = sorted({str(path) for path in changed_files_hint})
+        backup_snapshots = _snapshot_before(workspace_path, snapshot_paths_pre)
         workspace_writes = apply_from_devops_and_dev_outputs(dict(state), workspace_path, run_shell=False)
         state_dict["workspace_writes"] = workspace_writes
+        all_changed_for_manifest = sorted(set(
+            list(workspace_writes.get("written") or [])
+            + list(workspace_writes.get("patched") or [])
+            + list(workspace_writes.get("udiff_applied") or [])
+        ))
+        if all_changed_for_manifest:
+            top_up = _snapshot_before(workspace_path, [
+                rel for rel in all_changed_for_manifest
+                if rel not in backup_snapshots
+            ])
+            backup_snapshots.update(top_up)
+        change_manifest = _finalize_manifest(
+            workspace_path, backup_snapshots, all_changed_for_manifest,
+        )
+        state_dict["workspace_change_manifest"] = change_manifest
+        if not _is_versioned(workspace_path):
+            existing_warnings = state_dict.get("verification_gate_warnings", "")
+            unversioned_note = (
+                "workspace_safety: workspace is not under version control — "
+                f"backup manifest written at {change_manifest.get('manifest_path', '?')}"
+            )
+            state_dict["verification_gate_warnings"] = (
+                f"{existing_warnings}; {unversioned_note}" if existing_warnings else unversioned_note
+            )
 
         from backend.App.workspace.infrastructure.workspace_diff import capture_workspace_diff
         all_changed = sorted(set(
@@ -53,8 +88,17 @@ def run_post_dev_verification_gates(state: PipelineState) -> list[dict[str, Any]
 
         write_errors = list(workspace_writes.get("errors") or [])
         if write_errors:
-            error_summary = "; ".join(str(e) for e in write_errors)
-            raise RuntimeError(f"write_integrity_gate failed: {error_summary}")
+            error_summary = "; ".join(str(write_error) for write_error in write_errors)
+            _logger.warning(
+                "write_integrity_gate: %d patch/write error(s) detected — surfacing to "
+                "verification_gate_warnings so QA issues NEEDS_WORK and dev retries with "
+                "corrective feedback. errors=%s",
+                len(write_errors), error_summary,
+            )
+            state_dict.setdefault("_post_write_issues", []).append(
+                f"write_integrity_gate: {error_summary}"
+            )
+            state_dict["_dev_patch_errors_for_retry"] = list(write_errors)
 
         healed_patches = list(workspace_writes.get("healed_patches") or [])
         if healed_patches:
@@ -180,11 +224,60 @@ def run_post_dev_verification_gates(state: PipelineState) -> list[dict[str, Any]
         )
         _logger.warning("Post-write integrity issues added to gate warnings: %s", integrity_summary)
 
+    from backend.App.orchestration.application.enforcement.source_corruption_scanner import (
+        scan_changed_files as _scan_changed_files,
+        scan_agent_output_for_fake_tool_calls as _scan_agent_output,
+        summarize_findings as _summarize_corruption,
+    )
+
+    changed_for_scan = sorted(set(
+        list(workspace_writes.get("written") or [])
+        + list(workspace_writes.get("patched") or [])
+        + list(workspace_writes.get("udiff_applied") or [])
+    ))
+    corruption_findings = _scan_changed_files(workspace_path, changed_for_scan)
+    dev_text_for_scan = str(state.get("dev_output") or "")
+    if dev_text_for_scan:
+        corruption_findings.extend(_scan_agent_output(dev_text_for_scan))
+    if corruption_findings:
+        state_dict["source_corruption_findings"] = [
+            finding.to_dict() for finding in corruption_findings
+        ]
+        state_dict["source_corruption_summary"] = _summarize_corruption(
+            corruption_findings
+        )
+        from backend.App.shared.application.settings_resolver import get_setting_bool
+        fail_on_corruption = get_setting_bool(
+            "swarm.fail_on_source_corruption",
+            workspace_root=workspace_path,
+            env_key="SWARM_FAIL_ON_SOURCE_CORRUPTION",
+            default=True,
+        )
+        if fail_on_corruption:
+            preview = ", ".join(
+                f"{finding.path}:{finding.line} [{finding.pattern_id}]"
+                for finding in corruption_findings[:5]
+            )
+            state_dict["_failed_trusted_gates"] = list(
+                state_dict.get("_failed_trusted_gates") or []
+            ) + ["source_corruption"]
+            state_dict["_failed_trusted_gates_summary"] = (
+                f"source_corruption: {len(corruption_findings)} marker(s) detected; {preview}"
+            )
+
     if not gates_passed(results):
         failed_gates = [result for result in results if not result.passed]
         failure_summary = "; ".join(
             f"{gate.gate_name}: {(gate.errors or [{'error': 'failed'}])[0].get('error', 'failed')}"
             for gate in failed_gates
+        )
+        state_dict.setdefault("_failed_trusted_gates", [])
+        existing_failed = list(state_dict.get("_failed_trusted_gates") or [])
+        existing_failed.extend(gate.gate_name for gate in failed_gates)
+        state_dict["_failed_trusted_gates"] = existing_failed
+        existing_summary = str(state_dict.get("_failed_trusted_gates_summary") or "")
+        state_dict["_failed_trusted_gates_summary"] = (
+            f"{existing_summary}; {failure_summary}" if existing_summary else failure_summary
         )
 
         stub_gate_result = next(

@@ -1,0 +1,24 @@
+{
+  "media_provider_api_keys": [
+    {
+      "name": "media_openai_image",
+      "env_key": "SWARM_MEDIA_OPENAI_IMAGE_API_KEY"
+    },
+    {
+      "name": "media_stability",
+      "env_key": "SWARM_MEDIA_STABILITY_API_KEY"
+    },
+    {
+      "name": "media_replicate",
+      "env_key": "SWARM_MEDIA_REPLICATE_API_KEY"
+    },
+    {
+      "name": "media_bria",
+      "env_key": "SWARM_MEDIA_BRIA_API_KEY"
+    },
+    {
+      "name": "media_openai_audio",
+      "env_key": "SWARM_MEDIA_OPENAI_AUDIO_API_KEY"
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "scenario_id": "seo_aeo_geo_audit",
+  "agent_config": {
+    "swarm": {"exa_api_key": "fake-key-for-replay"}
+  }
+}

@@ -102,10 +102,22 @@ def apply_auto_mcp_to_agent_config(
     workspace_root: str,
 ) -> dict[str, Any]:
     ac = copy.deepcopy(agent_config)
+    status_summary: dict[str, Any] = {
+        "filesystem": "skipped",
+        "web_search": "off",
+        "fetch_page": "off",
+        "git": "off",
+        "context7": "off",
+        "github": "off",
+        "notes": [],
+    }
     existing = ac.get("mcp")
     if isinstance(existing, dict):
         ac["mcp"] = coerce_mcp_config_dict(dict(existing))
         if ac["mcp"].get("servers"):
+            status_summary["filesystem"] = "user_provided"
+            status_summary["notes"].append("user-supplied mcp.servers — auto-discovery bypassed")
+            ac["mcp"]["status_summary"] = status_summary
             return ac
 
     cfg_path = (os.getenv("SWARM_MCP_CONFIG") or "").strip()
@@ -156,6 +168,7 @@ def apply_auto_mcp_to_agent_config(
             "command": mcp_bin,
             "args": [wr_abs],
         })
+        status_summary["filesystem"] = "enabled"
     else:
         npx = shutil.which("npx")
         if npx:
@@ -175,11 +188,17 @@ def apply_auto_mcp_to_agent_config(
                     "npm_config_progress": "false",
                 },
             })
+            status_summary["filesystem"] = "enabled_via_npx"
+            status_summary["notes"].append(
+                f"slow startup — install globally: npm install -g {_MCP_PKG}"
+            )
         else:
             logger.warning(
                 "MCP auto: filesystem server skipped (npm/npx not found). "
                 "Other MCP tools may still be available."
             )
+            status_summary["filesystem"] = "disabled_no_npm"
+            status_summary["notes"].append("filesystem server unavailable: install Node.js (npm/npx)")
 
     from backend.App.integrations.infrastructure.mcp.web_search.web_search_router import (
         web_search_available,
@@ -199,6 +218,12 @@ def apply_auto_mcp_to_agent_config(
             info.get("usage"),
         )
         os.environ.pop("_DDG_SEARCH_ENABLED", None)
+        configured_providers = info.get("configured_providers") or []
+        status_summary["web_search"] = (
+            f"router({', '.join(configured_providers)})"
+            if configured_providers
+            else "router"
+        )
     else:
         from backend.App.integrations.infrastructure.mcp.web_search.ddg_search import (
             ddg_search_available,
@@ -209,6 +234,10 @@ def apply_auto_mcp_to_agent_config(
                 "MCP auto: web_search_provider=duckduckgo "
                 "(no provider keys set, DDG package available)"
             )
+            status_summary["web_search"] = "duckduckgo"
+            status_summary["notes"].append(
+                "using duckduckgo (no provider keys set) — set tavily_api_key/exa_api_key/scrapingdog_api_key for better results"
+            )
         else:
             os.environ.pop("_WEB_SEARCH_ENABLED", None)
             os.environ.pop("_DDG_SEARCH_ENABLED", None)
@@ -216,6 +245,10 @@ def apply_auto_mcp_to_agent_config(
                 "MCP auto: web_search_provider=none — no provider keys set "
                 "(SWARM_TAVILY_API_KEY / SWARM_EXA_API_KEY / SWARM_SCRAPINGDOG_API_KEY) "
                 "and duckduckgo-search not installed."
+            )
+            status_summary["web_search"] = "none"
+            status_summary["notes"].append(
+                "web_search disabled: no provider keys (tavily/exa/scrapingdog) and duckduckgo-search not installed"
             )
 
     _fetch_page_flag = swarm.get("fetch_page")
@@ -228,11 +261,15 @@ def apply_auto_mcp_to_agent_config(
         if fetch_page_available():
             os.environ["_FETCH_PAGE_ENABLED"] = "1"
             logger.info("MCP auto: fetch_page=enabled (httpx available)")
+            status_summary["fetch_page"] = "enabled"
         else:
             os.environ.pop("_FETCH_PAGE_ENABLED", None)
             logger.warning("MCP auto: fetch_page=disabled (httpx not installed)")
+            status_summary["fetch_page"] = "disabled_no_httpx"
+            status_summary["notes"].append("fetch_page disabled: install httpx (pip install httpx)")
     else:
         os.environ.pop("_FETCH_PAGE_ENABLED", None)
+        status_summary["fetch_page"] = "disabled_by_config"
 
     _git_flag = swarm.get("git_mcp")
     if _git_flag is None:
@@ -247,13 +284,19 @@ def apply_auto_mcp_to_agent_config(
             if git_mcp_available():
                 servers.append(git_mcp_config(wr_abs))
                 logger.info("MCP auto: git=enabled (workspace has .git)")
+                status_summary["git"] = "enabled"
             else:
                 logger.error(
                     "MCP auto: git=UNAVAILABLE — 'uvx' not found. "
                     "Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh"
                 )
+                status_summary["git"] = "unavailable_no_uvx"
+                status_summary["notes"].append(
+                    "git MCP unavailable: install uv (curl -LsSf https://astral.sh/uv/install.sh | sh)"
+                )
         else:
             logger.debug("MCP auto: git=skipped (no .git in workspace)")
+            status_summary["git"] = "skipped_no_git_dir"
 
     _ctx7_flag = swarm.get("context7")
     if _ctx7_flag is None:
@@ -264,6 +307,7 @@ def apply_auto_mcp_to_agent_config(
         )
         servers.append(context7_mcp_config())
         logger.info("MCP auto: context7=enabled")
+        status_summary["context7"] = "enabled"
 
     _gh_flag = swarm.get("github_mcp")
     if _gh_flag is None:
@@ -277,11 +321,31 @@ def apply_auto_mcp_to_agent_config(
         if _gh_token:
             servers.append(github_mcp_config(_gh_token))
             logger.info("MCP auto: github=enabled (GITHUB_TOKEN set)")
+            status_summary["github"] = "enabled"
         else:
             logger.warning(
                 "MCP auto: github=requested but no GITHUB_TOKEN or "
                 "GITHUB_PERSONAL_ACCESS_TOKEN found"
             )
+            status_summary["github"] = "no_token"
+            status_summary["notes"].append(
+                "github MCP requested but no GITHUB_TOKEN/GITHUB_PERSONAL_ACCESS_TOKEN found"
+            )
 
-    ac["mcp"] = {"servers": servers, "auto": True}
+    ac["mcp"] = {"servers": servers, "auto": True, "status_summary": status_summary}
     return ac
+
+
+def format_mcp_auto_status_line(status_summary: dict[str, Any]) -> str:
+    if not isinstance(status_summary, dict):
+        return ""
+    fragments: list[str] = []
+    for key in ("filesystem", "web_search", "fetch_page", "git", "context7", "github"):
+        value = status_summary.get(key)
+        if value:
+            fragments.append(f"{key}={value}")
+    notes_list = status_summary.get("notes") or []
+    notes_suffix = ""
+    if notes_list:
+        notes_suffix = " | notes: " + "; ".join(str(note) for note in notes_list)
+    return "MCP auto: " + ", ".join(fragments) + notes_suffix

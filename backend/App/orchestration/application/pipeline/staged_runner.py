@@ -4,7 +4,7 @@ import concurrent.futures
 import logging
 import threading
 from collections.abc import Generator
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 from backend.App.orchestration.application.enforcement.machine_transitions import (
     finalize_pipeline_machine,
@@ -67,6 +67,29 @@ def run_pipeline_stream_staged(
     set_ephemeral(state, "_pipeline_step_ids", list(all_step_ids))
     sync_pipeline_machine(state, machine)
 
+    from backend.App.orchestration.application.routing.step_order_analyzer import (
+        analyze_pipeline_step_order,
+    )
+    order_report = analyze_pipeline_step_order(all_step_ids)
+    if order_report.has_violations:
+        yield {
+            "agent": "orchestrator",
+            "status": "warning",
+            "message": (
+                "Pipeline step order issues detected — running anyway:\n"
+                f"{order_report.format_summary()}"
+            ),
+            "step_order_violations": [
+                {
+                    "step_id": violation.step_id,
+                    "step_index": violation.step_index,
+                    "missing_prerequisite": violation.missing_prerequisite,
+                    "prerequisite_index": violation.prerequisite_index,
+                }
+                for violation in order_report.violations
+            ],
+        }
+
     for stage_index, stage in enumerate(pipeline_stages):
         if _pipeline_should_cancel(state):
             raise PipelineCancelled("pipeline cancelled (client disconnect or server shutdown)")
@@ -82,6 +105,10 @@ def run_pipeline_stream_staged(
             try:
                 yield from _step_executor.run(step_id, step_func, state)
             except HumanApprovalRequired as exc:
+                from backend.App.orchestration.application.pipeline.pipeline_runtime_support import (
+                    finalize_metrics_best_effort,
+                )
+                finalize_metrics_best_effort(cast(PipelineState, state))
                 exc.partial_state = _state_snapshot(state)
                 if not exc.resume_pipeline_step:
                     exc.resume_pipeline_step = step_id
@@ -89,14 +116,49 @@ def run_pipeline_stream_staged(
             except PipelineCancelled:
                 raise
             except Exception as exc:
+                from backend.App.orchestration.application.pipeline.pipeline_runtime_support import (
+                    finalize_metrics_best_effort,
+                )
+                from backend.App.orchestration.application.pipeline.ring_failure_restart import (
+                    try_ring_restart_after_failure,
+                )
+                finalize_metrics_best_effort(cast(PipelineState, state))
                 setattr(exc, "_partial_state", _state_snapshot(state))
                 setattr(exc, "_failed_step", step_id)
+                ring_pass_value = int(cast(Any, state.get("_ring_pass")) or 0)
+                ring_final_after_failure = yield from try_ring_restart_after_failure(
+                    cast(dict[str, Any], state),
+                    user_input=user_input,
+                    base_agent_config=base_agent_config,
+                    pipeline_steps=list(all_step_ids),
+                    workspace_root=workspace_root,
+                    workspace_apply_writes=workspace_apply_writes,
+                    task_id=task_id,
+                    cancel_event=cancel_event,
+                    pipeline_workspace_parts=pipeline_workspace_parts,
+                    ring_pass=ring_pass_value,
+                    failed_step=step_id,
+                    exception=exc,
+                )
+                if ring_final_after_failure is not None:
+                    return ring_final_after_failure
                 raise
             yield _step_extractor.emit_completed(step_id, state)
-            yield from run_post_step_enforcement(
-                state, machine, step_id, base_agent_config,
-                _resolve_pipeline_step, _step_executor.run, _step_extractor.emit_completed,
-            )
+            try:
+                yield from run_post_step_enforcement(
+                    state, machine, step_id, base_agent_config,
+                    _resolve_pipeline_step, _step_executor.run, _step_extractor.emit_completed,
+                )
+            except (HumanApprovalRequired, PipelineCancelled):
+                raise
+            except Exception as enforcement_exception:
+                from backend.App.orchestration.application.pipeline.pipeline_runtime_support import (
+                    finalize_metrics_best_effort,
+                )
+                finalize_metrics_best_effort(cast(PipelineState, state))
+                setattr(enforcement_exception, "_partial_state", _state_snapshot(state))
+                setattr(enforcement_exception, "_failed_step", step_id)
+                raise
         else:
             active_steps = list(stage)
             non_plan_steps = [
@@ -146,6 +208,10 @@ def run_pipeline_stream_staged(
             if step_errors:
                 first_error_step = next(iter(step_errors))
                 first_exception = step_errors[first_error_step]
+                from backend.App.orchestration.application.pipeline.pipeline_runtime_support import (
+                    finalize_metrics_best_effort,
+                )
+                finalize_metrics_best_effort(cast(PipelineState, state))
                 setattr(first_exception, "_partial_state", _state_snapshot(state))
                 setattr(first_exception, "_failed_step", first_error_step)
                 raise first_exception
@@ -157,4 +223,41 @@ def run_pipeline_stream_staged(
             break
 
     finalize_pipeline_machine(state, machine)
+    from backend.App.orchestration.application.pipeline.pipeline_runtime_support import (
+        finalize_pipeline_metrics,
+    )
+    finalize_pipeline_metrics(cast(PipelineState, state))
+
+    from backend.App.orchestration.application.pipeline.ring_restart_check import (
+        build_ring_restart_defect_context,
+        build_ring_restart_event,
+        evaluate_ring_restart,
+        topology_from_agent_config,
+    )
+    topology = topology_from_agent_config(base_agent_config)
+    ring_pass_value = int(cast(Any, state.get("_ring_pass")) or 0)
+    ring_evaluation = evaluate_ring_restart(
+        cast(dict[str, Any], state), topology, all_step_ids, ring_pass_value,
+    )
+    if ring_evaluation["should_restart"]:
+        from backend.App.orchestration.application.pipeline.pipeline_runners import (
+            run_pipeline_stream,
+        )
+        defect_context = build_ring_restart_defect_context(ring_evaluation)
+        yield build_ring_restart_event(ring_evaluation)
+        ring_final: PipelineState = yield from run_pipeline_stream(
+            user_input + defect_context,
+            agent_config=base_agent_config,
+            pipeline_steps=list(all_step_ids),
+            workspace_root=workspace_root,
+            workspace_apply_writes=workspace_apply_writes,
+            task_id=task_id,
+            cancel_event=cancel_event,
+            pipeline_workspace_parts=pipeline_workspace_parts,
+            pipeline_step_ids=list(all_step_ids),
+            _ring_pass=ring_pass_value + 1,
+            _ring_initial_state=dict(state),
+        )
+        return ring_final
+
     return state

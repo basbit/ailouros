@@ -1,0 +1,6 @@
+{
+  "scenario_id": "research_brief",
+  "agent_config": {
+    "swarm": {"tavily_api_key": "fake-key-for-replay"}
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "id": "seo_aeo_geo_audit",
+  "title": "SEO / AEO / GEO Audit",
+  "category": "seo",
+  "description": "Audit a website or content set for classic search, AI citation surfaces (AEO/GEO), and app-store discoverability. Read-only review with prioritized recommendations.",
+  "pipeline_steps": [
+    "clarify_input",
+    "seo_specialist",
+    "review_seo_specialist",
+    "ai_citation_strategist",
+    "review_ai_citation_strategist",
+    "app_store_optimizer",
+    "review_app_store_optimizer",
+    "human_seo_specialist"
+  ],
+  "default_gates": ["human_seo_specialist"],
+  "expected_artifacts": [
+    "pipeline.json",
+    "agents/seo_specialist.txt",
+    "agents/ai_citation_strategist.txt",
+    "agents/app_store_optimizer.txt"
+  ],
+  "required_tools": ["web_search"],
+  "workspace_write_default": false,
+  "recommended_models": {
+    "audit": "strong",
+    "review": "fast"
+  },
+  "agent_config_defaults": {},
+  "tags": ["seo", "aeo", "geo", "read_only"],
+  "inputs": [
+    {
+      "key": "prompt",
+      "label": "Site or content target",
+      "hint": "URL, content set, or focus area for the audit, plus target keywords.",
+      "required": true
+    }
+  ],
+  "quality_checks": [
+    {
+      "id": "core_artifacts_present",
+      "type": "artifact_count",
+      "severity": "error",
+      "blocking": true,
+      "config": {"min": 3}
+    },
+    {
+      "id": "seo_audit_substantive",
+      "type": "agent_output_min_chars",
+      "severity": "error",
+      "blocking": false,
+      "config": {"agent": "seo_specialist", "min_chars": 200}
+    },
+    {
+      "id": "ai_citation_substantive",
+      "type": "agent_output_min_chars",
+      "severity": "warning",
+      "blocking": false,
+      "config": {"agent": "ai_citation_strategist", "min_chars": 120}
+    }
+  ]
+}

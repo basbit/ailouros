@@ -24,10 +24,16 @@ from backend.App.orchestration.application.nodes._prompt_builders import (
     planning_pipeline_user_context,
     should_use_compact_build_pipeline_input,
 )
+from backend.App.shared.infrastructure.app_config_load import load_app_config_json
 
 
 def _state(**kwargs):
     return dict(kwargs)
+
+
+def _compact_workspace_template(key: str) -> str:
+    section = load_app_config_json("prompt_fragments.json")["compact_build_workspace"]
+    return str(section[key]).format(workspace_root="/proj").strip()
 
 
 # ---------------------------------------------------------------------------
@@ -386,6 +392,45 @@ def test_build_compact_build_phase_basic():
     result = build_compact_build_phase_user_context(state)
     assert "implement X" in result
     assert "manifest text" in result
+
+
+def test_build_compact_build_phase_omits_mcp_wording_when_no_mcp_servers():
+    state = _state(
+        user_task="implement X",
+        workspace_root="/proj",
+        workspace_context_mode="retrieve",
+        agent_config={"mcp": {"servers": []}},
+        code_analysis={"files": [{"path": "a.py"}]},
+    )
+    result = build_compact_build_phase_user_context(state)
+    assert _compact_workspace_template("mcp_available") not in result
+    assert _compact_workspace_template("mcp_unavailable") in result
+
+
+def test_build_compact_build_phase_omits_mcp_wording_after_tool_call_failure():
+    state = _state(
+        user_task="implement X",
+        workspace_root="/proj",
+        workspace_context_mode="retrieve",
+        agent_config={"mcp": {"servers": [{"name": "workspace"}]}},
+        mcp_tool_call_suspected_failure=True,
+        code_analysis={"files": [{"path": "a.py"}]},
+    )
+    result = build_compact_build_phase_user_context(state)
+    assert _compact_workspace_template("mcp_available") not in result
+    assert _compact_workspace_template("mcp_unavailable") in result
+
+
+def test_build_compact_build_phase_keeps_mcp_wording_when_mcp_active():
+    state = _state(
+        user_task="implement X",
+        workspace_root="/proj",
+        workspace_context_mode="retrieve",
+        agent_config={"mcp": {"servers": [{"name": "workspace"}]}},
+        code_analysis={"files": [{"path": "a.py"}]},
+    )
+    result = build_compact_build_phase_user_context(state)
+    assert _compact_workspace_template("mcp_available") in result
 
 
 def test_build_compact_build_phase_no_manifest():

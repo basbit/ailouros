@@ -184,6 +184,16 @@ class PipelineState(TypedDict, total=False):
     audio_generator_output: str
     audio_generator_model: str
     audio_generator_provider: str
+    asset_fetcher_output: str
+    asset_fetcher_model: str
+    asset_fetcher_provider: str
+    asset_fetcher_manifest: dict[str, Any]
+    asset_fetcher_records: list[dict[str, Any]]
+    media_generator_output: str
+    media_requests: list[dict[str, Any]]
+    media_artifacts: list[dict[str, Any]]
+    media_budget_used: float
+    media_budget: dict[str, Any]
     analyze_code_output: str
     code_diagram_output: str
     code_diagram_model: str
@@ -253,6 +263,13 @@ class PipelineState(TypedDict, total=False):
     dev_review_model: str
     dev_review_provider: str
     dev_human_output: str
+    visual_probe_output: str
+    visual_probe_status: str
+    visual_artifacts_dir: str
+    visual_probe_manifest: dict[str, Any]
+    visual_design_review_output: str
+    visual_design_review_model: str
+    visual_design_review_provider: str
     qa_output: str
     qa_model: str
     qa_provider: str
@@ -347,6 +364,8 @@ ARTIFACT_AGENT_OUTPUT_KEYS: tuple[tuple[str, str], ...] = (
     ("human_ui_designer", "ui_designer_human_output"),
     ("image_generator", "image_generator_output"),
     ("audio_generator", "audio_generator_output"),
+    ("asset_fetcher", "asset_fetcher_output"),
+    ("media_generator", "media_generator_output"),
     ("analyze_code", "analyze_code_output"),
     ("generate_documentation", "generate_documentation_output"),
     ("problem_spotter", "problem_spotter_output"),
@@ -361,6 +380,8 @@ ARTIFACT_AGENT_OUTPUT_KEYS: tuple[tuple[str, str], ...] = (
     ("dev", "dev_output"),
     ("review_dev", "dev_review_output"),
     ("human_dev", "dev_human_output"),
+    ("visual_probe", "visual_probe_output"),
+    ("visual_design_review", "visual_design_review_output"),
     ("qa", "qa_output"),
     ("review_qa", "qa_review_output"),
     ("human_qa", "qa_human_output"),

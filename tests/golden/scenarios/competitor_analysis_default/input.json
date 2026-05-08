@@ -1,0 +1,6 @@
+{
+  "scenario_id": "competitor_analysis",
+  "agent_config": {
+    "swarm": {"exa_api_key": "fake-key-for-replay"}
+  }
+}

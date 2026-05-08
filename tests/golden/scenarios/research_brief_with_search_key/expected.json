@@ -1,0 +1,14 @@
+{
+  "pipeline_steps_contains": [
+    "clarify_input",
+    "pm",
+    "ba",
+    "crole_web_researcher",
+    "crole_source_reviewer",
+    "crole_synthesis_writer",
+    "crole_fact_checker"
+  ],
+  "required_tools": ["web_search"],
+  "workspace_write": false,
+  "warnings_count": 0
+}

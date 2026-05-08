@@ -9,6 +9,7 @@ from typing import Any, cast
 from backend.App.orchestration.application.enforcement.enforcement_policy import (
     critical_review_step_to_output_key,
     is_empty_review,
+    is_quality_gate_enabled,
     load_enforcement_policy,
     max_planning_review_retries,
     min_review_content_chars,
@@ -147,7 +148,7 @@ def run_planning_review_retry_loop(
     review_output = str(state.get(review_output_key) or "")
     record_planning_review_blocker(state, step_id=step_id, review_output=review_output)
     verdict = extract_verdict(review_output)
-    auto_retry_enabled = os.getenv("SWARM_AUTO_RETRY_ON_NEEDS_WORK", "").strip().lower() in {"1", "true", "yes"}
+    auto_retry_enabled = is_quality_gate_enabled(state)
     target_step = planning_review_target_step()[step_id]
     retries = get_step_retries(state, target_step)
     allowed_retries = max_planning_review_retries()
@@ -238,9 +239,17 @@ def run_planning_review_retry_loop(
             "agent": "orchestrator",
             "status": "progress",
             "message": (
-                f"Planning gate: {step_id} still NEEDS_WORK after {allowed_retries} retries. "
+                f"Planning gate: {step_id} still NEEDS_WORK after {retries}/{allowed_retries} retries. "
                 "Proceeding with current output. Consider human review."
             ),
         }
+        from backend.App.orchestration.application.enforcement.ring_escalation_recorder import (
+            record_ring_unresolved_escalation,
+        )
+        record_ring_unresolved_escalation(
+            state, step_id=step_id, verdict=verdict,
+            retries=retries, max_retries=allowed_retries,
+            reason=f"planning review {step_id} exhausted retries with NEEDS_WORK",
+        )
 
     enforce_planning_review_gate(state, step_id=step_id, review_output=review_output)

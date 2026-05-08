@@ -131,6 +131,25 @@ def validate_pipeline_step_catalog(registry_step_ids: FrozenSet[str]) -> None:
                     f"pipeline_step_catalog.{block_name}: unknown target step {target!r}"
                 )
 
+    deps = data.get("step_dependencies") or {}
+    if not isinstance(deps, dict):
+        raise AssertionError("pipeline_step_catalog.step_dependencies must be an object")
+    for step_id, prerequisites in deps.items():
+        if str(step_id) not in allowed:
+            raise AssertionError(
+                f"pipeline_step_catalog.step_dependencies: unknown step id {step_id!r}"
+            )
+        if not isinstance(prerequisites, list):
+            raise AssertionError(
+                f"pipeline_step_catalog.step_dependencies[{step_id!r}] must be an array"
+            )
+        for prerequisite in prerequisites:
+            if str(prerequisite) not in allowed:
+                raise AssertionError(
+                    f"pipeline_step_catalog.step_dependencies[{step_id!r}]: "
+                    f"unknown prerequisite step id {prerequisite!r}"
+                )
+
     wiki = data.get("wiki") or {}
     if not isinstance(wiki, dict):
         raise AssertionError("pipeline_step_catalog.wiki must be an object")

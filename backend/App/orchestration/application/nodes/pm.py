@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import logging
 import os
+from string import Template
 from typing import Any
 
 from backend.App.orchestration.infrastructure.agents.pm_agent import PMAgent
+from backend.App.orchestration.application.nodes._prompt_builders import (
+    _prompt_fragment,
+)
 from backend.App.integrations.infrastructure.cross_task_memory import format_cross_task_memory_block
 from backend.App.integrations.infrastructure.pattern_memory import format_pattern_memory_block
 from backend.App.orchestration.application.agents.review_moa import run_reviewer_or_moa
@@ -25,6 +29,7 @@ from backend.App.orchestration.application.nodes._shared import (
     _skills_extra_for_role_cfg,
     _stream_automation_emit,
     _swarm_prompt_prefix,
+    _web_research_guidance_block,
     embedded_pipeline_input_for_review,
     embedded_review_artifact,
     planning_pipeline_user_context,
@@ -254,11 +259,9 @@ def pm_node(state: PipelineState) -> dict[str, Any]:
     if _no_clarify:
         raw_input = plan_ctx
     else:
-        raw_input = (
-            plan_ctx
-            + "\n\n[User clarifications (answers to pre-pipeline questions)]\n"
-            + clarify_human
-        )
+        raw_input = plan_ctx + Template(
+            _prompt_fragment("pm_clarify_human_block_template")
+        ).safe_substitute(clarify=clarify_human)
     _workspace_root = str(state.get("workspace_root") or "").strip()
     _task_text = str(state.get("input") or plan_ctx or "")
     _evidence_block = _collect_pm_evidence_packet(_workspace_root, _task_text)
@@ -267,25 +270,22 @@ def pm_node(state: PipelineState) -> dict[str, Any]:
     _ca_block = ""
     _analyze_out = (state.get("analyze_code_output") or "").strip()
     if _analyze_out:
-        _ca_block = (
-            "\n[Repository code analysis — use this to determine the actual tech stack]\n"
-            + _analyze_out[:4000]
-            + "\n\n"
-        )
+        _ca_block = Template(
+            _prompt_fragment("pm_code_analysis_block_template")
+        ).safe_substitute(analysis=_analyze_out[:4000])
     planning_retry_feedback = str((state.get("planning_review_feedback") or {}).get("pm") or "").strip()
     planning_retry_block = ""
     if planning_retry_feedback:
-        planning_retry_block = (
-            "\n[Reviewer feedback from previous PM attempt — fix all issues below before returning a new PM artifact]\n"
-            + planning_retry_feedback[:4000]
-            + "\n\n"
-        )
+        planning_retry_block = Template(
+            _prompt_fragment("pm_planning_retry_block_template")
+        ).safe_substitute(feedback=planning_retry_feedback[:4000])
     user_input = (
         mem
         + xmem
         + ctx
         + _swarm_prompt_prefix(state)
         + _documentation_locale_line(state)
+        + _web_research_guidance_block(state, role="pm")
         + planning_mcp_tool_instruction(state)
         + _ca_block
         + _evidence_block
@@ -313,13 +313,14 @@ def pm_node(state: PipelineState) -> dict[str, Any]:
                     f"{len(plan.milestones)} milestones. "
                     f"Recommended: {plan.recommended_alternative or 'n/a'}",
                 )
-                summary = (
-                    f"## Deep Planning Analysis\n\n"
-                    f"Scan: {plan.scan_summary[:400]}\n"
-                    f"Risks: {len(plan.risks)} identified\n"
-                    f"Alternatives: {len(plan.alternatives)}\n"
-                    f"Milestones: {len(plan.milestones)}\n"
-                    f"Recommended: {plan.recommended_alternative}\n\n"
+                summary = Template(
+                    _prompt_fragment("pm_deep_planning_summary_template")
+                ).safe_substitute(
+                    scan=plan.scan_summary[:400],
+                    risks=len(plan.risks),
+                    alternatives=len(plan.alternatives),
+                    milestones=len(plan.milestones),
+                    recommended=plan.recommended_alternative,
                 )
                 user_input = summary + user_input
                 _log.info("pm_node: deep planning prepended (task=%s)", task_id)
@@ -400,17 +401,9 @@ def review_pm_node(state: PipelineState) -> dict[str, Any]:
         env_name="SWARM_REVIEW_PM_OUTPUT_MAX_CHARS",
         default_max=60_000,
     )
-    prompt = (
-        "Step: pm (Project Manager).\n"
-        "Checklist — issue VERDICT: NEEDS_WORK if ANY item fails:\n"
-        "[ ] PM did not introduce a NEW technology stack — PM may reference or confirm a stack "
-        "already present in the workspace (e.g. existing project files, wiki, code_analysis, "
-        "or a previous Architecture ADR); only an unsupported NEW choice by PM is a violation\n"
-        "[ ] Tasks are decomposed into concrete subtasks with priorities\n"
-        "[ ] Each task has clear acceptance/readiness criteria\n"
-        "[ ] Scope is realistic (not a copy of raw user input)\n\n"
-        f"User task:\n{user_block}\n\n"
-        f"PM artifact:\n{pm_art}"
+    prompt = Template(_prompt_fragment("review_pm_prompt_template")).safe_substitute(
+        user_block=user_block,
+        pm_artifact=pm_art,
     )
     return run_reviewer_or_moa(
         state,

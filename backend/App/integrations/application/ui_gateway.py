@@ -34,7 +34,60 @@ def ui_models_payload(provider: str) -> dict[str, Any]:
 
         resp = lmstudio_models_proxy_response()
         return resp.body and __import__("json").loads(resp.body) or {}
-    raise ValueError(f"Unsupported provider: {provider_normalized!r}. Expected 'ollama' or 'lmstudio'.")
+    if provider_normalized in {"local", "llamacpp"}:
+        return _local_models_payload()
+    raise ValueError(
+        f"Unsupported provider: {provider_normalized!r}. Expected 'ollama' | 'lmstudio' | 'local'."
+    )
+
+
+_LOCAL_LLAMA_ALIAS = "local-default"
+
+
+def _local_models_payload() -> dict[str, Any]:
+    raw_dir = os.getenv("AILOUROS_MODELS_DIR", "").strip()
+    if not raw_dir:
+        return {"ok": True, "models": []}
+    models_dir = Path(raw_dir).expanduser()
+    if not models_dir.is_dir():
+        return {"ok": True, "models": []}
+
+    available_stems = sorted(p.stem for p in models_dir.glob("*.gguf"))
+    if not available_stems:
+        return {"ok": True, "models": []}
+
+    catalog, default_stem = _load_local_model_catalog()
+    active_stem = default_stem if default_stem in available_stems else available_stems[0]
+    label = catalog.get(active_stem, active_stem)
+    alias = os.getenv("SWARM_MODEL", _LOCAL_LLAMA_ALIAS).strip() or _LOCAL_LLAMA_ALIAS
+    return {
+        "ok": True,
+        "models": [{"id": alias, "label": label, "source_file": active_stem}],
+    }
+
+
+def _load_local_model_catalog() -> tuple[dict[str, str], str]:
+    raw_path = os.getenv("AILOUROS_DEFAULT_MODELS_MANIFEST", "").strip()
+    if not raw_path:
+        return {}, ""
+    manifest_path = Path(raw_path).expanduser()
+    if not manifest_path.is_file():
+        return {}, ""
+    try:
+        import json
+
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        logger.warning("ui_gateway: cannot read local models manifest %s: %s", manifest_path, exc)
+        return {}, ""
+    catalog: dict[str, str] = {}
+    for entry in data.get("models", []):
+        model_id = str(entry.get("id", "")).strip()
+        label = str(entry.get("label", "")).strip()
+        if model_id and label:
+            catalog[model_id] = label
+    default_id = str(data.get("default_model_id", "")).strip()
+    return catalog, default_id
 
 
 def remote_models_payload(

@@ -13,6 +13,8 @@ from backend.App.orchestration.application.snapshot_serializer import redact_age
 from backend.App.shared.infrastructure.openai_sse import build_extra_event, ensure_task_dirs
 from backend.App.tasks.infrastructure.task_run_log import append_task_run_log
 from backend.App.orchestration.application.streaming.pipeline_sse_handler import PipelineSSEHandler
+from backend.App.orchestration.application.scenarios.resolution import ResolvedScenario
+from backend.App.shared.application.runtime_telemetry import build_runtime_telemetry
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +34,7 @@ def stream_chat_chunks(
     workspace_meta: Optional[dict[str, Any]] = None,
     workspace_path: Optional[Path] = None,
     cancel_event: Optional[threading.Event] = None,
+    resolved_scenario: Optional[ResolvedScenario] = None,
 ) -> Generator[str, None, None]:
     from backend.App.integrations.infrastructure.observability.logging_config import set_task_id
     from backend.App.orchestration.application.use_cases.tasks import pipeline_workspace_parts_from_meta
@@ -54,6 +57,23 @@ def stream_chat_chunks(
         "pipeline_steps": _effective_pipeline_steps,
         "workspace": workspace_meta or {},
     }
+    if resolved_scenario is not None:
+        pipeline_snapshot["scenario_id"] = resolved_scenario.scenario_id
+        pipeline_snapshot["scenario_title"] = resolved_scenario.scenario_title
+        pipeline_snapshot["scenario_category"] = resolved_scenario.scenario_category
+        pipeline_snapshot["scenario_warnings"] = resolved_scenario.warnings
+        pipeline_snapshot["scenario_expected_artifacts"] = list(
+            resolved_scenario.expected_artifacts
+        )
+        pipeline_snapshot["scenario_quality_checks"] = [
+            check.to_dict() for check in resolved_scenario.quality_checks
+        ]
+        pipeline_snapshot["scenario_skipped_gates"] = list(
+            resolved_scenario.skipped_gates
+        )
+        pipeline_snapshot["scenario_model_profile_applied"] = dict(
+            resolved_scenario.model_profile_applied
+        )
 
     try:
         (task_dir / "request.json").write_text(
@@ -84,6 +104,14 @@ def stream_chat_chunks(
         f"workspace_apply_writes={workspace_apply_writes}",
     )
     workspace_meta_safe = workspace_meta or {}
+    try:
+        runtime_data = build_runtime_telemetry(agent_config, workspace_meta_safe)
+        (task_dir / "runtime.json").write_text(
+            json.dumps(runtime_data, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except OSError as runtime_io_error:
+        logger.warning("runtime.json persistence failed: %s", runtime_io_error)
     logger.info(
         "Pipeline stream task_id=%s workspace=%s apply_writes=%s context_mode=%s "
         "assembled_input_chars=%s snapshot_chars=%s",
@@ -94,6 +122,27 @@ def stream_chat_chunks(
         workspace_meta_safe.get("assembled_input_chars", ""),
         workspace_meta_safe.get("workspace_snapshot_chars", ""),
     )
+
+    if resolved_scenario is not None:
+        yield build_extra_event(
+            now,
+            request_model,
+            scenario={
+                "type": "scenario",
+                "id": resolved_scenario.scenario_id,
+                "title": resolved_scenario.scenario_title,
+                "category": resolved_scenario.scenario_category,
+                "warnings": list(resolved_scenario.warnings),
+                "expected_artifacts": list(resolved_scenario.expected_artifacts),
+                "default_gates": list(resolved_scenario.default_gates),
+                "required_tools": list(resolved_scenario.required_tools),
+                "workspace_write": resolved_scenario.workspace_write,
+                "skipped_gates": list(resolved_scenario.skipped_gates),
+                "model_profile_applied": dict(
+                    resolved_scenario.model_profile_applied
+                ),
+            },
+        )
 
     idx_stats = workspace_meta_safe.get("workspace_index_stats")
     if idx_stats:

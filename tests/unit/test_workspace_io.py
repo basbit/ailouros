@@ -330,6 +330,60 @@ def test_apply_from_generate_documentation_output(tmp_path: Path):
     assert (root / "docs" / "x.md").read_text(encoding="utf-8") == "# Hi"
 
 
+def test_apply_from_outputs_aborts_atomically_on_prevalidation_error(tmp_path: Path):
+    root = tmp_path / "w"
+    root.mkdir()
+    (root / "a.py").write_text("one\n", encoding="utf-8")
+    state = {
+        "dev_output": """<swarm_file path="new.py">created</swarm_file>
+<swarm_patch path="a.py">
+<<<<<<< SEARCH
+missing
+=======
+two
+>>>>>>> REPLACE
+</swarm_patch>""",
+    }
+
+    r = apply_from_devops_and_dev_outputs(state, root)
+
+    assert r["written"] == []
+    assert r["patched"] == []
+    assert r["errors"]
+    assert "no_writes_applied" in r["note"]
+    assert not (root / "new.py").exists()
+    assert (root / "a.py").read_text(encoding="utf-8") == "one\n"
+
+
+def test_apply_from_outputs_blocks_unjustified_existing_swarm_file(tmp_path: Path):
+    root = tmp_path / "w"
+    root.mkdir()
+    (root / "a.txt").write_text("old", encoding="utf-8")
+    state = {"dev_output": '<swarm_file path="a.txt">new</swarm_file>'}
+
+    r = apply_from_devops_and_dev_outputs(state, root)
+
+    assert r["written"] == []
+    assert any("FULL_FILE_REWRITE_REQUIRES_JUSTIFICATION" in e for e in r["errors"])
+    assert (root / "a.txt").read_text(encoding="utf-8") == "old"
+
+
+def test_apply_from_outputs_allows_justified_existing_swarm_file(tmp_path: Path):
+    root = tmp_path / "w"
+    root.mkdir()
+    (root / "a.txt").write_text("old", encoding="utf-8")
+    state = {
+        "dev_output": """<swarm_file path="a.txt">new</swarm_file>
+<dev_manifest>{"rewrite_justifications":[{"path":"a.txt","reason":"tiny fixture replacement for test"}]}</dev_manifest>""",
+    }
+
+    r = apply_from_devops_and_dev_outputs(state, root)
+
+    assert r["errors"] == []
+    assert r["written"] == ["a.txt"]
+    assert (root / "a.txt").read_text(encoding="utf-8") == "new"
+
+
 def test_parse_fence_file_comment_and_path_line():
     t1 = """<!-- SWARM_FILE path="app/Foo.tsx" -->
 ```tsx

@@ -1,0 +1,32 @@
+{
+  "script_suffixes": [".sh", ".bash", ".zsh", ".ps1"],
+  "workflow_suffixes": [".yml", ".yaml"],
+  "bare_script_names": ["Dockerfile", "Makefile", "Justfile", "Procfile"],
+  "allowed_hidden_root_names": [".github", ".gitlab"],
+  "runnable_verbs": [
+    "build",
+    "test",
+    "deploy",
+    "launch",
+    "start",
+    "run",
+    "smoke",
+    "lint",
+    "package",
+    "release"
+  ],
+  "manifest_tools": {
+    "package.json": ["npm", "yarn", "pnpm", "node", "npx"],
+    "pyproject.toml": ["pip", "poetry", "uv", "pytest", "python", "ruff", "mypy"],
+    "requirements.txt": ["pip", "pytest", "python"],
+    "Cargo.toml": ["cargo", "rustc"],
+    "go.mod": ["go"],
+    "build.gradle": ["gradle", "gradlew", "./gradlew"],
+    "build.gradle.kts": ["gradle", "gradlew", "./gradlew"],
+    "pom.xml": ["mvn", "maven"],
+    "Makefile": ["make"],
+    "Dockerfile": ["docker"],
+    "Gemfile": ["bundle", "rake", "ruby", "rails"],
+    "composer.json": ["composer", "php"]
+  }
+}

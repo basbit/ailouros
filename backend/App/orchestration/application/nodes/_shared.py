@@ -54,6 +54,7 @@ from backend.App.orchestration.application.nodes._workspace_instructions import 
     _dev_workspace_instructions,
     _path_hints_automated_tests,
     _qa_workspace_verification_instructions,
+    _stub_keywords_block,
 )
 from backend.App.orchestration.application.agents.agent_config_reader import (
     reviewer_cfg as _reviewer_cfg_new,
@@ -95,6 +96,7 @@ __all__ = [
     "should_use_compact_build_pipeline_input",
     "_bare_repo_scaffold_instruction",
     "_dev_workspace_instructions",
+    "_stub_keywords_block",
     "_path_hints_automated_tests",
     "_qa_workspace_verification_instructions",
     "_reviewer_cfg_new",
@@ -114,6 +116,7 @@ __all__ = [
     "_stream_automation_emit",
     "_stream_progress_emit",
     "_swarm_languages_line",
+    "_web_research_guidance_block",
     "make_agent",
     "_artifact_memory_lines",
     "_repo_memory_facts",
@@ -419,6 +422,55 @@ def _documentation_links_for_prompt(state: PipelineState) -> str:
 
 def _swarm_prompt_prefix(state: PipelineState) -> str:
     return _database_context_for_prompt(state) + _documentation_links_for_prompt(state)
+
+
+def _web_research_guidance_block(state: PipelineState, *, role: str = "") -> str:
+    web_search_enabled = bool(os.getenv("_WEB_SEARCH_ENABLED", "")) or bool(os.getenv("_DDG_SEARCH_ENABLED", ""))
+    fetch_page_enabled = bool(os.getenv("_FETCH_PAGE_ENABLED", ""))
+    if not web_search_enabled and not fetch_page_enabled:
+        return ""
+    user_task_text = (state.get("user_task") or state.get("input") or "")
+    user_task_lower = str(user_task_text).lower()
+    research_keywords = (
+        "интернет", "поиск", "research", "internet", "найди", "ресурс", "asset",
+        "картин", "image", "audio", "аудио", "music", "музык", "звук", "sound",
+        "тем", "theme", "scenario", "сценар", "монетиз", "monetiz",
+    )
+    role_normalized = (role or "").strip().lower()
+    research_relevant_roles = {"pm", "ba", "architect", "ux_researcher", "image_generator", "audio_generator"}
+    role_wants_research = role_normalized in research_relevant_roles
+    user_wants_research = any(keyword in user_task_lower for keyword in research_keywords)
+    if not (role_wants_research or user_wants_research):
+        return ""
+    tool_lines: list[str] = []
+    if web_search_enabled:
+        tool_lines.append(
+            "  - `web_search(query=...)` — search the public web for references, examples, "
+            "competitive analysis, themes, monetization patterns, asset libraries (e.g., OpenGameArt, "
+            "freesound.org, Itch.io free assets), licensing info."
+        )
+    if fetch_page_enabled:
+        tool_lines.append(
+            "  - `fetch_page(url=...)` — download a web page to read its content. Use only on URLs "
+            "discovered via web_search. Respect robots.txt-style courtesy: avoid hammering sites."
+        )
+    if not tool_lines:
+        return ""
+    return (
+        "\n## Web research tools available\n"
+        "You can use the following tools to ground your output in real-world information:\n"
+        + "\n".join(tool_lines)
+        + "\n\n"
+        "Guidelines:\n"
+        "  - Use search BEFORE making strong claims about market trends, popular themes, "
+        "monetization patterns, or technology stacks.\n"
+        "  - When citing external sources, include the URL in the artifact so reviewers can verify.\n"
+        "  - For asset references (images/audio), prefer Creative Commons / public-domain sources "
+        "and record the license alongside each URL.\n"
+        "  - Limit to 3–6 high-quality searches per step; do not over-research.\n"
+        "  - Do NOT search for or include private user data, copyrighted content without license, "
+        "or personally-identifiable information.\n"
+    )
 
 
 def _llm_build_agent_run(

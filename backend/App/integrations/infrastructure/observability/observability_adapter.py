@@ -25,7 +25,11 @@ class OtelObservabilityAdapter(ObservabilityPort):
             step_delta = data.get("step_delta", {})
             record_step(step_id, dt_ms, task_id=task_id, step_delta=step_delta)
         except Exception as exc:
-            _logger.debug("OtelObservabilityAdapter.trace_step failed: %s", exc)
+            _logger.warning(
+                "OtelObservabilityAdapter.trace_step failed for step=%s task_id=%s — "
+                "metrics for this step will be missing in the Tokens panel. error=%s",
+                step_id, data.get("task_id", ""), exc,
+            )
 
     @contextlib.contextmanager
     def step_span_ctx(self, step_id: str, state: dict[str, Any]):

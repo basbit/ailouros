@@ -4,6 +4,9 @@ SHELL := /bin/bash
 VENV               ?= .venv
 FRONTEND_DIR       := frontend
 FRONTEND_NPM_STAMP := $(FRONTEND_DIR)/node_modules/.package-lock.json
+FRONTEND_NVMRC     := $(FRONTEND_DIR)/.nvmrc
+NVM_DIR            ?= $(HOME)/.nvm
+FRONTEND_NODE_ENV  := if [ -s "$(NVM_DIR)/nvm.sh" ] && [ -f "$(FRONTEND_NVMRC)" ]; then . "$(NVM_DIR)/nvm.sh"; nvm use --silent "$$(cat "$(FRONTEND_NVMRC)")" >/dev/null; fi;
 PY                 := $(VENV)/bin/python
 PIP                := $(VENV)/bin/pip
 UVICORN            := $(VENV)/bin/uvicorn
@@ -63,6 +66,7 @@ test: ## pytest (excludes smoke tests)
 	$(PY) -m pytest --maxfail=1 --disable-warnings -q \
 		--ignore=tests/smoke
 
+
 test-security: ## security tests only
 	$(PY) -m pytest tests/security/ --maxfail=1 --disable-warnings -q
 
@@ -90,19 +94,19 @@ _frontend-ensure-deps: submodules
 
 frontend-install: submodules ## npm ci / npm install
 	@if [ -f "$(FRONTEND_DIR)/package-lock.json" ]; then \
-		cd $(FRONTEND_DIR) && npm ci; \
+		$(FRONTEND_NODE_ENV) cd $(FRONTEND_DIR) && npm ci; \
 	else \
-		cd $(FRONTEND_DIR) && npm install; \
+		$(FRONTEND_NODE_ENV) cd $(FRONTEND_DIR) && npm install; \
 	fi
 
 frontend-build: _frontend-ensure-deps ## Vue UI build
-	cd $(FRONTEND_DIR) && npm run build
+	$(FRONTEND_NODE_ENV) cd $(FRONTEND_DIR) && npm run build
 
 frontend-lint: _frontend-ensure-deps ## ESLint + TypeScript + Prettier check
-	cd $(FRONTEND_DIR) && npm run lint && npm run type-check && npm run format:check
+	$(FRONTEND_NODE_ENV) cd $(FRONTEND_DIR) && npm run ci
 
 e2e: _frontend-ensure-deps ## Playwright E2E (needs running server)
-	cd $(FRONTEND_DIR) && npx playwright test
+	$(FRONTEND_NODE_ENV) cd $(FRONTEND_DIR) && npm run e2e
 
 _compose-up:
 	docker compose up -d --build

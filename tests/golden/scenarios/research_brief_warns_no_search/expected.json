@@ -1,0 +1,17 @@
+{
+  "pipeline_steps_contains": [
+    "clarify_input",
+    "pm",
+    "ba",
+    "crole_web_researcher",
+    "crole_source_reviewer",
+    "crole_synthesis_writer",
+    "crole_fact_checker"
+  ],
+  "default_gates": [],
+  "required_tools": ["web_search"],
+  "workspace_write": false,
+  "warnings_contains": [
+    "Required tool 'web_search' is not configured."
+  ]
+}

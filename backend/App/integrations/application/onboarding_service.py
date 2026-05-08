@@ -185,7 +185,16 @@ def apply_onboarding_config(workspace_root_str: str, content: str) -> None:
     logger.info("onboarding.apply_config: wrote %s (%d chars)", target, len(content))
 
 
-_DEFAULT_BASE_MODEL = os.getenv("SWARM_ONBOARDING_BASE_MODEL", "lm_studio/allenai/olmo-3-32b-think")
+def _resolve_default_base_model() -> str:
+    explicit = os.getenv("SWARM_ONBOARDING_BASE_MODEL", "").strip()
+    if explicit:
+        return explicit
+    if os.getenv("AILOUROS_DESKTOP", "").strip() == "1":
+        return "openai/local-default"
+    return "lm_studio/allenai/olmo-3-32b-think"
+
+
+_DEFAULT_BASE_MODEL = _resolve_default_base_model()
 
 _PRECONFIGURE_PROMPT_TEMPLATE = """\
 Analyze the project at path: {workspace_root}
@@ -304,13 +313,89 @@ def preconfigure_payload(workspace_root: str, base_model: str = "") -> dict[str,
 
 def onboarding_models_payload(workspace_root: str = "") -> dict[str, Any]:
     from backend.App.integrations.infrastructure.model_discovery import (
-        discover_ollama_models,
         discover_lm_studio_models,
+        discover_ollama_models,
     )
 
     ollama = [m.model_id for m in discover_ollama_models()]
     lmstudio = [m.model_id for m in discover_lm_studio_models()]
-    return {"ollama": ollama, "lm_studio": lmstudio}
+    assignments = _build_role_assignments(ollama, lmstudio)
+    return {
+        "ollama": ollama,
+        "lm_studio": lmstudio,
+        "assignments": assignments,
+    }
+
+
+_DESKTOP_ROLES: tuple[str, ...] = (
+    "pm",
+    "ba",
+    "architect",
+    "code_quality_architect",
+    "reviewer",
+    "stack_reviewer",
+    "ux_researcher",
+    "ux_architect",
+    "ui_designer",
+    "image_generator",
+    "audio_generator",
+    "dev",
+    "qa",
+    "problem_spotter",
+    "refactor_plan",
+    "code_diagram",
+    "doc_generate",
+    "devops",
+    "dev_lead",
+    "seo_specialist",
+    "ai_citation_strategist",
+    "app_store_optimizer",
+)
+
+
+def _build_role_assignments(
+    ollama: list[str],
+    lmstudio: list[str],
+) -> list[dict[str, str]]:
+    if os.getenv("AILOUROS_DESKTOP", "").strip() == "1":
+        local_id = _first_local_model_id() or "local-default"
+        return [
+            {
+                "role": role,
+                "model_id": local_id,
+                "provider": "local",
+                "reason": "Bundled local model",
+            }
+            for role in _DESKTOP_ROLES
+        ]
+
+    if ollama:
+        chosen, provider = ollama[0], "ollama"
+    elif lmstudio:
+        chosen, provider = lmstudio[0], "lm_studio"
+    else:
+        return []
+    return [
+        {
+            "role": role,
+            "model_id": chosen,
+            "provider": provider,
+            "reason": "First discovered local provider",
+        }
+        for role in _DESKTOP_ROLES
+    ]
+
+
+def _first_local_model_id() -> str:
+    raw_dir = os.getenv("AILOUROS_MODELS_DIR", "").strip()
+    if not raw_dir:
+        return ""
+    models_dir = Path(raw_dir).expanduser()
+    if not models_dir.is_dir():
+        return ""
+    for entry in sorted(models_dir.glob("*.gguf")):
+        return entry.stem
+    return ""
 
 
 def run_ai_preconfigure(workspace_root: str, base_model: str = "") -> PreconfigureResult:

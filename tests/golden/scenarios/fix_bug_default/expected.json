@@ -1,0 +1,14 @@
+{
+  "pipeline_steps_contains": [
+    "clarify_input",
+    "analyze_code",
+    "problem_spotter",
+    "dev",
+    "qa",
+    "human_qa"
+  ],
+  "default_gates": ["human_qa"],
+  "required_tools": ["workspace_write"],
+  "workspace_write": true,
+  "warnings_count": 0
+}

@@ -153,7 +153,7 @@ def make_openai_client(*, base_url: str, api_key: str) -> "OpenAI":
 
 
 def ask_model(
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],
     model: str = "",
     temperature: float = 0.2,
     base_url: Optional[str] = None,
@@ -326,7 +326,7 @@ def ask_model(
 
 
 def chat_completion_text(
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],
     model: str = "",
     **kwargs: Any,
 ) -> str:

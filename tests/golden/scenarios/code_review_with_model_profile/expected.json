@@ -1,0 +1,15 @@
+{
+  "pipeline_steps": [
+    "clarify_input",
+    "analyze_code",
+    "problem_spotter",
+    "refactor_plan",
+    "human_code_review"
+  ],
+  "model_profile_applied": {
+    "analyze_code": "qwen2.5-coder",
+    "problem_spotter": "claude-3-5-haiku"
+  },
+  "workspace_write": false,
+  "warnings_count": 0
+}

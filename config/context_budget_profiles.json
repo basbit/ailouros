@@ -22,12 +22,15 @@
 
   "dev_lead":               {"wiki_chars": 2000, "knowledge_chars": 1000, "code_analysis_chars": 20000, "code_analysis_max_files": 200, "reasoning_budget_tokens": 2048},
   "dev":                    {"wiki_chars": 0, "knowledge_chars": 0, "summaries_chars": 200, "pattern_memory_chars": 4000, "cross_task_memory_chars": 0, "code_analysis_chars": 18000, "reasoning_budget_tokens": 1024},
+  "visual_probe":           {"wiki_chars": 0, "knowledge_chars": 0, "include_summaries": false, "code_analysis_chars": 2000, "reasoning_budget_tokens": 512},
+  "visual_design_review":   {"wiki_chars": 2000, "knowledge_chars": 0, "summaries_chars": 150, "code_analysis_chars": 3000, "state_max_chars": 120000, "reasoning_budget_tokens": 2048},
   "qa":                     {"wiki_chars": 0, "knowledge_chars": 0, "summaries_chars": 150, "pattern_memory_chars": 2000, "cross_task_memory_chars": 0, "code_analysis_chars": 15000, "reasoning_budget_tokens": 1024},
   "devops":                 {"wiki_chars": 2000, "knowledge_chars": 1000, "code_analysis_chars": 10000, "code_analysis_max_files": 80, "reasoning_budget_tokens": 1024},
 
   "ux_researcher":          {"wiki_chars": 4000, "code_analysis_chars": 2000, "reasoning_budget_tokens": 2048},
   "ux_architect":           {"wiki_chars": 4000, "code_analysis_chars": 4000, "reasoning_budget_tokens": 2048},
   "ui_designer":            {"wiki_chars": 3000, "code_analysis_chars": 4000, "reasoning_budget_tokens": 2048},
+  "media_generator":        {"wiki_chars": 0, "knowledge_chars": 0, "summaries_chars": 100, "include_summaries": false, "code_analysis_chars": 1000, "reasoning_budget_tokens": 512},
 
   "seo_specialist":          "@marketing_sidecar",
   "ai_citation_strategist":  "@marketing_sidecar",

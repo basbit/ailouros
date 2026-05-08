@@ -28,9 +28,11 @@ async def system_update_available() -> JSONResponse:
 
 @router.get("/health")
 async def health(request: Request) -> JSONResponse:
-    from backend.App.tasks.application.task_runtime import task_store
+    from backend.App.shared.infrastructure.bootstrap.task_store_factory import (
+        get_task_store,
+    )
 
-    payload, status_code = await health_payload(task_store)
+    payload, status_code = await health_payload(get_task_store())
     return JSONResponse(content=payload, status_code=status_code)
 
 

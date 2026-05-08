@@ -1,0 +1,15 @@
+{
+  "pipeline_steps_contains": [
+    "clarify_input",
+    "pm",
+    "ba",
+    "crole_audience_strategist",
+    "crole_writer",
+    "crole_editor",
+    "seo_specialist"
+  ],
+  "default_gates": [],
+  "required_tools": [],
+  "workspace_write": false,
+  "warnings_count": 0
+}

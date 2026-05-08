@@ -90,6 +90,9 @@ class RedisTaskStore:
         status: Optional[str] = None,
         agent: Optional[str] = None,
         message: Optional[str] = None,
+        scenario_id: Optional[str] = None,
+        scenario_title: Optional[str] = None,
+        scenario_category: Optional[str] = None,
     ) -> dict[str, Any]:
         if status is not None:
             payload["status"] = status
@@ -104,6 +107,12 @@ class RedisTaskStore:
                     "message": message,
                 }
             )
+        if scenario_id is not None:
+            payload["scenario_id"] = scenario_id
+        if scenario_title is not None:
+            payload["scenario_title"] = scenario_title
+        if scenario_category is not None:
+            payload["scenario_category"] = scenario_category
         payload["updated_at"] = utc_now_iso()
         payload["version"] = payload.get("version", 0) + 1
         return payload
@@ -143,6 +152,9 @@ class RedisTaskStore:
         status: Optional[str] = None,
         agent: Optional[str] = None,
         message: Optional[str] = None,
+        scenario_id: Optional[str] = None,
+        scenario_title: Optional[str] = None,
+        scenario_category: Optional[str] = None,
     ) -> dict[str, Any]:
         task_id = str(task_id)
         key = self._key(task_id)
@@ -155,7 +167,15 @@ class RedisTaskStore:
                     pipe.reset()
                     raise KeyError(task_id)
                 payload = json.loads(cast(Any, raw))
-                payload = self._apply_update(payload, status=status, agent=agent, message=message)
+                payload = self._apply_update(
+                    payload,
+                    status=status,
+                    agent=agent,
+                    message=message,
+                    scenario_id=scenario_id,
+                    scenario_title=scenario_title,
+                    scenario_category=scenario_category,
+                )
                 pipe.multi()
                 pipe.set(key, json.dumps(payload, ensure_ascii=False), ex=self._ttl_sec)
                 pipe.execute()
@@ -185,9 +205,26 @@ class RedisTaskStore:
         self.client.delete(self._key(task_id))
 
 
+def _build_desktop_task_store() -> Any:
+    from pathlib import Path
+
+    from backend.App.paths import artifacts_root
+    from backend.App.shared.application.desktop_mode import desktop_data_dir
+    from backend.App.tasks.infrastructure.task_store_sqlite import SqliteTaskStore
+
+    base = desktop_data_dir() or (artifacts_root() / "desktop")
+    db_path: Path = base / "tasks.sqlite"
+    logger.info("AILOUROS_DESKTOP=1: using SQLite TaskStore at %s", db_path)
+    return SqliteTaskStore(db_path=db_path, max_size=_TASK_MEMORY_MAX)
+
+
 def _build_legacy_task_store() -> Any:
+    from backend.App.shared.application.desktop_mode import is_desktop_mode
     from backend.App.tasks.infrastructure.task_store_memory import InMemoryTaskStore
     from backend.App.tasks.infrastructure.task_store_fallback import FallbackTaskStore
+
+    if is_desktop_mode():
+        return _build_desktop_task_store()
 
     redis_url = os.getenv("REDIS_URL", _DEFAULT_REDIS_URL)
     redis_required = os.getenv("REDIS_REQUIRED", "0").strip().lower() in (

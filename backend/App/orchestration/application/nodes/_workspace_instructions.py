@@ -82,6 +82,40 @@ def _bare_repo_scaffold_instruction(state: PipelineState) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _stub_keywords_block(state: PipelineState) -> str:
+    production_paths_raw = state.get("production_paths")
+    if not isinstance(production_paths_raw, list) or not production_paths_raw:
+        return ""
+    production_paths_clean = [
+        str(production_path).strip()
+        for production_path in production_paths_raw
+        if str(production_path).strip()
+    ]
+    if not production_paths_clean:
+        return ""
+    paths_list_text = "\n".join(f"  - {production_path}" for production_path in production_paths_clean)
+    return (
+        "\n\n[CRITICAL — production-path stub policy]\n"
+        "The verification layer runs `stub_gate` over the following production paths and "
+        "will HARD-FAIL the pipeline if any of these patterns appear inside files under "
+        "those paths:\n"
+        "  TODO, FIXME, placeholder, dummy, fake, 'not implemented', mock_data, "
+        "raise NotImplementedError, bare `pass`, `return None`, `return null`, "
+        "`return []`, `return {}`.\n"
+        "Production paths for this task:\n"
+        f"{paths_list_text}\n"
+        "When you write or patch files inside those paths you MUST emit fully implemented "
+        "logic — no stub markers, no placeholder bodies, no comments containing the "
+        "forbidden words. If you cannot implement a piece on this turn, omit the file "
+        "entirely or explain the blocker in your text response, but do NOT commit a "
+        "stub to the production paths.\n"
+        "If you genuinely need a stand-in (e.g. a not-yet-wired adapter), implement a "
+        "real default behaviour (return a typed empty result with explicit "
+        "`# step_omitted` log lines outside the forbidden patterns) — never the keywords "
+        "above.\n"
+    )
+
+
 def _dev_workspace_instructions(state: PipelineState) -> str:
     wr = (state.get("workspace_root") or "").strip()
     if not wr:
@@ -155,7 +189,7 @@ def _dev_workspace_instructions(state: PipelineState) -> str:
             "Command execution DISABLED on the server — "
             "use <swarm_shell> only as instructions for the operator (will not be executed automatically).\n"
         )
-    return part + _bare_repo_scaffold_instruction(state)
+    return part + _bare_repo_scaffold_instruction(state) + _stub_keywords_block(state)
 
 
 def _qa_workspace_verification_instructions(state: PipelineState) -> str:

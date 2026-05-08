@@ -80,8 +80,8 @@ def test_extract_verdict_tolerates_markdown_emphasis(text: str, expected: str) -
 
 def test_dev_review_router_continue_when_gate_disabled():
     with patch(
-        "backend.App.orchestration.application.routing.graph_builder._QUALITY_GATE_ENABLED_DEFAULT",
-        False,
+        "backend.App.orchestration.application.routing.graph_builder.is_quality_gate_enabled",
+        return_value=False,
     ):
         result = _dev_review_router({"dev_review_output": "VERDICT: NEEDS_WORK"})
     assert result == "continue"
@@ -89,8 +89,8 @@ def test_dev_review_router_continue_when_gate_disabled():
 
 def test_dev_review_router_continue_when_approved():
     with patch(
-        "backend.App.orchestration.application.routing.graph_builder._QUALITY_GATE_ENABLED_DEFAULT",
-        True,
+        "backend.App.orchestration.application.routing.graph_builder.is_quality_gate_enabled",
+        return_value=True,
     ):
         result = _dev_review_router({"dev_review_output": "VERDICT: APPROVED"})
     assert result == "continue"
@@ -98,8 +98,8 @@ def test_dev_review_router_continue_when_approved():
 
 def test_dev_review_router_retry_when_needs_work_no_retries():
     with patch(
-        "backend.App.orchestration.application.routing.graph_builder._QUALITY_GATE_ENABLED_DEFAULT",
-        True,
+        "backend.App.orchestration.application.routing.graph_builder.is_quality_gate_enabled",
+        return_value=True,
     ), patch(
         "backend.App.orchestration.application.routing.graph_builder._MAX_STEP_RETRIES",
         2,
@@ -117,8 +117,8 @@ def test_dev_review_router_retry_when_needs_work_no_retries():
 
 def test_dev_review_router_continue_when_retries_exhausted():
     with patch(
-        "backend.App.orchestration.application.routing.graph_builder._QUALITY_GATE_ENABLED_DEFAULT",
-        True,
+        "backend.App.orchestration.application.routing.graph_builder.is_quality_gate_enabled",
+        return_value=True,
     ), patch(
         "backend.App.orchestration.application.routing.graph_builder._MAX_STEP_RETRIES",
         2,
@@ -137,8 +137,8 @@ def test_dev_review_router_continue_when_retries_exhausted():
 
 def test_dev_review_router_requires_structured_blockers():
     with patch(
-        "backend.App.orchestration.application.routing.graph_builder._QUALITY_GATE_ENABLED_DEFAULT",
-        True,
+        "backend.App.orchestration.application.routing.graph_builder.is_quality_gate_enabled",
+        return_value=True,
     ):
         with pytest.raises(RuntimeError, match="review_dev: reviewer returned NEEDS_WORK without structured P0/P1 defects"):
             _dev_review_router({"dev_review_output": "VERDICT: NEEDS_WORK", "dev_defect_report": {"defects": []}})
@@ -146,8 +146,8 @@ def test_dev_review_router_requires_structured_blockers():
 
 def test_qa_review_router_retry_when_structured_blockers_present():
     with patch(
-        "backend.App.orchestration.application.routing.graph_builder._QUALITY_GATE_ENABLED_DEFAULT",
-        True,
+        "backend.App.orchestration.application.routing.graph_builder.is_quality_gate_enabled",
+        return_value=True,
     ), patch(
         "backend.App.orchestration.application.pipeline.pipeline_state_helpers.get_step_retries",
         return_value=0,
@@ -185,8 +185,8 @@ def test_dev_retry_gate_node_from_zero():
 
 def test_quality_gate_router_disabled_returns_continue():
     with patch(
-        "backend.App.orchestration.application.routing.graph_builder._QUALITY_GATE_ENABLED_DEFAULT",
-        False,
+        "backend.App.orchestration.application.routing.graph_builder.is_quality_gate_enabled",
+        return_value=False,
     ):
         result = _quality_gate_router({"step_artifacts": {}}, "pm")
     assert result == "continue"
@@ -194,8 +194,8 @@ def test_quality_gate_router_disabled_returns_continue():
 
 def test_quality_gate_router_no_verdict_continues():
     with patch(
-        "backend.App.orchestration.application.routing.graph_builder._QUALITY_GATE_ENABLED_DEFAULT",
-        True,
+        "backend.App.orchestration.application.routing.graph_builder.is_quality_gate_enabled",
+        return_value=True,
     ):
         state = {"step_artifacts": {"pm": {"verdict": "OK"}}}
         result = _quality_gate_router(state, "pm")
@@ -204,8 +204,8 @@ def test_quality_gate_router_no_verdict_continues():
 
 def test_quality_gate_router_needs_work_retries_when_under_limit():
     with patch(
-        "backend.App.orchestration.application.routing.graph_builder._QUALITY_GATE_ENABLED_DEFAULT",
-        True,
+        "backend.App.orchestration.application.routing.graph_builder.is_quality_gate_enabled",
+        return_value=True,
     ), patch(
         "backend.App.orchestration.application.routing.graph_builder._MAX_STEP_RETRIES",
         2,
@@ -220,8 +220,8 @@ def test_quality_gate_router_needs_work_retries_when_under_limit():
 
 def test_quality_gate_router_escalates_when_retries_exhausted():
     with patch(
-        "backend.App.orchestration.application.routing.graph_builder._QUALITY_GATE_ENABLED_DEFAULT",
-        True,
+        "backend.App.orchestration.application.routing.graph_builder.is_quality_gate_enabled",
+        return_value=True,
     ), patch(
         "backend.App.orchestration.application.routing.graph_builder._MAX_STEP_RETRIES",
         2,
@@ -236,8 +236,8 @@ def test_quality_gate_router_escalates_when_retries_exhausted():
 
 def test_quality_gate_router_no_artifacts_continues():
     with patch(
-        "backend.App.orchestration.application.routing.graph_builder._QUALITY_GATE_ENABLED_DEFAULT",
-        True,
+        "backend.App.orchestration.application.routing.graph_builder.is_quality_gate_enabled",
+        return_value=True,
     ):
         # No artifact = no verdict = continue
         result = _quality_gate_router({}, "pm")

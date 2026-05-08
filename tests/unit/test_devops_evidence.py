@@ -71,7 +71,28 @@ def test_devops_node_falls_back_to_empty_repo_evidence_when_artifact_is_missing(
     assert result["devops_unverified_claims"] == []
 
 
-def test_devops_node_allows_unverified_claims_without_workspace(monkeypatch):
+def test_devops_node_requires_workspace_by_default(monkeypatch):
+    monkeypatch.setattr(
+        "backend.App.orchestration.application.nodes.devops.DevopsAgent",
+        _FakeDevopsAgent,
+    )
+    try:
+        devops_node(
+            {
+                "workspace_root": "",
+                "agent_config": {},
+                "spec_output": "Approved spec",
+                "task_id": "t-3",
+            }
+        )
+    except RuntimeError as exc:
+        assert "workspace_root is not set" in str(exc)
+    else:
+        raise AssertionError("devops_node should require workspace_root by default")
+
+
+def test_devops_node_allows_unverified_claims_when_repo_path_gate_is_disabled(monkeypatch):
+    monkeypatch.setenv("SWARM_DEVOPS_REQUIRE_REPO_PATH", "0")
     monkeypatch.setattr(
         "backend.App.orchestration.application.nodes.devops.DevopsAgent",
         _FakeDevopsAgent,
@@ -92,7 +113,7 @@ def test_devops_node_allows_unverified_claims_without_workspace(monkeypatch):
             "workspace_root": "",
             "agent_config": {},
             "spec_output": "Approved spec",
-            "task_id": "t-3",
+            "task_id": "t-4",
         }
     )
 

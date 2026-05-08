@@ -1,0 +1,17 @@
+{
+  "pipeline_steps_contains": [
+    "clarify_input",
+    "pm",
+    "ba",
+    "crole_market_researcher",
+    "crole_competitor_researcher",
+    "crole_source_reviewer",
+    "crole_positioning_analyst",
+    "crole_pricing_analyst",
+    "crole_opportunity_synth"
+  ],
+  "default_gates": [],
+  "required_tools": ["web_search"],
+  "workspace_write": false,
+  "warnings_count": 0
+}

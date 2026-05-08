@@ -2,6 +2,7 @@ from langgraph_pipeline import run_pipeline
 
 
 def test_pipeline_happy_path(monkeypatch):
+    monkeypatch.setenv("SWARM_DEVOPS_REQUIRE_REPO_PATH", "0")
     monkeypatch.setattr("langgraph_pipeline.PMAgent.run", lambda self, _: "pm tasks")
     monkeypatch.setattr("langgraph_pipeline.ReviewerAgent.run", lambda self, _: "VERDICT: OK")
     monkeypatch.setattr("langgraph_pipeline.StackReviewerAgent.run", lambda self, _: "VERDICT: OK")

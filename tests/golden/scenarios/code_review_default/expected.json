@@ -1,0 +1,21 @@
+{
+  "pipeline_steps": [
+    "clarify_input",
+    "analyze_code",
+    "problem_spotter",
+    "refactor_plan",
+    "human_code_review"
+  ],
+  "default_gates": ["human_code_review"],
+  "expected_artifacts": [
+    "pipeline.json",
+    "agents/analyze_code.txt",
+    "agents/problem_spotter.txt",
+    "agents/refactor_plan.txt"
+  ],
+  "required_tools": [],
+  "workspace_write": false,
+  "warnings_count": 0,
+  "skipped_gates": [],
+  "model_profile_applied": {}
+}

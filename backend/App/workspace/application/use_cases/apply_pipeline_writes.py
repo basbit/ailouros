@@ -71,10 +71,16 @@ def workspace_followup_lines(
         )
         return lines
     if not workspace_write_allowed():
-        lines.append(
-            "[orchestrator] workspace writes: skipped "
-            "(set SWARM_ALLOW_WORKSPACE_WRITE=1 on orchestrator)\n"
-        )
+        import os as _os
+
+        if _os.getenv("AILOUROS_DESKTOP", "").strip() == "1":
+            hint = (
+                "(desktop runtime should set this automatically; "
+                "restart the app if the capability is missing)"
+            )
+        else:
+            hint = "(set SWARM_ALLOW_WORKSPACE_WRITE=1 on orchestrator)"
+        lines.append(f"[orchestrator] workspace writes: skipped {hint}\n")
         return lines
 
     w = pipeline_snapshot.get("workspace_writes") or {}

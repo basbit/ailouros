@@ -21,6 +21,7 @@ from backend.App.orchestration.application.nodes._shared import (
     _artifact_memory_lines,
     _cfg_model,
     _documentation_locale_line,
+    _web_research_guidance_block,
     _llm_planning_agent_run,
     _make_human_agent,
     _make_reviewer_agent,
@@ -36,7 +37,11 @@ from backend.App.orchestration.application.nodes._shared import (
     embedded_review_artifact,
     planning_pipeline_user_context,
 )
-from backend.App.orchestration.application.nodes._prompt_builders import _run_agent_with_boundary
+from backend.App.orchestration.application.nodes._prompt_builders import (
+    _prompt_fragment,
+    _run_agent_with_boundary,
+)
+from string import Template
 
 _log = logging.getLogger(__name__)
 
@@ -84,35 +89,19 @@ def arch_node(state: PipelineState) -> dict[str, Any]:
     planning_retry_feedback = str((state.get("planning_review_feedback") or {}).get("architect") or "").strip()
     planning_retry_block = ""
     if planning_retry_feedback:
-        planning_retry_block = (
-            "Reviewer feedback from previous Architect/stack review attempt "
-            "(fix all issues before returning a new architecture artifact):\n"
-            f"{planning_retry_feedback[:4000]}\n\n"
-        )
-    prompt = (
-        ctx
-        + _swarm_prompt_prefix(state)
-        + _documentation_locale_line(state)
-        + planning_mcp_tool_instruction(state)
-        + _project_knowledge_block(state, step_id="architect")
-        + "User task:\n"
-        + f"{plan_ctx}\n\n"
-        + "PM decomposition:\n"
-        + f"{pm_output}\n\n"
-        + planning_retry_block
-        + "Evidence contract:\n"
-        + "If you claim that the repository already uses a technology, pattern, component, "
-        + "or integration, add a final ```json``` block with this schema:\n"
-        + '{'
-        + '"repo_evidence":[{"path":"relative/path","start_line":1,"end_line":3,'
-        + '"excerpt":"exact text copied from the repository","why":"what this proves"}],'
-        + '"unverified_claims":["claim that cannot be proven from the repository yet"]'
-        + '}\n'
-        + "Rules:\n"
-        + "- `excerpt` must exactly match the referenced file lines.\n"
-        + "- Every tech-stack or existing-system claim must be backed by `repo_evidence` or moved to "
-        + "`unverified_claims`.\n"
-        + "- Do not omit the JSON block.\n"
+        planning_retry_block = Template(
+            _prompt_fragment("arch_planning_retry_block_template")
+        ).safe_substitute(feedback=planning_retry_feedback[:4000])
+    prompt = Template(_prompt_fragment("arch_node_prompt_template")).safe_substitute(
+        context=ctx,
+        swarm_prefix=_swarm_prompt_prefix(state),
+        locale=_documentation_locale_line(state),
+        research_guidance=_web_research_guidance_block(state, role="architect"),
+        mcp_instruction=planning_mcp_tool_instruction(state),
+        knowledge=_project_knowledge_block(state, step_id="architect"),
+        plan_ctx=plan_ctx,
+        pm_output=pm_output,
+        retry_block=planning_retry_block,
     )
     architect_cfg = (state.get("agent_config") or {}).get("architect") or {}
     agent = ArchitectAgent(
@@ -182,19 +171,12 @@ def review_stack_node(state: PipelineState) -> dict[str, Any]:
         "repo_evidence": list(state.get("arch_repo_evidence") or []),
         "unverified_claims": list(state.get("arch_unverified_claims") or []),
     }
-    prompt = (
-        _swarm_prompt_prefix(state)
-        + _documentation_locale_line(state)
-        + "Step: technology stack approval (after Architect).\n"
-        "Checklist — issue VERDICT: NEEDS_WORK if ANY item fails:\n"
-        "[ ] Technology claims about the existing repository are backed by validated repo_evidence\n"
-        "[ ] Any unproven stack claim is explicitly listed under unverified_claims\n"
-        "[ ] The proposed stack does not rely on invented repository facts\n\n"
-        f"User task:\n{user_block}\n\n"
-        "Validated repo evidence artifact:\n"
-        f"{format_repo_evidence_for_prompt(repo_evidence_artifact)}\n\n"
-        "Architect artifact (expected: Technology stack / ADR):\n"
-        f"{arch_art}"
+    prompt = Template(_prompt_fragment("review_stack_prompt_template")).safe_substitute(
+        swarm_prefix=_swarm_prompt_prefix(state),
+        locale=_documentation_locale_line(state),
+        user_block=user_block,
+        repo_evidence=format_repo_evidence_for_prompt(repo_evidence_artifact),
+        arch_artifact=arch_art,
     )
     return run_reviewer_or_moa(
         state,
@@ -229,23 +211,13 @@ def review_arch_node(state: PipelineState) -> dict[str, Any]:
         "repo_evidence": list(state.get("arch_repo_evidence") or []),
         "unverified_claims": list(state.get("arch_unverified_claims") or []),
     }
-    prompt = (
-        _swarm_prompt_prefix(state)
-        + _documentation_locale_line(state)
-        + "Step: architect (general artifact review, not just the stack).\n"
-        "Checklist — issue VERDICT: NEEDS_WORK if ANY item fails:\n"
-        "[ ] Explicit Technology Stack section is present (languages, frameworks, DB, deployment)\n"
-        "[ ] Existing-repository claims are backed by validated repo_evidence or marked unverified\n"
-        "[ ] ADR or justification provided for non-obvious decisions\n"
-        "[ ] Component/service boundaries are defined\n"
-        "[ ] No requirements from BA are silently dropped\n"
-        "[ ] Scalability/security decisions match the task scope (no over/under-engineering)\n\n"
-        f"User task:\n{user_block}\n\n"
-        "Validated repo evidence artifact:\n"
-        f"{format_repo_evidence_for_prompt(repo_evidence_artifact)}\n\n"
-        "Stack review (separate reviewer, for context):\n"
-        f"{stack_rev}\n\n"
-        f"Architect artifact:\n{arch_art}"
+    prompt = Template(_prompt_fragment("review_arch_prompt_template")).safe_substitute(
+        swarm_prefix=_swarm_prompt_prefix(state),
+        locale=_documentation_locale_line(state),
+        user_block=user_block,
+        repo_evidence=format_repo_evidence_for_prompt(repo_evidence_artifact),
+        stack_review=stack_rev,
+        arch_artifact=arch_art,
     )
     return run_reviewer_or_moa(
         state,
@@ -286,22 +258,9 @@ def ba_arch_debate_node(state: PipelineState) -> dict[str, Any]:
             "ba_arch_debate_model": "",
             "ba_arch_debate_provider": "",
         }
-    prompt = (
-        "You are the Judge in an architectural debate (DebateWithJudge).\n"
-        "You are given:\n"
-        "1) Requirements from the Business Analyst (WHAT is needed)\n"
-        "2) Architectural decisions from the Architect (HOW to implement)\n\n"
-        "Task: find conflicts/inconsistencies and propose a compromise.\n\n"
-        "=== BA Requirements ===\n"
-        f"{ba}\n\n"
-        "=== Architect Decisions ===\n"
-        f"{arch}\n\n"
-        "Respond in the following format:\n"
-        "## Identified conflicts\n"
-        "1. [conflict]: [resolution proposal]\n"
-        "…\n\n"
-        "## Specification clarifications\n"
-        "[final clarifications that resolve the conflicts]"
+    prompt = Template(_prompt_fragment("ba_arch_debate_prompt_template")).safe_substitute(
+        ba=ba,
+        arch=arch,
     )
     agent = _make_reviewer_agent(state)
     debate_output = _run_agent_with_boundary(state, agent, prompt)
@@ -365,17 +324,18 @@ def merge_spec_node(state: PipelineState) -> dict[str, Any]:
     combined_size = len(ba_out) + len(arch_out) + len(debate)
     _llm_merge_threshold = int(os.environ.get("SWARM_SPEC_MERGE_LLM_THRESHOLD", "8000"))
     if combined_size > _llm_merge_threshold:
-        merge_prompt = (
-            "Merge the following two specification sections into ONE coherent, "
-            "non-redundant specification document.\n"
-            "Remove duplicates. Preserve ALL unique requirements and architectural decisions.\n"
-            "Keep structured sections (tables, ADRs, code blocks) intact.\n\n"
-            f"=== BA Requirements ===\n{ba_out}\n\n"
-            f"=== Architecture Decisions ===\n{arch_out}\n\n"
-        )
+        debate_block = ""
         if debate:
-            merge_prompt += f"=== Debate Outcome ===\n{debate}\n\n"
-        merge_prompt += "Output the merged specification. Do NOT add commentary."
+            debate_block = Template(
+                _prompt_fragment("merge_spec_debate_block_template")
+            ).safe_substitute(debate=debate)
+        merge_prompt = Template(
+            _prompt_fragment("merge_spec_prompt_template")
+        ).safe_substitute(
+            ba=ba_out,
+            arch=arch_out,
+            debate_block=debate_block,
+        )
         try:
             agent = _make_reviewer_agent(state)
             merged = _run_agent_with_boundary(state, agent, merge_prompt)
@@ -415,15 +375,9 @@ def review_spec_node(state: PipelineState) -> dict[str, Any]:
         env_name="SWARM_REVIEW_MERGED_SPEC_MAX_CHARS",
         default_max=80_000,
     )
-    prompt = (
-        "Step: spec_merge (merged specification before Dev).\n"
-        "Checklist — issue VERDICT: NEEDS_WORK if ANY item fails:\n"
-        "[ ] Technology stack is explicitly named (no 'TBD' or 'as needed')\n"
-        "[ ] BA requirements and Architect decisions are consistent (no contradictions)\n"
-        "[ ] All user task goals are traceable to at least one requirement\n"
-        "[ ] Spec is self-contained enough for Dev/QA to proceed without re-reading the chat\n\n"
-        f"User task:\n{user_block}\n\n"
-        f"Specification:\n{spec_art}"
+    prompt = Template(_prompt_fragment("review_spec_prompt_template")).safe_substitute(
+        user_block=user_block,
+        spec_artifact=spec_art,
     )
     return run_reviewer_or_moa(
         state,

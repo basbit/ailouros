@@ -69,13 +69,28 @@ class FallbackTaskStore:
         status: Optional[str] = None,
         agent: Optional[str] = None,
         message: Optional[str] = None,
+        scenario_id: Optional[str] = None,
+        scenario_title: Optional[str] = None,
+        scenario_category: Optional[str] = None,
     ) -> dict[str, Any]:
         return self._with_fallback(
             lambda: self._primary.update_task(
-                task_id, status=status, agent=agent, message=message
+                task_id,
+                status=status,
+                agent=agent,
+                message=message,
+                scenario_id=scenario_id,
+                scenario_title=scenario_title,
+                scenario_category=scenario_category,
             ),
             lambda: self._fallback.update_task(
-                task_id, status=status, agent=agent, message=message
+                task_id,
+                status=status,
+                agent=agent,
+                message=message,
+                scenario_id=scenario_id,
+                scenario_title=scenario_title,
+                scenario_category=scenario_category,
             ),
         )
 

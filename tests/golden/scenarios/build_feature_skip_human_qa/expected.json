@@ -1,0 +1,15 @@
+{
+  "pipeline_steps_contains": [
+    "clarify_input",
+    "pm",
+    "ba",
+    "architect",
+    "spec_merge",
+    "dev",
+    "qa"
+  ],
+  "default_gates": [],
+  "skipped_gates": ["human_qa"],
+  "workspace_write": true,
+  "warnings_count": 0
+}

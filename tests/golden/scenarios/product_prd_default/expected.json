@@ -1,0 +1,14 @@
+{
+  "pipeline_steps_contains": [
+    "clarify_input",
+    "pm",
+    "ba",
+    "architect",
+    "ba_arch_debate",
+    "spec_merge"
+  ],
+  "default_gates": [],
+  "required_tools": [],
+  "workspace_write": false,
+  "warnings_count": 0
+}

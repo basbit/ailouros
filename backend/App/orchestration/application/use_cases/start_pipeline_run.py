@@ -8,6 +8,7 @@ from typing import Any, Optional, Protocol, runtime_checkable
 from backend.App.orchestration.domain.ports import TaskId, TaskStatus, TaskStorePort
 from backend.App.workspace.domain.ports import WorkspaceIOPort
 from backend.App.shared.domain.validators import is_truthy_value
+from backend.App.orchestration.application.scenarios.resolution import ResolvedScenario
 
 
 @runtime_checkable
@@ -89,6 +90,7 @@ class StartPipelineRunCommand:
     workspace_root_str: str
     workspace_apply_writes: bool
     workspace_meta: dict[str, Any] = field(default_factory=dict)
+    resolved_scenario: Optional[ResolvedScenario] = field(default=None)
 
 
 @dataclass
@@ -129,6 +131,20 @@ class StartPipelineRunUseCase:
 
         effective_steps = list(command.steps or [])
         swarm_cfg = (command.agent_config or {}).get("swarm") or {}
+        from backend.App.orchestration.application.use_cases.asset_pipeline_inclusion import (
+            augment_pipeline_steps_for_assets,
+        )
+        augmented_steps, asset_steps_added = augment_pipeline_steps_for_assets(
+            effective_steps,
+            command.user_prompt or "",
+            command.agent_config or {},
+        )
+        if asset_steps_added:
+            effective_steps = augmented_steps
+            logger.info(
+                "Asset pipeline inclusion: added %s to pipeline_steps for task=%s",
+                asset_steps_added, tid,
+            )
         if not effective_steps and is_truthy_value(swarm_cfg.get("auto_plan")):
             try:
                 plan_result = _plan(

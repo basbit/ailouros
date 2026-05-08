@@ -15,7 +15,7 @@ from backend.App.orchestration.application.streaming.chat_stream import stream_c
 from backend.App.orchestration.application.streaming.resume_stream import stream_human_resume_chunks
 from backend.App.orchestration.application.streaming.retry_stream import stream_retry_chunks
 from backend.App.orchestration.application.use_cases.tasks import (
-    resolve_chat_request,
+    resolve_chat_request_full,
     start_pipeline_run,
 )
 from backend.App.shared.infrastructure.app_config_load import load_app_config_json
@@ -68,7 +68,42 @@ async def chat_completions(body: ChatCompletionRequest, request: Request):
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    agent_config, eff_steps = resolve_chat_request(body)
+    try:
+        agent_config, eff_steps, resolved_scenario = resolve_chat_request_full(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    if resolved_scenario is not None:
+        body.workspace_write = resolved_scenario.workspace_write
+        from backend.App.orchestration.application.scenarios.input_check import (
+            collect_missing_required_inputs,
+        )
+        from backend.App.orchestration.application.scenarios.registry import (
+            default_scenario_registry,
+        )
+        from backend.App.orchestration.domain.scenarios.errors import ScenarioNotFound
+
+        try:
+            scenario_for_inputs = default_scenario_registry().get(
+                resolved_scenario.scenario_id,
+            )
+        except ScenarioNotFound:
+            scenario_for_inputs = None
+        if scenario_for_inputs is not None:
+            missing = collect_missing_required_inputs(
+                scenario_for_inputs,
+                user_prompt,
+                body.workspace_root,
+                body.project_context_file,
+            )
+            if missing:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"Scenario {resolved_scenario.scenario_id!r} requires inputs: "
+                        f"{missing}"
+                    ),
+                )
 
     eff_stages: Optional[list[list[str]]] = body.pipeline_stages
     if eff_stages is not None:
@@ -99,7 +134,16 @@ async def chat_completions(body: ChatCompletionRequest, request: Request):
     workspace_root_str = str(workspace_path) if workspace_path else ""
     workspace_apply_writes = bool(workspace_path and body.workspace_write)
 
+    if resolved_scenario is not None:
+        task_store.update_task(
+            task["task_id"],
+            scenario_id=resolved_scenario.scenario_id,
+            scenario_title=resolved_scenario.scenario_title,
+            scenario_category=resolved_scenario.scenario_category,
+        )
+
     if body.stream:
+        _resolved_scenario_capture = resolved_scenario
         return DirectSSEResponse(
             sync_to_async_sse(
                 request,
@@ -118,6 +162,7 @@ async def chat_completions(body: ChatCompletionRequest, request: Request):
                     workspace_meta=meta_ws,
                     workspace_path=workspace_path if body.workspace_write else None,
                     cancel_event=cancel_event,
+                    resolved_scenario=_resolved_scenario_capture,
                 ),
                 task_id=task["task_id"],
             ),
@@ -139,6 +184,7 @@ async def chat_completions(body: ChatCompletionRequest, request: Request):
         task_store=task_store,
         artifacts_root=ARTIFACTS_ROOT,
         pipeline_snapshot_for_disk=pipeline_snapshot_for_disk,
+        resolved_scenario=resolved_scenario,
     )
 
     if run_result["status"] == "awaiting_human":

@@ -256,6 +256,10 @@ def _initial_pipeline_state(
     initial_state["filesystem_truth"] = {}
     initial_state["run_manifest"] = {}
     initial_state["asset_manifest"] = {}
+    initial_state["media_requests"] = []
+    initial_state["media_artifacts"] = []
+    initial_state["media_budget"] = {}
+    initial_state["media_budget_used"] = 0.0
     initial_state["pipeline_metrics"] = {}
     initial_state["deliverable_write_mapping"] = []
     initial_state["dev_defect_report"] = {}
@@ -267,6 +271,7 @@ def _initial_pipeline_state(
     initial_state["ba_repo_evidence"] = []
     initial_state["ba_unverified_claims"] = []
     initial_state["wiki_context"] = ""
+    initial_state["visual_probe_manifest"] = {}
     if cancel_event is not None:
         initial_state["_pipeline_cancel_event"] = cancel_event
     swarm_cfg = effective_agent_config.get("swarm") or {}
@@ -343,8 +348,10 @@ _COMPACTION_KEEP_KEYS: frozenset[str] = frozenset({
     "source_research_output", "research_manifest",
     "open_defects", "clustered_open_defects",
     "verification_gates", "verification_gate_warnings",
+    "visual_probe_manifest", "visual_artifacts_dir",
     "workspace_writes", "workspace_writes_incremental",
     "filesystem_truth", "workspace_truth", "run_manifest", "asset_manifest",
+    "media_requests", "media_artifacts", "media_budget", "media_budget_used",
 })
 
 _COMPACTION_KEEP_EXTRA: dict[str, frozenset[str]] = {

@@ -108,6 +108,9 @@ _PAT_BASH_FENCE = re.compile(
 )
 
 
+_INLINE_CODE_SPAN_RE = re.compile(r"`[^`\n]+`")
+
+
 def _markdown_fence_spans(text: str) -> list[tuple[int, int]]:
     spans: list[tuple[int, int]] = []
     cursor = 0
@@ -122,6 +125,38 @@ def _markdown_fence_spans(text: str) -> list[tuple[int, int]]:
         spans.append((open_pos, close_pos + 3))
         cursor = close_pos + 3
     return spans
+
+
+def _markdown_inline_code_spans(text: str) -> list[tuple[int, int]]:
+    fence_spans = _markdown_fence_spans(text)
+    spans: list[tuple[int, int]] = []
+    for match in _INLINE_CODE_SPAN_RE.finditer(text):
+        if any(start <= match.start() < end for start, end in fence_spans):
+            continue
+        spans.append((match.start(), match.end()))
+    return spans
+
+
+def _markdown_protected_spans(text: str) -> list[tuple[int, int]]:
+    return _markdown_fence_spans(text) + _markdown_inline_code_spans(text)
+
+
+_NEUTRALIZED_OPEN_BRACKET = "\x01"
+_NEUTRALIZED_CLOSE_BRACKET = "\x02"
+
+
+def _neutralize_inline_code_tags(text: str) -> str:
+    inline_spans = _markdown_inline_code_spans(text)
+    if not inline_spans:
+        return text
+    chars = list(text)
+    for start, end in inline_spans:
+        for index in range(start, end):
+            if chars[index] == "<":
+                chars[index] = _NEUTRALIZED_OPEN_BRACKET
+            elif chars[index] == ">":
+                chars[index] = _NEUTRALIZED_CLOSE_BRACKET
+    return "".join(chars)
 
 
 def _position_inside_fences(pos: int, spans: list[tuple[int, int]]) -> bool:
@@ -171,15 +206,16 @@ def parse_swarm_patch_hunks(body: str) -> list[tuple[str, str]]:
 
 def _collect_ordered_actions(text: str) -> list[_Action]:
     events: list[_Action] = []
+    neutralized_text = _neutralize_inline_code_tags(text)
     fence_spans = _markdown_fence_spans(text)
-    for match in _PAT_FILE.finditer(text):
+    for match in _PAT_FILE.finditer(neutralized_text):
         events.append(
             _FileWriteAction("file", match.start(), match.group(1).strip(), match.group(2))
         )
-    for match in _PAT_PATCH.finditer(text):
+    for match in _PAT_PATCH.finditer(neutralized_text):
         events.append(_PatchAction("patch", match.start(), match.group(1).strip(), match.group(2)))
     shell_found = False
-    for match in _PAT_SHELL.finditer(text):
+    for match in _PAT_SHELL.finditer(neutralized_text):
         if _position_inside_fences(match.start(), fence_spans):
             continue
         events.append(_ShellAction("shell", match.start(), _shell_block_body_from_match(match)))
@@ -193,7 +229,7 @@ def _collect_ordered_actions(text: str) -> list[_Action]:
                     body_lines.append(line_text)
         if body_lines:
             events.append(_ShellAction("shell", len(text), "\n".join(body_lines)))
-    for match in _PAT_UDIFF.finditer(text):
+    for match in _PAT_UDIFF.finditer(neutralized_text):
         events.append(_UdiffAction("udiff", match.start(), match.group(1).strip(), match.group(2)))
     events.sort(key=lambda action: action.start)
     return events

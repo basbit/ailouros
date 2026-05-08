@@ -23,6 +23,10 @@ from backend.App.orchestration.application.nodes._shared import (
     _should_use_mcp_for_workspace,
     embedded_pipeline_input_for_review,
 )
+from backend.App.orchestration.application.nodes._prompt_builders import (
+    _prompt_fragment,
+)
+from string import Template
 
 logger = logging.getLogger(__name__)
 
@@ -86,29 +90,11 @@ def review_dev_node(state: PipelineState) -> dict[str, Any]:
         )
 
     user_block = embedded_pipeline_input_for_review(state, log_node="review_dev_node")
-    prompt = (
-        "Step: dev (development).\n"
-        "Checklist — issue VERDICT: NEEDS_WORK if ANY item fails:\n"
-        "[ ] Implementation uses the Architect-approved stack (languages, frameworks, DB)\n"
-        "[ ] Files intended for workspace use <swarm_file> tags (not just fenced code)\n"
-        "[ ] All subtasks from Dev Lead plan are addressed\n"
-        "[ ] No placeholder/stub code (functions that always return hardcoded values, 'TODO/FIXME', 'dummy', 'mock_*', 'placeholder' comments left as-is)\n"
-        "[ ] External services specified in the spec (e.g. OpenAI API, external LLM, third-party SDKs) are actually called — not replaced by local models or hardcoded stubs\n"
-        "[ ] All dependencies used in code are listed in the requirements/build file\n"
-        "[ ] Endpoint paths match the spec exactly (no silent renames like /diagnose vs /api/v1/plant-diagnose)\n"
-        "[ ] Error handling covers the main failure modes described in the spec (bad input, upstream failure, timeout)\n"
-        "[ ] No stack or architectural decisions overridden without justification\n"
-        "[ ] Naming conventions match the existing codebase (class names, function names, file names follow detected patterns)\n\n"
-        "Output contract:\n"
-        "1. Human-readable review summary.\n"
-        "2. A machine-readable block `<defect_report>...</defect_report>` containing JSON object:\n"
-        '{"defects":[{"id":"optional","title":"...","severity":"P0|P1|P2","file_paths":["..."],"expected":"...","actual":"...","repro_steps":["..."],"acceptance":["..."],"category":"...","fixed":false}],"test_scenarios":["..."],"edge_cases":["..."],"regression_checks":["..."]}\n'
-        "3. Final line `VERDICT: OK` or `VERDICT: NEEDS_WORK`.\n"
-        "If verdict is OK, defects may be empty but the block must still be present.\n\n"
-        f"User task:\n{user_block}\n\n"
-        f"Specification:\n{spec}\n\n"
-        f"Dev artifact:\n{dev_output}"
-        + _swarm_file_warning
+    prompt = Template(_prompt_fragment("review_dev_prompt_template")).safe_substitute(
+        user_block=user_block,
+        spec=spec,
+        dev_output=dev_output,
+        swarm_file_warning=_swarm_file_warning,
     )
     result = run_reviewer_or_moa(
         state,

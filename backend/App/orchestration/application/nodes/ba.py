@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from string import Template
 from typing import Any
+
+from backend.App.orchestration.application.nodes._prompt_builders import (
+    _prompt_fragment,
+)
 
 from backend.App.orchestration.infrastructure.agents.ba_agent import BAAgent
 from backend.App.integrations.infrastructure.cross_task_memory import format_cross_task_memory_block
@@ -18,6 +23,7 @@ from backend.App.orchestration.application.nodes._shared import (
     _artifact_memory_lines,
     _cfg_model,
     _documentation_locale_line,
+    _web_research_guidance_block,
     _llm_planning_agent_run,
     _make_human_agent,
     _make_reviewer_agent,
@@ -55,34 +61,16 @@ def ba_node(state: PipelineState) -> dict[str, Any]:
     )
     ctx = _pipeline_context_block(state, "ba")
     pm_output = state.get("pm_output") or ""
-    prompt = (
-        xmem
-        + ctx
-        + _swarm_prompt_prefix(state)
-        + _documentation_locale_line(state)
-        + planning_mcp_tool_instruction(state)
-        + _project_knowledge_block(state, step_id="ba")
-        + "User task:\n"
-        f"{plan_ctx}\n\n"
-        "PM decomposition:\n"
-        f"{pm_output}\n\n"
-        "IMPORTANT: Before writing your evidence, verify your claims against the workspace snapshot "
-        "and project context provided above:\n"
-        "- Review the file tree and project structure from the context block.\n"
-        "- Only claim repo_evidence for things you can confirm from the provided context.\n"
-        "- If no workspace snapshot is available, state that repo_evidence is empty.\n\n"
-        "Evidence contract:\n"
-        "If you claim that the current repository or existing product already contains a module, "
-        "entity, workflow, endpoint, or business constraint, add a final ```json``` block with:\n"
-        '{'
-        '"repo_evidence":[{"path":"relative/path","start_line":1,"end_line":3,'
-        '"excerpt":"exact text copied from the repository","why":"what existing product fact this proves"}],'
-        '"unverified_claims":["existing-system claim that cannot be proven from the repository yet"]'
-        '}\n'
-        "Rules:\n"
-        "- Only repo-based factual claims go into this artifact.\n"
-        "- If a claim cannot be proven from the repository, put it into `unverified_claims`.\n"
-        "- Do not omit the JSON block.\n"
+    prompt = Template(_prompt_fragment("ba_node_prompt_template")).safe_substitute(
+        xmem=xmem,
+        context=ctx,
+        swarm_prefix=_swarm_prompt_prefix(state),
+        locale=_documentation_locale_line(state),
+        research_guidance=_web_research_guidance_block(state, role="ba"),
+        mcp_instruction=planning_mcp_tool_instruction(state),
+        knowledge=_project_knowledge_block(state, step_id="ba"),
+        plan_ctx=plan_ctx,
+        pm_output=pm_output,
     )
     ba_cfg = (state.get("agent_config") or {}).get("ba") or {}
     agent = BAAgent(
@@ -127,21 +115,10 @@ def review_ba_node(state: PipelineState) -> dict[str, Any]:
         "repo_evidence": list(state.get("ba_repo_evidence") or []),
         "unverified_claims": list(state.get("ba_unverified_claims") or []),
     }
-    prompt = (
-        "Step: ba (Business Analyst).\n"
-        "Checklist — issue VERDICT: NEEDS_WORK if ANY item fails:\n"
-        "[ ] BA did not introduce NEW stack/technology decisions — BA may reference or label "
-        "a stack already confirmed in the workspace (existing files, wiki, code_analysis, or "
-        "previous Architecture ADR); only an unsupported new decision by BA is a violation\n"
-        "[ ] Existing-product or repository claims are backed by validated repo_evidence or explicitly marked unverified\n"
-        "[ ] User stories have explicit acceptance criteria (Given/When/Then or equivalent)\n"
-        "[ ] No full PRD produced for a small (XS/S) scope — output must match scope size\n"
-        "[ ] All PM tasks are covered in BA requirements\n"
-        "[ ] No requirements directly contradict the user task\n\n"
-        f"User task:\n{user_block}\n\n"
-        "Validated repo evidence artifact:\n"
-        f"{format_repo_evidence_for_prompt(repo_evidence_artifact)}\n\n"
-        f"BA artifact:\n{ba_art}"
+    prompt = Template(_prompt_fragment("review_ba_prompt_template")).safe_substitute(
+        user_block=user_block,
+        repo_evidence=format_repo_evidence_for_prompt(repo_evidence_artifact),
+        ba_artifact=ba_art,
     )
     return run_reviewer_or_moa(
         state,

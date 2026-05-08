@@ -334,9 +334,11 @@ def _store_response(cache_key: str, resp: JSONResponse) -> JSONResponse:
 
 
 def ollama_models_proxy_response() -> JSONResponse:
-    base = os.getenv("OPENAI_BASE_URL", OLLAMA_BASE_URL).rstrip("/")
-    v1_url = f"{base}/models"
-    cache_key = f"ollama:{v1_url}"
+    raw = os.getenv("OLLAMA_BASE_URL", OLLAMA_BASE_URL).rstrip("/")
+    root = raw[:-3].rstrip("/") if raw.endswith("/v1") else raw
+    tags_url = f"{root}/api/tags"
+    v1_url = f"{root}/v1/models"
+    cache_key = f"ollama:{tags_url}"
 
     cached = _cached_response(cache_key)
     if cached is not None:
@@ -344,20 +346,53 @@ def ollama_models_proxy_response() -> JSONResponse:
 
     try:
         with httpx.Client(timeout=8.0) as client:
-            r = client.get(v1_url)
+            r = client.get(tags_url)
             r.raise_for_status()
-            models = normalize_openai_v1_models_payload(r.json())
-    except Exception as exc:
-        err = f"{exc.__class__.__name__}: {exc}"
-        return JSONResponse(
-            status_code=502,
-            content={"ok": False, "error": err, "models": [], "source": v1_url},
-        )
+            tags_payload = r.json()
+        models = _normalize_ollama_tags_payload(tags_payload)
+        source = tags_url
+        via = "api/tags"
+    except Exception as tags_exc:
+        try:
+            with httpx.Client(timeout=8.0) as client:
+                r = client.get(v1_url)
+                r.raise_for_status()
+                models = normalize_openai_v1_models_payload(r.json())
+            source = v1_url
+            via = "v1/models"
+        except Exception as v1_exc:
+            err = (
+                f"api/tags failed ({tags_exc.__class__.__name__}: {tags_exc}); "
+                f"v1/models failed ({v1_exc.__class__.__name__}: {v1_exc})"
+            )
+            return JSONResponse(
+                status_code=502,
+                content={"ok": False, "error": err, "models": [], "source": tags_url},
+            )
 
     return _store_response(
         cache_key,
-        JSONResponse({"ok": True, "models": models, "source": v1_url, "via": "v1/models"}),
+        JSONResponse({"ok": True, "models": models, "source": source, "via": via}),
     )
+
+
+def _normalize_ollama_tags_payload(payload: Any) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    if not isinstance(payload, dict):
+        return out
+    for raw_entry in payload.get("models") or []:
+        if not isinstance(raw_entry, dict):
+            continue
+        model_id = str(raw_entry.get("name") or raw_entry.get("model") or "").strip()
+        if not model_id:
+            continue
+        details = raw_entry.get("details") if isinstance(raw_entry.get("details"), dict) else {}
+        param_size = str(details.get("parameter_size") or "").strip()
+        quant = str(details.get("quantization_level") or "").strip()
+        suffix_parts = [part for part in (param_size, quant) if part]
+        label = f"{model_id} ({', '.join(suffix_parts)})" if suffix_parts else model_id
+        out.append({"id": model_id, "label": label, "context_window": None})
+    return out
 
 
 def lmstudio_models_proxy_response() -> JSONResponse:

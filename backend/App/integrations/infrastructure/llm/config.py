@@ -6,7 +6,7 @@ _OLLAMA_DEFAULT_URL = "http://localhost:11434/v1"
 _LMSTUDIO_DEFAULT_URL = "http://localhost:1234/v1"
 
 OLLAMA_BASE_URL: str = (
-    os.getenv("OPENAI_BASE_URL") or os.getenv("OLLAMA_BASE_URL") or _OLLAMA_DEFAULT_URL
+    os.getenv("OLLAMA_BASE_URL") or _OLLAMA_DEFAULT_URL
 ).strip()
 
 LMSTUDIO_BASE_URL: str = (

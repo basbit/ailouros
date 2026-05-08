@@ -1,0 +1,15 @@
+{
+  "pipeline_steps_contains": [
+    "clarify_input",
+    "pm",
+    "ba",
+    "crole_data_profiler",
+    "crole_data_analyst",
+    "crole_chart_planner",
+    "crole_insight_reviewer"
+  ],
+  "default_gates": [],
+  "required_tools": [],
+  "workspace_write": false,
+  "warnings_count": 0
+}

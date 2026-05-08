@@ -12,6 +12,12 @@ def _text_from_message(m: Mapping[str, Any]) -> str:
     c = m.get("content")
     if isinstance(c, str):
         return c
+    if isinstance(c, list):
+        texts = []
+        for part in c:
+            if isinstance(part, Mapping) and part.get("type") == "text":
+                texts.append(str(part.get("text") or ""))
+        return "\n".join(texts)
     return ""
 
 

@@ -35,4 +35,14 @@ def run_agent_with_boundary(
 ) -> str:
     output = agent.run(prompt)
     validate_agent_boundary(state, agent, prompt, output, step_id=step_id)
+    rounds_used = getattr(agent, "tool_rounds_used", 0)
+    if isinstance(rounds_used, int) and rounds_used > 0:
+        try:
+            ledger = state.setdefault("tool_rounds_by_step", {})
+        except AttributeError:
+            return output
+        if isinstance(ledger, dict):
+            key = str(step_id or state.get("_current_step_id") or
+                      getattr(agent, "role", agent.__class__.__name__))
+            ledger[key] = max(int(ledger.get(key, 0) or 0), rounds_used)
     return output

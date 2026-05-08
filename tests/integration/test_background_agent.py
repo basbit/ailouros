@@ -334,17 +334,33 @@ def test_call_llm_replaces_incompatible_gemini_model() -> None:
     )
 
 
-def test_call_llm_invalid_json_fallback() -> None:
+def test_call_llm_invalid_json_raises_runtime_error() -> None:
     import backend.App.orchestration.application.agents.background_agent as mod
+    import pytest
 
     with patch(
         "backend.App.integrations.infrastructure.llm.client.chat_completion_text",
         return_value="not valid json",
     ):
+        with pytest.raises(RuntimeError, match="non-JSON output"):
+            mod._call_llm("created", "/src/new.py")
+
+
+def test_call_llm_strips_think_tags_before_parsing() -> None:
+    import backend.App.orchestration.application.agents.background_agent as mod
+
+    raw_with_think = (
+        "<think>Let me reason about this file change...</think>\n"
+        '{"message":"new file detected","severity":"info","suggested_action":"review"}'
+    )
+    with patch(
+        "backend.App.integrations.infrastructure.llm.client.chat_completion_text",
+        return_value=raw_with_think,
+    ):
         result = mod._call_llm("created", "/src/new.py")
 
-    assert "message" in result
-    assert result["severity"] == "warning"
+    assert result["severity"] == "info"
+    assert "new file detected" in result["message"]
 
 
 # ---------------------------------------------------------------------------

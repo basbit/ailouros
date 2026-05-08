@@ -53,7 +53,9 @@ from backend.App.orchestration.application.nodes.design import (
     human_ui_designer_node,
     image_generator_node,
     audio_generator_node,
+    asset_fetcher_node,
 )
+from backend.App.orchestration.application.nodes.media_generator import media_generator_node
 from backend.App.orchestration.application.nodes.marketing import (
     seo_specialist_node,
     review_seo_specialist_node,
@@ -66,6 +68,10 @@ from backend.App.orchestration.application.nodes.marketing import (
     human_app_store_optimizer_node,
 )
 from backend.App.orchestration.application.nodes.e2e import e2e_node
+from backend.App.orchestration.application.nodes.visual_probe import (
+    visual_design_review_node,
+    visual_probe_node,
+)
 
 
 PIPELINE_STEP_SEQUENCE: tuple[tuple[str, str, Callable[[PipelineState], dict[str, Any]]], ...] = (
@@ -97,6 +103,8 @@ PIPELINE_STEP_SEQUENCE: tuple[tuple[str, str, Callable[[PipelineState], dict[str
     ("human_ui_designer", "Human approve after UI Design", human_ui_designer_node),
     ("image_generator", "Image Generator: visual asset prompts and specs", image_generator_node),
     ("audio_generator", "Audio Generator: audio and TTS prompts and specs", audio_generator_node),
+    ("asset_fetcher", "Asset Fetcher: download free/CC images and audio to workspace", asset_fetcher_node),
+    ("media_generator", "Media Generator: provider-backed image and audio assets", media_generator_node),
     ("analyze_code", "Repository code analysis", analyze_code_node),
     ("generate_documentation", "Documentation and Mermaid from analysis", generate_documentation_node),
     ("problem_spotter", "Identify common code issues", problem_spotter_node),
@@ -111,6 +119,8 @@ PIPELINE_STEP_SEQUENCE: tuple[tuple[str, str, Callable[[PipelineState], dict[str
     ("dev", "Dev implements the solution", dev_node),
     ("review_dev", "Reviewer checks Dev", review_dev_node),
     ("human_dev", "Human approve after Dev", human_dev_node),
+    ("visual_probe", "Visual Probe: launch UI and capture browser evidence", visual_probe_node),
+    ("visual_design_review", "Visual Design Review: inspect runtime UI evidence", visual_design_review_node),
     ("qa", "QA runs verification", qa_node),
     ("review_qa", "Reviewer checks QA", review_qa_node),
     ("human_qa", "Final human approve", human_qa_node),

@@ -21,6 +21,10 @@ from backend.App.orchestration.application.routing.pipeline_graph import (
 )
 from backend.App.orchestration.application.pipeline.pipeline_state import PipelineState
 from backend.App.orchestration.application.snapshot_serializer import pipeline_snapshot_for_disk
+from backend.App.orchestration.infrastructure.pipeline_artifact_reader import (
+    infer_failed_step_from_flat_snapshot,
+    reconstruct_partial_state_from_flat_snapshot,
+)
 from backend.App.shared.infrastructure.openai_sse import (
     build_done,
     ensure_task_dirs,
@@ -78,14 +82,6 @@ def stream_retry_chunks(
     failed_step = from_step_override or raw.get("failed_step")
     steps = pipeline_steps_override if pipeline_steps_override is not None else raw.get("pipeline_steps")
 
-    if not partial or not isinstance(partial, dict):
-        yield from _yield_err_line("No partial_state in pipeline.json — cannot retry this task")
-        return
-    if not failed_step or not isinstance(failed_step, str):
-        yield from _yield_err_line(
-            "Missing failed_step in pipeline.json — cannot determine where to retry"
-        )
-        return
     if not isinstance(steps, list) or not steps:
         from backend.App.orchestration.application.routing.step_registry import DEFAULT_PIPELINE_STEP_IDS
         steps = list(DEFAULT_PIPELINE_STEP_IDS)
@@ -93,6 +89,42 @@ def stream_retry_chunks(
             "pipeline_steps missing in retry snapshot — using DEFAULT_PIPELINE_STEP_IDS (%d steps)",
             len(steps),
         )
+
+    if not partial or not isinstance(partial, dict):
+        reconstructed_state = reconstruct_partial_state_from_flat_snapshot(raw)
+        has_any_output = any(
+            key.endswith("_output") and isinstance(value, str) and value.strip()
+            for key, value in reconstructed_state.items()
+        )
+        if not has_any_output:
+            yield from _yield_err_line(
+                "No partial_state and no step outputs in pipeline.json — cannot retry this task"
+            )
+            return
+        logger.warning(
+            "retry: partial_state missing in pipeline.json — reconstructing from flat snapshot (task=%s)",
+            task_id,
+        )
+        partial = reconstructed_state
+
+    if not failed_step or not isinstance(failed_step, str):
+        from backend.App.orchestration.application.pipeline.pipeline_state import (
+            ARTIFACT_AGENT_OUTPUT_KEYS,
+        )
+        artifact_output_key_by_step = dict(ARTIFACT_AGENT_OUTPUT_KEYS)
+        inferred_failed_step = infer_failed_step_from_flat_snapshot(
+            partial, steps, artifact_output_key_by_step,
+        )
+        if not inferred_failed_step:
+            yield from _yield_err_line(
+                "Missing failed_step in pipeline.json — cannot determine where to retry"
+            )
+            return
+        logger.warning(
+            "retry: failed_step missing in pipeline.json — inferred as %r (task=%s)",
+            inferred_failed_step, task_id,
+        )
+        failed_step = inferred_failed_step
 
     agent_config_for_steps: dict[str, Any] = {}
     if isinstance(override_agent_config, dict) and override_agent_config:

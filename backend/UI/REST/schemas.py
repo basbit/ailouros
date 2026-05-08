@@ -25,9 +25,20 @@ class ChatCompletionRequest(BaseModel):
     pipeline_steps: Optional[list[str]] = None
     pipeline_stages: Optional[list[list[str]]] = None
     pipeline_preset: Optional[str] = None
+    scenario_id: Optional[str] = None
+    scenario_overrides: Optional[dict[str, dict[str, Any]]] = None
     workspace_root: Optional[str] = None
     workspace_write: bool = False
     project_context_file: Optional[str] = None
+
+
+class ScenarioPreviewRequest(BaseModel):
+    scenario_id: str
+    pipeline_steps: Optional[list[str]] = None
+    agent_config: Optional[dict[str, dict[str, Any]]] = None
+    workspace_write: Optional[bool] = None
+    skip_gates: Optional[list[str]] = None
+    model_profile: Optional[dict[str, str]] = None
 
 
 class PipelinePlanRequest(BaseModel):

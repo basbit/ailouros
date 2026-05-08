@@ -4,15 +4,14 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import os
 import warnings
 from pathlib import Path
 from typing import Any, Optional
 
 from backend.App.shared.application.settings_resolver import get_setting_bool
 from backend.App.orchestration.domain.exceptions import HumanApprovalRequired
-from backend.App.integrations.infrastructure.agent_registry import merge_agent_config
 from backend.App.integrations.infrastructure.mcp.auto.auto import apply_auto_mcp_to_agent_config
-from backend.App.integrations.infrastructure.pipeline_presets import resolve_preset
 from backend.App.orchestration.application.routing.pipeline_graph import (
     ARTIFACT_AGENT_OUTPUT_KEYS,
     final_pipeline_user_message,
@@ -48,6 +47,9 @@ from backend.App.orchestration.application.use_cases.chat_request_resolver impor
     ChatRequest,
     ChatRequestResolver,
 )
+from backend.App.integrations.infrastructure.agent_registry import merge_agent_config
+from backend.App.integrations.infrastructure.pipeline_presets import resolve_preset
+from backend.App.orchestration.application.scenarios.resolution import ResolvedScenario
 from backend.App.workspace.infrastructure.at_mention_loader import (
     load_at_mentions as _load_at_mentions_new,
     AtMentionLoader,
@@ -62,90 +64,37 @@ __all__ = [
     "ChatRequestResolver",
     "AtMentionLoader",
     "ProjectContextScanner",
+    "resolve_chat_request_full",
 ]
 
 logger = logging.getLogger(__name__)
 
 
+def _resolve_chat_request(req: Any) -> ChatRequest:
+    return ChatRequestResolver(
+        merge_config=merge_agent_config,
+        load_preset=resolve_preset,
+    ).resolve(req)
+
+
+def resolve_chat_request_full(
+    req: Any,
+) -> tuple[dict[str, Any], Optional[list[str]], Optional[ResolvedScenario]]:
+    chat_req = _resolve_chat_request(req)
+    _apply_global_automation_settings(chat_req.agent_config)
+    return chat_req.agent_config, chat_req.pipeline_steps, chat_req.resolved_scenario
+
+
 def resolve_chat_request(req: Any) -> tuple[dict[str, Any], Optional[list[str]]]:
-    agent_config = merge_agent_config(req.agent_config)
-    _apply_global_automation_settings(agent_config)
-    steps = req.pipeline_steps
-    if steps is None and req.pipeline_preset:
-        steps = resolve_preset(req.pipeline_preset)
-    return agent_config, steps
+    agent_config, pipeline_steps, _resolved_scenario = resolve_chat_request_full(req)
+    return agent_config, pipeline_steps
 
 
 def _apply_global_automation_settings(agent_config: dict[str, Any]) -> None:
-    """Overwrite Automation & Quality fields in agent_config["swarm"] with
-    the globally persisted user settings. These fields are managed in the
-    global Settings drawer — per-project values are ignored at runtime."""
-    from backend.App.integrations.application.user_settings_service import (
-        get_persisted_automation_settings,
+    from backend.App.orchestration.application.use_cases._tasks_global_settings import (
+        apply_global_automation_settings,
     )
-
-    glob = get_persisted_automation_settings()
-    swarm = agent_config.get("swarm")
-    if not isinstance(swarm, dict):
-        swarm = {}
-        agent_config["swarm"] = swarm
-
-    def _set_bool(swarm_key: str, form_key: str) -> None:
-        if glob.get(form_key):
-            swarm[swarm_key] = True
-        else:
-            swarm.pop(swarm_key, None)
-
-    def _set_str(swarm_key: str, form_key: str) -> None:
-        value = str(glob.get(form_key, "") or "").strip()
-        if value:
-            swarm[swarm_key] = value
-        else:
-            swarm.pop(swarm_key, None)
-
-    def _set_int(swarm_key: str, form_key: str) -> None:
-        raw = str(glob.get(form_key, "") or "").strip()
-        if not raw:
-            swarm.pop(swarm_key, None)
-            return
-        try:
-            parsed = int(raw)
-        except ValueError:
-            swarm.pop(swarm_key, None)
-            return
-        if parsed > 0:
-            swarm[swarm_key] = parsed
-        else:
-            swarm.pop(swarm_key, None)
-
-    _set_bool("self_verify", "swarm_self_verify")
-    _set_str("self_verify_model", "swarm_self_verify_model")
-    _set_str("self_verify_provider", "swarm_self_verify_provider")
-    _set_str("auto_approve", "swarm_auto_approve")
-    _set_int("auto_approve_timeout", "swarm_auto_approve_timeout")
-    _set_bool("auto_retry", "swarm_auto_retry")
-    _set_int("max_step_retries", "swarm_max_step_retries")
-    _set_bool("deep_planning", "swarm_deep_planning")
-    _set_str("deep_planning_model", "swarm_deep_planning_model")
-    _set_str("deep_planning_provider", "swarm_deep_planning_provider")
-    _set_bool("background_agent", "swarm_background_agent")
-    _set_str("background_agent_model", "swarm_background_agent_model")
-    _set_str("background_agent_provider", "swarm_background_agent_provider")
-    _set_str("background_watch_paths", "swarm_background_watch_paths")
-    _set_bool("dream_enabled", "swarm_dream_enabled")
-    _set_bool("quality_gate_enabled", "swarm_quality_gate")
-    _set_bool("auto_plan", "swarm_auto_plan")
-
-    # swarm_planner sits on the top-level agent_config, not under "swarm"
-    planner_model = str(glob.get("swarm_planner_model", "") or "").strip()
-    planner_provider = str(glob.get("swarm_planner_provider", "") or "").strip()
-    if planner_model:
-        planner_cfg: dict[str, Any] = {"model": planner_model}
-        if planner_provider:
-            planner_cfg["environment"] = planner_provider
-        agent_config["swarm_planner"] = planner_cfg
-    else:
-        agent_config.pop("swarm_planner", None)
+    apply_global_automation_settings(agent_config)
 
 
 def _try_quick_project_scan(root: Path) -> None:
@@ -179,9 +128,17 @@ def prepare_workspace(
     root_for_paths: Optional[Path] = None
     if workspace_root and str(workspace_root).strip():
         if workspace_write and not workspace_write_allowed():
-            raise ValueError(
-                "workspace_write requires SWARM_ALLOW_WORKSPACE_WRITE=1 on the server"
-            )
+            if os.getenv("AILOUROS_DESKTOP", "").strip() == "1":
+                message = (
+                    "Workspace writes are blocked. The desktop runtime should "
+                    "set SWARM_ALLOW_WORKSPACE_WRITE=1 automatically; if you see "
+                    "this, restart the app or check Settings → Capabilities."
+                )
+            else:
+                message = (
+                    "workspace_write requires SWARM_ALLOW_WORKSPACE_WRITE=1 on the server"
+                )
+            raise ValueError(message)
         root_for_paths = validate_workspace_root(Path(str(workspace_root).strip()))
 
     if project_context_file and str(project_context_file).strip():
@@ -324,6 +281,7 @@ def start_pipeline_run(
     artifacts_root: Path,
     pipeline_snapshot_for_disk: Any,
     workspace_followup_lines: Any = None,
+    resolved_scenario: Optional[ResolvedScenario] = None,
 ) -> dict[str, Any]:
     warnings.warn(
         "start_pipeline_run() is deprecated. "
@@ -368,6 +326,49 @@ def start_pipeline_run(
             "partial_state": exc.partial_state,
             "resume_from_step": exc.resume_pipeline_step,
         }
+        if resolved_scenario is not None:
+            ns_snap["scenario_id"] = resolved_scenario.scenario_id
+            ns_snap["scenario_title"] = resolved_scenario.scenario_title
+            ns_snap["scenario_category"] = resolved_scenario.scenario_category
+            ns_snap["scenario_warnings"] = resolved_scenario.warnings
+            ns_snap["scenario_expected_artifacts"] = list(
+                resolved_scenario.expected_artifacts
+            )
+            ns_snap["scenario_quality_checks"] = [
+                check.to_dict() for check in resolved_scenario.quality_checks
+            ]
+            ns_snap["scenario_skipped_gates"] = list(resolved_scenario.skipped_gates)
+            ns_snap["scenario_model_profile_applied"] = dict(
+                resolved_scenario.model_profile_applied
+            )
+            from backend.App.orchestration.application.scenarios.artifact_check import (
+                check_scenario_artifacts,
+                summarize_artifact_status,
+            )
+            from backend.App.orchestration.application.scenarios.quality_check_runner import (
+                run_quality_checks,
+                summarize_quality_results,
+            )
+            ns_status = check_scenario_artifacts(
+                resolved_scenario.expected_artifacts, task_dir
+            )
+            ns_snap["scenario_artifact_status"] = [
+                entry.to_dict() for entry in ns_status
+            ]
+            ns_snap["scenario_artifact_summary"] = summarize_artifact_status(ns_status)
+            ns_quality_results = run_quality_checks(
+                resolved_scenario.quality_checks,
+                task_dir,
+                ns_status,
+                list(resolved_scenario.warnings),
+                pipeline_steps=list(resolved_scenario.pipeline_steps),
+            )
+            ns_snap["scenario_quality_check_results"] = [
+                result.to_dict() for result in ns_quality_results
+            ]
+            ns_snap["scenario_quality_check_summary"] = summarize_quality_results(
+                ns_quality_results
+            )
         try:
             (task_dir / "pipeline.json").write_text(
                 json.dumps(
@@ -428,6 +429,21 @@ def start_pipeline_run(
     snapshot["pipeline_steps"] = steps
     snapshot["user_prompt"] = user_prompt
     snapshot["workspace"] = workspace_meta
+    if resolved_scenario is not None:
+        snapshot["scenario_id"] = resolved_scenario.scenario_id
+        snapshot["scenario_title"] = resolved_scenario.scenario_title
+        snapshot["scenario_category"] = resolved_scenario.scenario_category
+        snapshot["scenario_warnings"] = resolved_scenario.warnings
+        snapshot["scenario_expected_artifacts"] = list(
+            resolved_scenario.expected_artifacts
+        )
+        snapshot["scenario_quality_checks"] = [
+            check.to_dict() for check in resolved_scenario.quality_checks
+        ]
+        snapshot["scenario_skipped_gates"] = list(resolved_scenario.skipped_gates)
+        snapshot["scenario_model_profile_applied"] = dict(
+            resolved_scenario.model_profile_applied
+        )
     if workspace_path and workspace_apply_writes and workspace_write_allowed():
         run_sh = run_shell_after_user_approval(
             task_id,
@@ -466,6 +482,64 @@ def start_pipeline_run(
             snapshot["_ec1_zero_writes"] = True
             snapshot["_ec1_error"] = error_message
 
+    if workspace_path and workspace_apply_writes:
+        from backend.App.orchestration.application.enforcement.secret_detector import (
+            scan_paths as _scan_for_secrets,
+            summarize as _summarize_secrets,
+        )
+        from backend.App.orchestration.application.enforcement.verification_honesty import (
+            classify_verification as _classify_verification,
+        )
+        workspace_writes_for_secret_raw = snapshot.get("workspace_writes")
+        workspace_writes_for_secret: dict[str, Any] = (
+            workspace_writes_for_secret_raw
+            if isinstance(workspace_writes_for_secret_raw, dict)
+            else {}
+        )
+        secret_paths = sorted(set(
+            list(workspace_writes_for_secret.get("written") or [])
+            + list(workspace_writes_for_secret.get("patched") or [])
+            + list(workspace_writes_for_secret.get("udiff_applied") or [])
+        ))
+        secret_findings = _scan_for_secrets(workspace_path, secret_paths)
+        if secret_findings:
+            snapshot["secret_findings"] = [
+                finding.to_dict() for finding in secret_findings
+            ]
+            snapshot["secret_summary"] = _summarize_secrets(secret_findings)
+        verification_verdict = _classify_verification(snapshot)
+        snapshot["verification_verdict"] = verification_verdict.to_dict()
+
+    if resolved_scenario is not None:
+        from backend.App.orchestration.application.scenarios.artifact_check import (
+            check_scenario_artifacts,
+            summarize_artifact_status,
+        )
+        from backend.App.orchestration.application.scenarios.quality_check_runner import (
+            run_quality_checks,
+            summarize_quality_results,
+        )
+        artifact_status = check_scenario_artifacts(
+            resolved_scenario.expected_artifacts, task_dir
+        )
+        snapshot["scenario_artifact_status"] = [
+            entry.to_dict() for entry in artifact_status
+        ]
+        snapshot["scenario_artifact_summary"] = summarize_artifact_status(artifact_status)
+        quality_results = run_quality_checks(
+            resolved_scenario.quality_checks,
+            task_dir,
+            artifact_status,
+            list(resolved_scenario.warnings),
+            pipeline_steps=list(resolved_scenario.pipeline_steps),
+        )
+        snapshot["scenario_quality_check_results"] = [
+            result.to_dict() for result in quality_results
+        ]
+        snapshot["scenario_quality_check_summary"] = summarize_quality_results(
+            quality_results
+        )
+
     try:
         (task_dir / "pipeline.json").write_text(
             json.dumps(
@@ -488,13 +562,64 @@ def start_pipeline_run(
     for wl in _followup_fn(workspace_path, workspace_apply_writes, snapshot):
         append_task_run_log(task_dir, wl.strip())
 
+    require_writes_block = get_setting_bool(
+        "swarm.require_dev_writes",
+        workspace_root=workspace_path,
+        env_key="SWARM_REQUIRE_DEV_WRITES",
+        default=True,
+    )
+    require_trusted_gates_pass = get_setting_bool(
+        "swarm.require_trusted_gates_pass",
+        workspace_root=workspace_path,
+        env_key="SWARM_REQUIRE_TRUSTED_GATES_PASS",
+        default=True,
+    )
+    failed_trusted_gates_raw = snapshot.get("_failed_trusted_gates") or []
+    failed_trusted_gates: list[str] = (
+        [str(item) for item in failed_trusted_gates_raw]
+        if isinstance(failed_trusted_gates_raw, list)
+        else []
+    )
+    failed_trusted_gates_summary = str(
+        snapshot.get("_failed_trusted_gates_summary") or ""
+    )
+
     _final_status = "completed"
+    _final_error: Optional[str] = None
     if snapshot.get("_ec1_zero_writes"):
-        _final_status = "completed_no_writes"
+        if require_writes_block:
+            _final_status = "failed"
+            ec1_error = snapshot.get("_ec1_error")
+            _final_error = (
+                str(ec1_error)
+                if isinstance(ec1_error, str) and ec1_error.strip()
+                else "Dev step produced 0 workspace writes with apply_writes=True."
+            )
+        else:
+            _final_status = "completed_no_writes"
+    if (
+        _final_status == "completed"
+        and require_trusted_gates_pass
+        and failed_trusted_gates
+    ):
+        _final_status = "failed"
+        _final_error = (
+            "Trusted verification gates failed: "
+            f"{failed_trusted_gates_summary or ', '.join(failed_trusted_gates)}"
+        )
+    if _final_status == "failed":
+        task_store.update_task(
+            task_id,
+            status="failed",
+            agent="orchestrator",
+            message=(_final_error or "")[:2000],
+        )
+    elif _final_status == "completed_no_writes":
+        task_store.update_task(task_id, status="completed_no_writes")
     return {
         "status": _final_status,
         "task_id": task_id,
         "final_text": final_text,
         "last_agent": last_agent,
-        **({"error": snapshot["_ec1_error"]} if snapshot.get("_ec1_error") else {}),
+        **({"error": _final_error} if _final_error else {}),
     }
