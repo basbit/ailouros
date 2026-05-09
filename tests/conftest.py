@@ -18,6 +18,8 @@ os.environ.setdefault("SWARM_MCP_AUTO", "0")
 # Default model for tests — agents require SWARM_MODEL to be set.
 os.environ.setdefault("SWARM_MODEL", "test-model")
 
+os.environ.setdefault("AILOUROS_LLM_PROVIDER_PROFILE_OVERRIDE", "1")
+
 
 @pytest.fixture(autouse=True)
 def _reset_stream_shutdown():

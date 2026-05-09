@@ -29,6 +29,19 @@ class PipelineRunnerProtocol(Protocol):
 logger = logging.getLogger(__name__)
 
 
+def _has_role_level_llm_override(agent_config: dict[str, Any]) -> bool:
+    if not isinstance(agent_config, dict):
+        return False
+    for role, role_cfg in agent_config.items():
+        if role == "swarm" or not isinstance(role_cfg, dict):
+            continue
+        environment = str(role_cfg.get("environment") or "").strip().lower()
+        model = str(role_cfg.get("model") or "").strip()
+        if environment in {"ollama", "lmstudio", "cloud", "openai", "anthropic"} and model:
+            return True
+    return False
+
+
 def _generate_workspace_wiki(
     workspace_root: Path,
     pipeline_state: dict[str, Any],
@@ -118,9 +131,13 @@ class StartPipelineRunUseCase:
         self._pipeline_runner = pipeline_runner
 
     def execute(self, command: StartPipelineRunCommand) -> StartPipelineRunResult:
-        from backend.App.orchestration.domain.exceptions import HumanApprovalRequired
+        from backend.App.orchestration.domain.exceptions import (
+            HumanApprovalRequired,
+            LlmProviderUnconfigured,
+        )
         from backend.App.orchestration.application.pipeline.pipeline_state import pipeline_workspace_parts_from_meta
         from backend.App.integrations.infrastructure.swarm_planner import plan_pipeline_steps as _plan
+        from backend.App.integrations.application.runtime_capabilities import evaluate_llm_readiness
 
         tid = command.task_id
         logger.info(
@@ -128,6 +145,11 @@ class StartPipelineRunUseCase:
             tid,
             bool(command.workspace_root_str.strip()),
         )
+
+        if not _has_role_level_llm_override(command.agent_config or {}):
+            llm_state = evaluate_llm_readiness()
+            if not llm_state.ready:
+                raise LlmProviderUnconfigured(llm_state.reason)
 
         effective_steps = list(command.steps or [])
         swarm_cfg = (command.agent_config or {}).get("swarm") or {}

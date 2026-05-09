@@ -118,6 +118,22 @@ async def chat_completions(body: ChatCompletionRequest, request: Request):
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    from backend.App.integrations.application.runtime_capabilities import evaluate_llm_readiness
+    from backend.App.orchestration.application.use_cases.start_pipeline_run import (
+        _has_role_level_llm_override,
+    )
+    if not _has_role_level_llm_override(agent_config):
+        llm_state = evaluate_llm_readiness()
+        if not llm_state.ready:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "No LLM provider configured for this run. "
+                    f"{llm_state.reason}. Configure a provider in Settings or pick a "
+                    "scenario that already pins a model."
+                ),
+            )
+
     try:
         effective_prompt, workspace_path, meta_ws, task = await asyncio.to_thread(
             _chat_sync_prepare_workspace_and_task,

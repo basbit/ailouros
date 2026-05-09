@@ -37,3 +37,10 @@ class HumanApprovalRequired(DomainError):
         self.detail = detail
         self.partial_state = partial_state or {}
         self.resume_pipeline_step = resume_pipeline_step
+
+
+class LlmProviderUnconfigured(DomainError):
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.detail = detail

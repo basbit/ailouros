@@ -4,6 +4,7 @@ import logging
 import os
 import shutil
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any
 
 from backend.App.shared.infrastructure.app_config_load import load_app_config_json
@@ -21,6 +22,12 @@ class CapabilityProbe:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class LlmReadiness:
+    ready: bool
+    reason: str
+
+
 def _bin_present(name: str) -> bool:
     return shutil.which(name) is not None
 
@@ -35,6 +42,49 @@ def _bool_setting(name: str, default: bool) -> bool:
     if not raw:
         return default
     return raw in {"1", "true", "yes", "on"}
+
+
+def _has_local_gguf_model() -> bool:
+    raw = (os.getenv("AILOUROS_MODELS_DIR") or "").strip()
+    if not raw:
+        return False
+    models_dir = Path(raw).expanduser()
+    if not models_dir.is_dir():
+        return False
+    return any(models_dir.rglob("*.gguf"))
+
+
+def _has_cloud_provider_key() -> bool:
+    keys = (
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GOOGLE_API_KEY",
+        "GEMINI_API_KEY",
+        "GROQ_API_KEY",
+        "OPENROUTER_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "CEREBRAS_API_KEY",
+    )
+    return any((os.getenv(name) or "").strip() for name in keys)
+
+
+def evaluate_llm_readiness() -> LlmReadiness:
+    if _has_local_gguf_model():
+        return LlmReadiness(ready=True, reason="local GGUF model present in AILOUROS_MODELS_DIR")
+    if _has_cloud_provider_key():
+        return LlmReadiness(ready=True, reason="cloud provider API key configured")
+    if _env_truthy("AILOUROS_LLM_PROVIDER_PROFILE_OVERRIDE"):
+        return LlmReadiness(
+            ready=True,
+            reason="AILOUROS_LLM_PROVIDER_PROFILE_OVERRIDE acknowledged by operator",
+        )
+    return LlmReadiness(
+        ready=False,
+        reason=(
+            "no local GGUF model under AILOUROS_MODELS_DIR and no cloud provider key set; "
+            "download a model in onboarding or configure Ollama/LM Studio/cloud"
+        ),
+    )
 
 
 def _configured_media_providers() -> list[tuple[str, str]]:
@@ -135,6 +185,13 @@ def probe_capabilities() -> list[CapabilityProbe]:
         name="visual_probe_playwright",
         ready=playwright_present,
         detail="playwright on PATH" if playwright_present else "playwright not installed",
+    ))
+
+    llm_state = evaluate_llm_readiness()
+    probes.append(CapabilityProbe(
+        name="local_llm",
+        ready=llm_state.ready,
+        detail=llm_state.reason,
     ))
 
     require_writes_block = _bool_setting("SWARM_REQUIRE_DEV_WRITES", default=True)
