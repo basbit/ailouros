@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 from backend.App.orchestration.application.routing.step_registry import PIPELINE_STEP_SEQUENCE
 
 
@@ -17,6 +19,11 @@ def _pipeline_options_base_ids_from_ts(ts_source: str) -> list[str]:
 def test_pipeline_options_base_ids_match_backend_step_sequence():
     app_root = Path(__file__).resolve().parents[2]
     ts_path = app_root / "frontend" / "src" / "shared" / "lib" / "pipeline-schema.ts"
+    if not ts_path.is_file():
+        pytest.skip(
+            "frontend tree not co-located with backend; cross-repo sync is enforced via "
+            "desktop/installer/manifests/vendor-versions.json compatibility matrix"
+        )
     ts_source = ts_path.read_text(encoding="utf-8")
     frontend_ids = _pipeline_options_base_ids_from_ts(ts_source)
     backend_ids = [t[0] for t in PIPELINE_STEP_SEQUENCE]
