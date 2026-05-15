@@ -67,12 +67,13 @@ from backend.App.orchestration.application.nodes.marketing import (
     review_app_store_optimizer_node,
     human_app_store_optimizer_node,
 )
+from backend.App.orchestration.application.nodes.code_validator import code_validator_node
+from backend.App.orchestration.application.nodes.docs_validator import docs_validator_node
 from backend.App.orchestration.application.nodes.e2e import e2e_node
 from backend.App.orchestration.application.nodes.visual_probe import (
     visual_design_review_node,
     visual_probe_node,
 )
-
 
 PIPELINE_STEP_SEQUENCE: tuple[tuple[str, str, Callable[[PipelineState], dict[str, Any]]], ...] = (
     ("clarify_input", "Clarify: requirements analysis", clarify_input_node),
@@ -134,6 +135,8 @@ PIPELINE_STEP_SEQUENCE: tuple[tuple[str, str, Callable[[PipelineState], dict[str
     ("review_app_store_optimizer", "Reviewer checks ASO", review_app_store_optimizer_node),
     ("human_app_store_optimizer", "Human approve after ASO", human_app_store_optimizer_node),
     ("e2e", "E2E: run test suite", e2e_node),
+    ("docs_validator", "Documents validator: coherence + dependency graph", docs_validator_node),
+    ("code_validator", "Code validator: produces-key consumers in workspace", code_validator_node),
 )
 
 PIPELINE_STEP_REGISTRY: dict[str, tuple[str, Callable[[PipelineState], dict[str, Any]]]] = {

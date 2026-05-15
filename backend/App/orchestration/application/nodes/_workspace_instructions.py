@@ -9,7 +9,6 @@ from backend.App.workspace.infrastructure.workspace_io import command_exec_allow
 
 logger = logging.getLogger(__name__)
 
-
 _DEFAULT_TEST_SUBSTRINGS = ".test.,.spec."
 _DEFAULT_TEST_SEGMENTS = "__tests__,tests,spec,specs"
 _DEFAULT_TEST_NAME_PREFIXES = "test_"

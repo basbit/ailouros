@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any, TypedDict
 
-
 VALID_MESSAGE_TYPES = frozenset({"REQUEST", "RESPONSE", "EVENT", "ERROR"})
 
 VALID_TASK_STATES = frozenset({"PENDING", "IN_PROGRESS", "DONE", "ERROR"})

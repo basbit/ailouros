@@ -33,6 +33,10 @@ from backend.App.orchestration.application.streaming.stream_finalise import (
     write_agent_artifact,
     write_agents_error_txt,
 )
+from backend.App.orchestration.application.streaming.clarification_pause import (
+    emit_pause_events,
+    handle_step_clarification,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +176,23 @@ class PipelineSSEHandler:
                     if "provider" in event:
                         pipeline_snapshot[f"{agent}_provider"] = event.get("provider", "")
                     pipeline_snapshot[f"{agent}_output"] = msg_ev
+
+                    pause_decision = handle_step_clarification(
+                        step_id=agent,
+                        output=msg_ev,
+                        pipeline_snapshot=pipeline_snapshot,
+                        task_store=self._task_store,
+                        task_id=task_id,
+                        task_dir=task_dir,
+                        agents_dir=agents_dir,
+                        now=now,
+                        request_model=request_model,
+                    )
+                    if pause_decision is not None:
+                        yield from emit_pause_events(
+                            pause_decision, now=now, request_model=request_model
+                        )
+                        return
 
                     if (
                         stream_incremental_workspace_enabled()

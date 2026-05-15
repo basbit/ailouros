@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from contextlib import contextmanager
 from typing import Any, Iterator
 
-from backend.App.shared.domain.validators import is_truthy_env
+from backend.App.shared.infrastructure.env_flags import is_truthy_env
 
 _tracer: Any = None
 _meter: Any = None

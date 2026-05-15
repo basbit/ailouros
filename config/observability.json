@@ -1,0 +1,5 @@
+{
+  "step_heartbeat_initial_sec": 30,
+  "step_heartbeat_max_sec": 300,
+  "step_heartbeat_growth_factor": 2.0
+}

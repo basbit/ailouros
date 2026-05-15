@@ -32,16 +32,43 @@ _MCP_RX_EOF = object()
 
 def _mcp_rpc_wait_sec() -> float:
     try:
-        return max(5.0, float(os.getenv("SWARM_MCP_RPC_WAIT_SEC", "600")))
+        return max(_mcp_min_floor_sec(), float(os.getenv("SWARM_MCP_RPC_WAIT_SEC", str(_mcp_rpc_wait_default()))))
     except ValueError:
-        return 600.0
+        return _mcp_rpc_wait_default()
+
+
+def _mcp_config() -> dict[str, Any]:
+    from backend.App.shared.infrastructure.app_config_load import load_app_config_json
+
+    return load_app_config_json("mcp.json")
+
+
+def _mcp_min_floor_sec() -> float:
+    raw = _mcp_config().get("rpc_min_floor_sec", 5)
+    if isinstance(raw, (int, float)) and raw > 0:
+        return float(raw)
+    raise RuntimeError("mcp.json: rpc_min_floor_sec must be a positive number")
+
+
+def _mcp_rpc_wait_default() -> float:
+    raw = _mcp_config().get("rpc_wait_sec", 600)
+    if isinstance(raw, (int, float)) and raw > 0:
+        return float(raw)
+    raise RuntimeError("mcp.json: rpc_wait_sec must be a positive number")
+
+
+def _mcp_init_timeout_default() -> float:
+    raw = _mcp_config().get("init_timeout_sec", 60)
+    if isinstance(raw, (int, float)) and raw > 0:
+        return float(raw)
+    raise RuntimeError("mcp.json: init_timeout_sec must be a positive number")
 
 
 def _mcp_init_timeout_sec() -> float:
     try:
-        return max(5.0, float(os.getenv("SWARM_MCP_INIT_TIMEOUT_SEC", "60")))
+        return max(_mcp_min_floor_sec(), float(os.getenv("SWARM_MCP_INIT_TIMEOUT_SEC", str(_mcp_init_timeout_default()))))
     except ValueError:
-        return 60.0
+        return _mcp_init_timeout_default()
 
 
 def _frame_message(payload: dict[str, Any]) -> bytes:
@@ -245,7 +272,11 @@ class MCPStdioSession:
                 return resp.get("result")
 
             if cancel_event is not None and cancel_event.is_set():
-                raise RuntimeError(f"MCP {self.name}: cancelled (pipeline cancel)")
+                from backend.App.shared.domain.exceptions import OperationCancelled
+
+                raise OperationCancelled(
+                    source="mcp", detail=f"server={self.name}"
+                )
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 if _deadline_override is not None:
@@ -342,4 +373,59 @@ class MCPStdioSession:
         arguments: dict[str, Any],
         cancel_event: Optional[threading.Event] = None,
     ) -> Any:
-        return self.request("tools/call", {"name": name, "arguments": arguments}, cancel_event=cancel_event)
+        from backend.App.shared.infrastructure.activity_recorder import (
+            record as _record_activity,
+        )
+        from backend.App.shared.infrastructure.tracing import trace_span
+
+        start = time.monotonic()
+        try:
+            with trace_span(
+                "mcp.call_tool",
+                attributes={"server": self.name, "tool": name},
+            ):
+                result = self.request(
+                    "tools/call",
+                    {"name": name, "arguments": arguments},
+                    cancel_event=cancel_event,
+                )
+        except Exception as exc:
+            _record_activity(
+                "mcp_calls",
+                {
+                    "server": self.name,
+                    "tool": name,
+                    "args": arguments,
+                    "status": "error",
+                    "error": type(exc).__name__,
+                    "message": str(exc),
+                    "elapsed_ms": round((time.monotonic() - start) * 1000.0, 1),
+                },
+            )
+            raise
+        _record_activity(
+            "mcp_calls",
+            {
+                "server": self.name,
+                "tool": name,
+                "args": arguments,
+                "status": "ok",
+                "result_preview": _summarise_tool_result(result),
+                "elapsed_ms": round((time.monotonic() - start) * 1000.0, 1),
+            },
+        )
+        return result
+
+
+def _summarise_tool_result(result: Any) -> str:
+    if isinstance(result, str):
+        return result[:500]
+    if isinstance(result, dict):
+        content = result.get("content")
+        if isinstance(content, list) and content:
+            first = content[0]
+            if isinstance(first, dict):
+                text = first.get("text")
+                if isinstance(text, str):
+                    return text[:500]
+    return str(result)[:500] if result is not None else ""

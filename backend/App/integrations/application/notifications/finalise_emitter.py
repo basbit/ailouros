@@ -23,7 +23,6 @@ from backend.App.integrations.infrastructure.notifications.in_memory_ledger impo
 
 logger = logging.getLogger(__name__)
 
-
 _router_singleton: NotificationRouter | None = None
 _ledger_singleton: InMemoryNotificationLedger | None = None
 

@@ -68,12 +68,6 @@ class LRUDict(Generic[K, V]):
 
 
 class ThreadSafeLRUDict(Generic[K, V]):
-    """LRU cache with count-based eviction and a :class:`threading.Lock`.
-
-    Previously inlined inside ``integrations/.../embedding_service.py``
-    (``_CachedProvider``) and several other places that all reimplemented the
-    same lock-guarded OrderedDict eviction dance.
-    """
 
     def __init__(self, max_size: int = 128) -> None:
         self._data: OrderedDict[K, V] = OrderedDict()
@@ -96,7 +90,6 @@ class ThreadSafeLRUDict(Generic[K, V]):
                 self._data.popitem(last=False)
 
     def get_many(self, keys: list[K]) -> dict[K, V]:
-        """Return a dict of ``{key: value}`` for every cached key in ``keys``."""
         with self._lock:
             result: dict[K, V] = {}
             for key in keys:
@@ -120,7 +113,6 @@ class ThreadSafeLRUDict(Generic[K, V]):
 
 @dataclass
 class CacheStats:
-    """Common hit/miss counters for caches across domains."""
 
     hits: int = 0
     misses: int = 0
@@ -139,12 +131,6 @@ class CacheStats:
 
 
 def hash_cache_key(prefix: str, payload: Any, *, digest_len: int = 16) -> str:
-    """Deterministic ``prefix:<hexdigest>`` key for cache lookups.
-
-    Consolidates the ``hashlib.sha256(json.dumps(..., sort_keys=True))``
-    pattern duplicated in ``mcp/tool_cache.py`` and
-    ``embedding_service._CachedProvider``.
-    """
     if isinstance(payload, str):
         raw = payload
     else:

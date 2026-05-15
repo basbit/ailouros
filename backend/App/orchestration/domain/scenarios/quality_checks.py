@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
 
-
 VALID_CHECK_TYPES = frozenset({
     "artifact_count",
     "artifact_min_size",

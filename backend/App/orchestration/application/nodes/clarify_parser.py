@@ -45,7 +45,7 @@ def parse_clarify_questions(text: str) -> list[ClarifyQuestion]:
         )
         options: list[str] = []
         if opt_match:
-            raw_opts = opt_match.group(1).split("\n")[0]  # only first line
+            raw_opts = opt_match.group(1).split("\n")[0]
             for part in raw_opts.split("|"):
                 part = part.strip()
                 part = re.sub(r"^[A-Za-z]\)\s*", "", part)

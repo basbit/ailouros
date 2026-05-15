@@ -1,9 +1,3 @@
-"""Infrastructure implementations for E2E testing ports.
-
-Provides:
-- PlaywrightRunner: E2ERunnerPort implementation using ``npx playwright test``.
-- LocalArtifactStore: E2EArtifactStorePort that writes under a local base dir.
-"""
 from __future__ import annotations
 
 import os
@@ -21,15 +15,6 @@ from backend.App.testing.domain.ports import (
 
 
 class PlaywrightRunner(E2ERunnerPort):
-    """Run Playwright E2E tests via ``npx playwright test``.
-
-    Checks that ``npx`` is available at construction time and raises
-    :class:`RuntimeError` with a clear message if not found.
-
-    Args:
-        working_dir: Directory from which to invoke ``npx playwright test``.
-            Defaults to the current working directory.
-    """
 
     def __init__(self, working_dir: Optional[str] = None) -> None:
         if shutil.which("npx") is None:
@@ -40,18 +25,6 @@ class PlaywrightRunner(E2ERunnerPort):
         self._working_dir = working_dir or os.getcwd()
 
     def run(self, config: E2ESuiteConfig) -> E2ERunResult:
-        """Execute the Playwright test suite described by *config*.
-
-        Sets ``PLAYWRIGHT_JUNIT_OUTPUT_NAME`` so Playwright writes the JUnit
-        report to ``<artifacts_dir>/junit.xml``.
-
-        Args:
-            config: Suite configuration including path, base URL, timeout,
-                and artifacts directory.
-
-        Returns:
-            :class:`E2ERunResult` with exit code, stdout/stderr, and paths.
-        """
         artifacts_path = Path(config.artifacts_dir)
         artifacts_path.mkdir(parents=True, exist_ok=True)
 
@@ -99,27 +72,11 @@ class PlaywrightRunner(E2ERunnerPort):
 
 
 class LocalArtifactStore(E2EArtifactStorePort):
-    """Resolve E2E artifact directories under a local filesystem base directory.
-
-    Args:
-        base_dir: Root directory under which ``e2e/<task_id>/<run_id>/`` is created.
-    """
 
     def __init__(self, base_dir: str) -> None:
         self._base_dir = base_dir
 
     def resolve_artifacts_dir(self, task_id: str, run_id: str) -> str:
-        """Create and return the artifact directory path for a run.
-
-        Path: ``<base_dir>/e2e/<task_id>/<run_id>/``
-
-        Args:
-            task_id: Task identifier.
-            run_id: Unique run identifier (short UUID).
-
-        Returns:
-            Absolute path string of the created directory.
-        """
         path = Path(self._base_dir) / "e2e" / task_id / run_id
         path.mkdir(parents=True, exist_ok=True)
         return str(path)

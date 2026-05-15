@@ -53,15 +53,7 @@ def _build_tfidf_vectors(
     return vectors
 
 
-def _cosine(a: dict[str, float], b: dict[str, float]) -> float:
-    if not a or not b:
-        return 0.0
-    dot = sum(a.get(t, 0.0) * v for t, v in b.items())
-    norm_a = math.sqrt(sum(v * v for v in a.values()))
-    norm_b = math.sqrt(sum(v * v for v in b.values()))
-    if norm_a == 0.0 or norm_b == 0.0:
-        return 0.0
-    return dot / (norm_a * norm_b)
+from backend.App.shared.domain.vector_math import cosine_sparse as _cosine  # noqa: E402
 
 
 class MemoryConsolidator:
@@ -243,7 +235,7 @@ class MemoryConsolidator:
                 temperature=0.2,
             )
             return str(text).strip()
-        except Exception as exc:  # pragma: no cover
+        except Exception as exc:
             logger.warning("MemoryConsolidator: LLM extraction failed (%s), using fallback", exc)
             tokens = _tokenize(combined_body)
             freq: dict[str, int] = {}
@@ -287,5 +279,5 @@ class MemoryConsolidator:
                 if str(ep.get("body") or "") in cluster_bodies and not ep.get("consolidated"):
                     ep["consolidated"] = True
                     r.lset(key, idx, json.dumps(ep, ensure_ascii=False))
-        except Exception as exc:  # pragma: no cover
+        except Exception as exc:
             logger.debug("MemoryConsolidator: Redis mark failed (%s)", exc)

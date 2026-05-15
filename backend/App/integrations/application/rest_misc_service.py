@@ -72,7 +72,6 @@ _PROMPT_DEFAULTS: dict[str, str] = {
 
 _LOCAL_MODEL_PLACEHOLDER = "local-default"
 
-
 _MODEL_DEFAULTS: dict[str, dict[str, str]] = {
     role: {
         "local": _LOCAL_MODEL_PLACEHOLDER,
@@ -251,16 +250,6 @@ def prometheus_metrics_response_or_none() -> Any:
         return None
 
 
-def observability_metrics_payload() -> dict[str, Any]:
-    try:
-        from backend.App.integrations.application.system_metrics import metrics_payload
-
-        return metrics_payload()
-    except Exception as exc:
-        logger.debug("observability_metrics_payload failed: %s", exc)
-        return {}
-
-
 def defaults_payload() -> dict[str, Any]:
     from backend.App.integrations.infrastructure.agent_registry import load_registry_raw
     from backend.App.orchestration.application.enforcement.enforcement_policy import (
@@ -365,13 +354,6 @@ def workspace_files_payload(workspace_root: str) -> tuple[dict[str, Any], int]:
 
 
 def prompts_list_payload() -> dict[str, Any]:
-    """Return all prompt .md files under PROMPTS_DIR (overrides + upstream).
-
-    Used by the UI prompt-path dropdown in Custom Roles and Agent Roles.
-    Paths are returned in the same rel-path form the prompt loader accepts:
-    "<category>/<file>.md" — no "overrides/" or "upstream/" prefix.
-    Overrides shadow upstream paths (deduplicated by rel path, overrides win).
-    """
     from backend.App.orchestration.infrastructure.agents.base_agent import PROMPTS_DIR
 
     seen: dict[str, dict[str, str]] = {}
@@ -386,10 +368,8 @@ def prompts_list_payload() -> dict[str, Any]:
                 rel = path.relative_to(base).as_posix()
             except ValueError:
                 continue
-            # Skip non-prompt docs at prompt-dir root (README, LICENSE).
             if "/" not in rel and rel.lower() in {"readme.md", "contributing.md", "license.md"}:
                 continue
-            # Overrides beat upstream — keep the first-seen when source=overrides.
             if rel in seen and seen[rel]["source"] == "overrides":
                 continue
             title = path.stem.replace("-", " ").replace("_", " ").strip()
@@ -412,12 +392,6 @@ _SKILL_SEARCH_DIRS: tuple[str, ...] = (
 
 
 def skills_list_payload(workspace_root: str) -> tuple[dict[str, Any], int]:
-    """Return SKILL.md files discovered in the given workspace.
-
-    Scans common skill directories (`.claude/skills`, `.cursor/skills`,
-    `skills`) for `SKILL.md` files. Skill id is taken from the containing
-    directory name; title is the first H1 in the file (falls back to id).
-    """
     from backend.App.orchestration.infrastructure.agents.base_agent import _strip_skill_frontmatter
 
     ws = (workspace_root or "").strip()

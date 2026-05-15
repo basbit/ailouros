@@ -3,12 +3,12 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from backend.App.shared.domain.exceptions import DomainError
+from backend.App.shared.domain.exceptions import DomainError, OperationCancelled
 
 
-class PipelineCancelled(DomainError):
-
-    pass
+class PipelineCancelled(OperationCancelled, DomainError):
+    def __init__(self, detail: str = "pipeline cancelled") -> None:
+        OperationCancelled.__init__(self, source="pipeline", detail=detail)
 
 
 class HumanGateTimeout(DomainError):

@@ -6,7 +6,6 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-
 try:
     from backend.App.orchestration.infrastructure.agents.base_agent import BaseAgent  # type: ignore[assignment]
 except ImportError as _base_agent_import_error:
@@ -24,7 +23,6 @@ _QUARANTINE_ENABLED_ENV = "SWARM_QUARANTINE_ENABLED"
 _QUARANTINE_MODEL_ENV = "SWARM_QUARANTINE_MODEL"
 _QUARANTINE_MAX_INPUT = int(os.getenv("SWARM_QUARANTINE_MAX_INPUT_CHARS", "12000"))
 _QUARANTINE_MAX_OUTPUT = int(os.getenv("SWARM_QUARANTINE_MAX_OUTPUT_CHARS", "3000"))
-
 
 _EXTERNAL_TOOL_NAMES: frozenset[str] = frozenset(
     {

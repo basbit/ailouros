@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import logging
-import os
 from enum import Enum
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_MAX_FIX_CYCLES = 3
+DEFAULT_MAX_ATTEMPTS_PER_DEFECT = 3
 
 
 class PipelinePhase(str, Enum):
@@ -26,8 +28,8 @@ _PHASE_TRANSITIONS: dict[PipelinePhase, frozenset[PipelinePhase]] = {
     PipelinePhase.VERIFY: frozenset({PipelinePhase.QA, PipelinePhase.FIX, PipelinePhase.DONE, PipelinePhase.ERROR}),
     PipelinePhase.QA: frozenset({PipelinePhase.FIX, PipelinePhase.DONE, PipelinePhase.ERROR}),
     PipelinePhase.FIX: frozenset({PipelinePhase.VERIFY, PipelinePhase.ERROR}),
-    PipelinePhase.DONE: frozenset(),   # terminal
-    PipelinePhase.ERROR: frozenset(),  # terminal
+    PipelinePhase.DONE: frozenset(),
+    PipelinePhase.ERROR: frozenset(),
 }
 
 _STEP_TO_PHASE: dict[str, PipelinePhase] = {
@@ -79,26 +81,19 @@ _STEP_TO_PHASE: dict[str, PipelinePhase] = {
 }
 
 
-def _max_fix_cycles() -> int:
-    try:
-        return int(os.getenv("SWARM_MAX_FIX_CYCLES", "3"))
-    except ValueError:
-        return 3
-
-
-def _max_attempts_per_defect() -> int:
-    try:
-        return int(os.getenv("SWARM_MAX_ATTEMPTS_PER_DEFECT", "3"))
-    except ValueError:
-        return 3
-
-
 class PipelineMachine:
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        max_fix_cycles: int = DEFAULT_MAX_FIX_CYCLES,
+        max_attempts_per_defect: int = DEFAULT_MAX_ATTEMPTS_PER_DEFECT,
+    ) -> None:
         self._phase: PipelinePhase = PipelinePhase.PLAN
         self._fix_cycles: int = 0
-        self._defect_attempts: dict[str, int] = {}  # defect_category -> attempts
+        self._defect_attempts: dict[str, int] = {}
+        self._max_fix_cycles = max_fix_cycles
+        self._max_attempts_per_defect = max_attempts_per_defect
 
     @property
     def phase(self) -> PipelinePhase:
@@ -138,11 +133,11 @@ class PipelineMachine:
         return _STEP_TO_PHASE.get(step_id, PipelinePhase.PLAN)
 
     def should_stop_fix_cycle(self) -> bool:
-        return self._fix_cycles >= _max_fix_cycles()
+        return self._fix_cycles >= self._max_fix_cycles
 
     def record_defect_attempt(self, category: str) -> bool:
         self._defect_attempts[category] = self._defect_attempts.get(category, 0) + 1
-        return self._defect_attempts[category] >= _max_attempts_per_defect()
+        return self._defect_attempts[category] >= self._max_attempts_per_defect
 
     def should_change_strategy(self, category: str) -> bool:
         return self._defect_attempts.get(category, 0) >= 2
@@ -168,6 +163,11 @@ class PipelineMachine:
 
 
 _global_machine: Optional[PipelineMachine] = None
+
+
+def install_pipeline_machine(machine: PipelineMachine) -> None:
+    global _global_machine
+    _global_machine = machine
 
 
 def get_pipeline_machine() -> PipelineMachine:

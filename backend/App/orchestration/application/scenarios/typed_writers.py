@@ -8,7 +8,6 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-
 _FENCED_JSON = re.compile(r"```json\s*(.*?)```", re.DOTALL | re.IGNORECASE)
 
 

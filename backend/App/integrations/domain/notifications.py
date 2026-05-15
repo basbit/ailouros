@@ -4,7 +4,6 @@ from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-
 NotificationKind = str
 NotificationSeverity = str
 

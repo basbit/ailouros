@@ -10,14 +10,11 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-
 _OVERRIDES: dict[str, Any] = {}
 _OVERRIDES_LOCK = RLock()
 
-
 _SETTINGS_CACHE: dict[Path, tuple[int, dict[str, Any]]] = {}
 _CACHE_LOCK = RLock()
-
 
 _DEPRECATED_WARNED: set[str] = set()
 _WARNED_LOCK = RLock()

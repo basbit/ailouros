@@ -13,7 +13,6 @@ def _utc_timestamp_ms() -> str:
 
 
 def append_task_run_log(task_dir: Path, line: str) -> None:
-    """Append a timestamped line to the pipeline run log for the given task directory."""
     try:
         task_dir.mkdir(parents=True, exist_ok=True)
         log_path = task_dir / "pipeline_run.log"

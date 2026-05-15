@@ -98,7 +98,7 @@ def build_dev_lead_delta_retry_prompt(
     *,
     max_prev_chars: int = 8000,
 ) -> str:
-    store_artifact(prev_output)  # persist for reference
+    store_artifact(prev_output)
     prev_preview = prev_output[:max_prev_chars]
     if len(prev_output) > max_prev_chars:
         prev_preview += f"\n…[previous output truncated to {max_prev_chars} chars]"

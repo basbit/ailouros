@@ -29,7 +29,6 @@ from backend.App.orchestration.application.nodes._shared import (
     pipeline_user_task,
 )
 
-
 _FALSE_VALUES = {"0", "false", "no", "off"}
 
 

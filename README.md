@@ -14,7 +14,7 @@ Multi-agent pipeline (Python · FastAPI · LangGraph) — runs fully locally wit
 
 - Developers who want a local-first multi-agent coding pipeline
 - Teams exploring structured AI workflows with explicit review and approval gates
-- Builders who need an OpenAI-compatible API plus a browser UI for orchestration
+- Builders who need a browser UI for orchestrating multi-agent runs end-to-end
 - Operators who want ready-to-run research, content, data, product, support, and visual QA workflows
 
 ## Repository layout
@@ -46,7 +46,6 @@ Between steps the system passes **validated JSON artifacts** (not raw text), so 
 
 - **Fully local** — Ollama or LM Studio; no data leaves your machine by default
 - **Optional cloud routing** — send planning, build, or all steps to Anthropic Claude via `SWARM_ROUTE_*`
-- **OpenAI-compatible API** — drop-in for Cursor, VS Code Continue, or any `/v1/chat/completions` client
 - **MCP integration** — agents read/write the workspace via Model Context Protocol servers
 - **Workspace context modes** — `retrieve` (MCP), `full`, `priority_paths`, `index_only`, and more
 - **Autonomous features** — deep planning, self-verify, auto-retry, auto-approve, dream/consolidation
@@ -297,42 +296,10 @@ Full environment variable reference: [`docs/AIlourOS.md § 12`](../docs/AIlourOS
 
 ---
 
-## Use as API
-
-AIlourOS exposes an OpenAI-compatible endpoint. Use it from any client:
-
-**Cursor:**
-```json
-{
-  "name": "ailouros-local",
-  "baseUrl": "http://localhost:8000/v1",
-  "apiKey": "local"
-}
-```
-
-**curl:**
-```bash
-curl http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "swarm",
-    "stream": true,
-    "messages": [{"role": "user", "content": "Add pagination to the users list endpoint"}],
-    "agent_config": {
-      "workspace_root": "/path/to/your/project"
-    }
-  }'
-```
-
-Track progress: `GET /tasks/{task_id}` — returns status, step, and artifact paths.
-
----
-
 ## Ready-to-run scenarios
 
-Pick a scenario in the UI or pass `scenario_id` through
-`/v1/chat/completions`. If no scenario is selected, the advanced development
-swarm remains the default.
+Pick a scenario in the UI. If no scenario is selected, the advanced
+development swarm remains the default.
 
 Bundled scenarios:
 
@@ -342,19 +309,9 @@ Bundled scenarios:
 - `data_analysis`, `product_prd`, `support_triage`
 - `website_visual_qa`
 
-Scenario API:
-
-```bash
-curl http://localhost:8000/v1/scenarios
-curl http://localhost:8000/v1/runtime/capabilities
-```
-
-Per-run evidence:
-
-- `GET /v1/tasks/{task_id}/scenario-artifacts`
-- `GET /v1/tasks/{task_id}/scenario-quality-checks`
-- `GET /v1/tasks/{task_id}/scenario-score`
-- `POST /v1/tasks/{task_id}/reveal`
+Each run writes per-step evidence to `var/artifacts/<task_id>/` — quality
+checks, score, source panels, and the full pipeline snapshot live next to
+the agent outputs.
 
 Operational details live in [`wiki/architecture/scenarios.md`](../wiki/architecture/scenarios.md).
 

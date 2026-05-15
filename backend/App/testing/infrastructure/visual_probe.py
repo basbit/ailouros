@@ -35,7 +35,6 @@ from backend.App.testing.infrastructure._visual_probe_node_plan import (
     render_start_command as _render_start_command,
 )
 
-
 _DEFAULT_VIEWPORTS: tuple[VisualViewport, ...] = (
     VisualViewport(name="desktop", width=1440, height=1000),
     VisualViewport(name="mobile", width=390, height=844),
@@ -618,7 +617,6 @@ module.exports = {
   projects: [{ name: 'chromium' }],
 };
 """
-
 
 _PLAYWRIGHT_SPEC = r"""
 const { test } = require('@playwright/test');

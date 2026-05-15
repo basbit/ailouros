@@ -19,16 +19,16 @@ class CredentialScope(str, Enum):
 class CredentialRef:
     credential_id: str
     scope: CredentialScope
-    target: str            # e.g. tool name, role id, project id
+    target: str
     description: str = ""
 
 
 @dataclass
 class CredentialAuditEntry:
     credential_id: str
-    accessed_by: str       # agent role or system component
-    accessed_at: str       # ISO-8601
-    action: str            # "read" | "inject" | "revoke"
+    accessed_by: str
+    accessed_at: str
+    action: str
     context: dict[str, Any] = field(default_factory=dict)
 
 
@@ -37,7 +37,7 @@ class Credential:
     credential_id: str
     scope: CredentialScope
     target: str
-    secret_value: str      # encrypted at rest in production vaults
+    secret_value: str
     created_at: str
     expires_at: str | None = None
     description: str = ""

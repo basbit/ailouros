@@ -10,7 +10,7 @@ from backend.App.shared.application.datetime_utils import utc_now_iso
 try:
     import redis  # type: ignore[import-not-found]
     from redis.exceptions import WatchError  # type: ignore[import-not-found]
-except ImportError:  # pragma: no cover
+except ImportError:
     redis = None  # type: ignore[assignment]
     WatchError = Exception  # type: ignore[misc,assignment]
 
@@ -23,7 +23,6 @@ logger = logging.getLogger(__name__)
 _TASK_STORE_CONFIG = load_app_config_json("task_store.json")
 _REDIS_KEY_PREFIX: str = str(_TASK_STORE_CONFIG["redis_key_prefix"])
 _OPTIMISTIC_LOCK_MAX_RETRIES: int = int(_TASK_STORE_CONFIG["optimistic_lock_max_retries"])
-
 
 __all__ = [
     "RedisTaskStore",

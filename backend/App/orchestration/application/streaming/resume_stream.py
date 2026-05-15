@@ -20,6 +20,9 @@ from backend.App.orchestration.application.routing.pipeline_graph import (
     task_store_agent_label,
     validate_pipeline_steps,
 )
+from backend.App.orchestration.application.pipeline.resume_runner import (
+    run_pipeline_stream_resume_clarification,
+)
 from backend.App.orchestration.application.pipeline.pipeline_state import PipelineState
 from backend.App.orchestration.application.snapshot_serializer import pipeline_snapshot_for_disk
 from backend.App.orchestration.infrastructure.pipeline_artifact_reader import (
@@ -53,8 +56,8 @@ def stream_human_resume_chunks(
     cancel_event: Optional[threading.Event] = None,
     override_agent_config: Optional[dict[str, Any]] = None,
 ) -> Generator[str, None, None]:
-    from backend.App.integrations.infrastructure.observability.logging_config import set_task_id
-    set_task_id(task_id)
+    from backend.App.shared.infrastructure.task_context import bind_active_task
+    bind_active_task(task_id)
     now = int(time.time())
     task_dir = artifacts_root / task_id
     agents_dir = task_dir / "agents"
@@ -166,14 +169,24 @@ def stream_human_resume_chunks(
 
     final_state: Optional[dict[str, Any]] = None
 
+    is_clarification_resume = isinstance(raw.get("clarification_pause"), dict)
     try:
-        gen = run_pipeline_stream_resume(
-            cast(PipelineState, partial),
-            steps,
-            resume_step,
-            rewritten_feedback.safe_text,
-            cancel_event=cancel_event,
-        )
+        if is_clarification_resume:
+            gen = run_pipeline_stream_resume_clarification(
+                cast(PipelineState, partial),
+                steps,
+                resume_step,
+                rewritten_feedback.safe_text,
+                cancel_event=cancel_event,
+            )
+        else:
+            gen = run_pipeline_stream_resume(
+                cast(PipelineState, partial),
+                steps,
+                resume_step,
+                rewritten_feedback.safe_text,
+                cancel_event=cancel_event,
+            )
         while True:
             try:
                 event = next(gen)
@@ -310,6 +323,7 @@ def stream_human_resume_chunks(
     pipeline_snapshot.pop("partial_state", None)
     pipeline_snapshot.pop("resume_from_step", None)
     pipeline_snapshot.pop("human_approval_step", None)
+    pipeline_snapshot.pop("clarification_pause", None)
 
     task_store.update_task(
         task_id,

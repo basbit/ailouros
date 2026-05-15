@@ -17,7 +17,6 @@ from backend.App.orchestration.domain.media.errors import (
 
 logger = logging.getLogger(__name__)
 
-
 _LICENSE_POLICIES = frozenset({"permissive_only", "any", "off"})
 
 

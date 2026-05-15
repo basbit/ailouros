@@ -21,7 +21,7 @@ _DEFAULT_MAX_ROUNDS = int(os.getenv("SWARM_DIALOGUE_MAX_ROUNDS", "3"))
 @dataclass
 class DialogueResult:
     final_output: str
-    verdict: str  # "OK" | "NEEDS_WORK"
+    verdict: str
     rounds_used: int
     history: list[dict[str, str]] = field(default_factory=list)
     escalated: bool = False
@@ -35,8 +35,8 @@ class DialogueLoop:
     def run(
         self,
         *,
-        agent_a: Any,          # BaseAgent subclass — the producer
-        agent_b: Any,          # BaseAgent subclass — the reviewer
+        agent_a: Any,
+        agent_b: Any,
         initial_input: str,
         extract_verdict_fn: Callable[[str], str],
         progress_queue: Any = None,

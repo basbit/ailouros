@@ -27,7 +27,7 @@ def _build_pending_payload(
 ) -> dict[str, Any]:
     return {
         "commands": list(commands or []),
-        "needs_allowlist": list(dict.fromkeys(needs_allowlist or [])),  # de-dup, keep order
+        "needs_allowlist": list(dict.fromkeys(needs_allowlist or [])),
         "already_allowed": list(dict.fromkeys(already_allowed or [])),
     }
 

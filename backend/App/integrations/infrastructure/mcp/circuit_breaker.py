@@ -19,13 +19,6 @@ class CircuitState(str, Enum):
 
 
 class ToolUnavailableError(InfrastructureError, RuntimeError):
-    """Raised when a circuit breaker is OPEN and the caller must back off.
-
-    Inherits from both :class:`InfrastructureError` (so callers can catch
-    the canonical swarm-wide infrastructure hierarchy) and ``RuntimeError``
-    (for backwards compatibility with existing ``except RuntimeError:``
-    sites around the MCP tool loop).
-    """
 
     def __init__(self, tool_name: str) -> None:
         super().__init__(f"Circuit breaker OPEN for tool '{tool_name}': call blocked")

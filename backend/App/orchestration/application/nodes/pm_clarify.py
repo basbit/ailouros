@@ -60,7 +60,7 @@ def _clarify_cache_identity(state: PipelineState, task_text: str) -> dict[str, s
 
 def _clarify_cache_key(identity: dict[str, str]) -> str:
     stable_payload = json.dumps(identity, ensure_ascii=False, sort_keys=True)
-    return hashlib.md5(stable_payload.encode("utf-8", errors="replace")).hexdigest()[:16]
+    return hashlib.sha256(stable_payload.encode("utf-8", errors="replace")).hexdigest()[:16]
 
 
 def _clarify_cache_dir() -> Path:

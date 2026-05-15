@@ -1,12 +1,3 @@
-"""Redact secret-looking values out of config/state dicts before persistence.
-
-Cross-cutting — any domain that serialises state (sessions, pipeline
-snapshots, memory, traces, …) should funnel through the same redactor so the
-rules live in one place.
-
-Only keys named ``api_key`` or ending in ``_api_key`` are redacted today;
-extend this module if new secret-bearing keys appear.
-"""
 
 from __future__ import annotations
 
@@ -14,7 +5,6 @@ import copy
 from typing import Any, Optional
 
 __all__ = ["redact_agent_config_secrets"]
-
 
 _REDACTED = "***REDACTED***"
 
@@ -26,10 +16,6 @@ def _is_api_key_name(key: str) -> bool:
 def redact_agent_config_secrets(
     agent_config: Optional[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Deep-copy ``agent_config`` and replace any string ``*api_key`` values with ``***REDACTED***``.
-
-    Returns an empty ``{}`` for ``None`` / empty input so callers can chain.
-    """
     if not agent_config:
         return {}
 

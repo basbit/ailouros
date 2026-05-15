@@ -18,7 +18,6 @@ from backend.App.integrations.infrastructure.wiki_ann_index import (
 
 logger = logging.getLogger(__name__)
 
-
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS wiki_meta (
     key TEXT PRIMARY KEY,

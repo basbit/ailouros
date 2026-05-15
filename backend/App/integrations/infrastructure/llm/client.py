@@ -49,6 +49,12 @@ from backend.App.integrations.infrastructure.llm.providers import (
     _litellm_enabled,
     _use_anthropic_backend,
 )
+from backend.App.integrations.infrastructure.llm.role_budget_enforcer import (
+    apply_completion_cap,
+    enforce_prompt_budget,
+    resolve_role_budget,
+    verify_total_budget,
+)
 
 from backend.App.integrations.infrastructure.llm.config import OLLAMA_BASE_URL
 from backend.App.integrations.infrastructure.llm.prompt_size import (
@@ -161,6 +167,7 @@ def ask_model(
     anthropic_api_key: Optional[str] = None,
     anthropic_base_url: Optional[str] = None,
     llm_route: Optional[str] = None,
+    role: Optional[str] = None,
     **kwargs: Any,
 ) -> tuple[str, dict[str, Any]]:
     import backend.App.integrations.infrastructure.llm.client as _self
@@ -180,6 +187,11 @@ def ask_model(
         backend_path,
         _self.cache_enabled(),
     )
+
+    role_budget = resolve_role_budget(role)
+    prompt_tokens_used = 0
+    if role_budget is not None and role:
+        prompt_tokens_used = enforce_prompt_budget(messages, role_budget, role, model)
 
     key = None
     if _self.cache_enabled():
@@ -208,6 +220,8 @@ def ask_model(
             text, cached_usage = cached
             return (text, {**cached_usage, "cached": True})
 
+    response_schema = kwargs.pop("response_schema", None)
+
     if _self._litellm_enabled():
         eff_api_key = (anthropic_api_key or api_key or "").strip() or None
         eff_base_url = (anthropic_base_url or base_url or "").strip() or None
@@ -215,6 +229,77 @@ def ask_model(
             "llm_route", "anthropic_api_key", "anthropic_base_url",
         )}
         max_tokens = litellm_kwargs.pop("max_tokens", None)
+        if role_budget is not None:
+            capped = apply_completion_cap(
+                {"max_tokens": max_tokens} if max_tokens is not None else {},
+                role_budget,
+            )
+            max_tokens = capped.get("max_tokens", max_tokens)
+        if response_schema is not None:
+            from backend.App.integrations.domain.structured_output import (
+                StructuredOutputError,
+                parse_structured,
+            )
+
+            schema_json = response_schema.model_json_schema()
+            litellm_kwargs["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": response_schema.__name__,
+                    "schema": schema_json,
+                    "strict": True,
+                },
+            }
+            attempt_messages = list(messages)
+            last_error: Optional[StructuredOutputError] = None
+            for attempt in range(1, 3):
+                text, usage = _self._ask_litellm(
+                    messages=attempt_messages,
+                    model=model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    api_key=eff_api_key,
+                    base_url=eff_base_url,
+                    **litellm_kwargs,
+                )
+                try:
+                    parse_structured(text, response_schema)
+                except StructuredOutputError as exc:
+                    last_error = StructuredOutputError(
+                        model_name=response_schema.__name__,
+                        attempt=attempt,
+                        validation_errors=exc.validation_errors,
+                        last_response_excerpt=exc.last_response_excerpt,
+                    )
+                    if attempt >= 2:
+                        raise last_error from exc
+                    attempt_messages = [
+                        *messages,
+                        {
+                            "role": "user",
+                            "content": (
+                                "Previous attempt failed validation: "
+                                + "; ".join(exc.validation_errors)
+                                + ". Respond again with valid JSON matching the schema."
+                            ),
+                        },
+                    ]
+                    continue
+                usage = dict(usage)
+                usage["structured_output_attempt"] = attempt
+                if role_budget is not None and role:
+                    verify_total_budget(
+                        prompt_tokens=prompt_tokens_used,
+                        output_text=text,
+                        budget=role_budget,
+                        role=role,
+                        model=model,
+                    )
+                if key is not None:
+                    _self.set_cached(key, text, usage)
+                return (text, usage)
+            if last_error is not None:
+                raise last_error
         text, usage = _self._ask_litellm(
             messages=messages,
             model=model,
@@ -224,19 +309,48 @@ def ask_model(
             base_url=eff_base_url,
             **litellm_kwargs,
         )
+        if role_budget is not None and role:
+            verify_total_budget(
+                prompt_tokens=prompt_tokens_used,
+                output_text=text,
+                budget=role_budget,
+                role=role,
+                model=model,
+            )
         if key is not None:
             _self.set_cached(key, text, usage)
         return (text, usage)
 
     if _self._use_anthropic_backend(model, llm_route):
+        anthropic_kwargs = dict(kwargs)
+        if role_budget is not None:
+            cap = role_budget.completion_tokens_max
+            if cap is not None:
+                existing = anthropic_kwargs.get("max_tokens")
+                if existing is None or int(existing) > cap:
+                    anthropic_kwargs["max_tokens"] = cap
+            reasoning = role_budget.reasoning_tokens_max
+            if reasoning is not None and "thinking" not in anthropic_kwargs:
+                anthropic_kwargs["thinking"] = {
+                    "type": "enabled",
+                    "budget_tokens": reasoning,
+                }
         text, usage = _self._ask_anthropic(
             messages=messages,
             model=model,
             temperature=temperature,
             anthropic_api_key=anthropic_api_key,
             anthropic_base_url=anthropic_base_url,
-            **kwargs,
+            **anthropic_kwargs,
         )
+        if role_budget is not None and role:
+            verify_total_budget(
+                prompt_tokens=prompt_tokens_used,
+                output_text=text,
+                budget=role_budget,
+                role=role,
+                model=model,
+            )
         if key is not None:
             _self.set_cached(key, text, usage)
         return (text, usage)

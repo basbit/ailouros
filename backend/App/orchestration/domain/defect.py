@@ -24,7 +24,7 @@ class Defect:
     actual: str = ""
     repro_steps: list[str] = field(default_factory=list)
     acceptance: list[str] = field(default_factory=list)
-    category: str = ""  # e.g. "namespace", "stub", "missing_file", "regression", "logic"
+    category: str = ""
     fixed: bool = False
 
     def to_dict(self) -> dict[str, Any]:
@@ -118,7 +118,7 @@ def parse_defects_from_text(text: str) -> list[Defect]:
 
     defects: list[Defect] = []
     blocks = re.split(r"(?:^|\n)DEFECT\s*:\s*", text, flags=re.IGNORECASE)
-    for block in blocks[1:]:  # skip text before first DEFECT
+    for block in blocks[1:]:
         lines = block.strip().split("\n")
         title = lines[0].strip() if lines else ""
         severity = Severity.P1

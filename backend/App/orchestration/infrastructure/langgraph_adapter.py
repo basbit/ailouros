@@ -8,7 +8,7 @@ from backend.App.orchestration.domain.graph_runtime import GraphDefinition, Grap
 class LangGraphAdapter(GraphRuntimePort):
 
     def compile(self, definition: GraphDefinition, state_schema: Any) -> Any:
-        from langgraph.graph import END, START, StateGraph  # langgraph isolated here
+        from langgraph.graph import END, START, StateGraph
 
         graph = StateGraph(state_schema)
 

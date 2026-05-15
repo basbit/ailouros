@@ -3,8 +3,6 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
-# Observability is cross-cutting; the canonical port lives in ``shared``.
-# Re-exported here for backwards compatibility with existing call sites.
 from backend.App.shared.domain.ports import ObservabilityPort  # noqa: F401
 
 

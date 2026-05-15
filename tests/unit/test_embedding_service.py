@@ -132,15 +132,37 @@ def test_get_embedding_provider_returns_singleton(monkeypatch):
 
 
 def test_get_embedding_provider_falls_back_on_init_failure(monkeypatch):
-    """If the chosen provider raises during init, fall back to null."""
     monkeypatch.setenv("SWARM_EMBEDDING_PROVIDER", "local")
     monkeypatch.setenv("SWARM_EMBEDDING_MODEL", "__nonexistent__")
     reset_embedding_provider()
-    # sentence_transformers itself may or may not be installed; either way,
-    # get_embedding_provider must not raise — worst case we land on null.
-    p = get_embedding_provider()
-    assert hasattr(p, "embed")
-    assert p.embed(["hello"]) is not None
+    import backend.App.integrations.infrastructure.embedding_service as svc
+
+    def _failing_make_provider(provider_id):
+        raise RuntimeError("simulated init failure")
+
+    monkeypatch.setattr(svc, "_make_provider", _failing_make_provider)
+    provider = svc.get_embedding_provider()
+    assert provider.embed(["hello"]) == [[]]
+
+
+def test_local_provider_raises_embedding_error_on_encode_failure(monkeypatch):
+    from backend.App.integrations.infrastructure.embedding_service import (
+        EmbeddingError,
+        LocalSentenceTransformersProvider,
+    )
+
+    provider = LocalSentenceTransformersProvider("__nonexistent__")
+
+    class _FailingModel:
+        def encode(self, *args, **kwargs):
+            raise OSError("model not on disk")
+
+        def get_embedding_dimension(self):
+            return 0
+
+    provider._model = _FailingModel()
+    with pytest.raises(EmbeddingError, match="local sentence-transformers embed failed"):
+        provider.embed(["hello"])
 
 
 def test_auto_choose_returns_known_value(monkeypatch):

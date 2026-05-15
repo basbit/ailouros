@@ -54,8 +54,8 @@ def stream_retry_chunks(
     retry_with: Any = None,
     pipeline_steps_override: Optional[list[str]] = None,
 ) -> Generator[str, None, None]:
-    from backend.App.integrations.infrastructure.observability.logging_config import set_task_id
-    set_task_id(task_id)
+    from backend.App.shared.infrastructure.task_context import bind_active_task
+    bind_active_task(task_id)
     now = int(time.time())
     task_dir = artifacts_root / task_id
     agents_dir = task_dir / "agents"

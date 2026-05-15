@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-
 VALID_INPUT_KEYS = frozenset({
     "prompt",
     "workspace_root",

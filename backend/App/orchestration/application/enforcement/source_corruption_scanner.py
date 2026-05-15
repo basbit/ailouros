@@ -14,7 +14,6 @@ from backend.App.shared.infrastructure.app_config_load import load_app_config_js
 
 logger = logging.getLogger(__name__)
 
-
 _PATCH_MARKER_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("unified_diff_minus", re.compile(r"^---\s+", re.MULTILINE)),
     ("unified_diff_plus", re.compile(r"^\+\+\+\s+", re.MULTILINE)),

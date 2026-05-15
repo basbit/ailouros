@@ -109,7 +109,7 @@ def _extract_json_by_brackets(text: str) -> list[str]:
                         i = j + 1
                         break
             else:
-                break  # unbalanced — stop scanning for this opener
+                break
     results.sort(key=len, reverse=True)
     return results
 

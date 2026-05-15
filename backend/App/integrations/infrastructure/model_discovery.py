@@ -350,6 +350,22 @@ def discovery_metrics_snapshot() -> dict[str, dict[str, int]]:
         }
 
 
+def pick_best_local_model() -> Optional[DiscoveredModel]:
+    candidates: list[DiscoveredModel] = []
+    candidates.extend(discover_lm_studio_models())
+    candidates.extend(discover_ollama_models())
+    if not candidates:
+        return None
+    candidates.sort(
+        key=lambda model: (
+            0 if model.provider == "lm_studio" else 1,
+            -_extract_model_size(model.model_id),
+            model.model_id,
+        )
+    )
+    return candidates[0]
+
+
 def reset_discovery_metrics_for_tests() -> None:
     with _model_cache_lock:
         _model_cache.clear()

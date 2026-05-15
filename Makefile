@@ -13,7 +13,7 @@ UVICORN            := $(VENV)/bin/uvicorn
 LINT_IMPORTS       := $(VENV)/bin/lint-imports
 export PYTHONPATH  := $(CURDIR)
 
-.PHONY: help venv install lint gen-env-docs test test-security ci \
+.PHONY: help venv install lint gen-env-docs test test-security test-mutation ci \
 	smoke smoke-fast install-embeddings pipeline \
 	frontend-install frontend-build frontend-lint e2e \
 	start stop restart logs ps models submodules run quickstart \
@@ -47,7 +47,7 @@ bump-frontend: ## fast-forward frontend submodule pointer to tip of origin/main
 	   echo "frontend: bumped $$pinned → $$tip (stage only; run 'git commit' to record)"; \
 	 fi
 
-lint: ## flake8 + import-linter + mypy
+lint: ## flake8 + import-linter + mypy + hardcoded-constants audit
 	$(PY) -m flake8 .
 	$(LINT_IMPORTS)
 	@MYPY_COUNT=$$($(PY) -m mypy backend/ --ignore-missing-imports --explicit-package-bases --no-error-summary 2>&1 | grep -c "^backend/" || true); \
@@ -58,19 +58,52 @@ lint: ## flake8 + import-linter + mypy
 		exit 1; \
 	fi; \
 	echo "mypy: $$MYPY_COUNT / $$MYPY_MAX"
+	@AUDIT_MAX=$${SWARM_HARDCODE_MAX:-90}; \
+	$(PY) scripts/audit/find_hardcoded_constants.py backend --max-findings $$AUDIT_MAX > /tmp/swarm_audit.log 2>&1; \
+	AUDIT_EXIT=$$?; \
+	AUDIT_COUNT=$$(grep -E "^hardcoded literal audit — [0-9]+ finding" /tmp/swarm_audit.log | sed -E 's/[^0-9]*([0-9]+).*/\1/' | head -n 1); \
+	[ -z "$$AUDIT_COUNT" ] && AUDIT_COUNT=0; \
+	if [ $$AUDIT_EXIT -ne 0 ]; then \
+		tail -20 /tmp/swarm_audit.log; \
+		echo "hardcode audit: $$AUDIT_COUNT findings exceed threshold $$AUDIT_MAX (override: SWARM_HARDCODE_MAX)"; \
+		exit 1; \
+	fi; \
+	echo "hardcode audit: $$AUDIT_COUNT / $$AUDIT_MAX"
 
 gen-env-docs: ## regenerate docs/AIlourOS.md env-var section
 	$(PY) scripts/gen_env_docs.py
 
-test: ## pytest (excludes smoke tests)
+test: ## pytest (excludes smoke + playwright runtime tests)
 	$(PY) -m pytest --maxfail=1 --disable-warnings -q \
-		--ignore=tests/smoke
+		--ignore=tests/smoke \
+		--ignore=tests/playwright
+
+test-playwright: ## pytest playwright runtime tests (require Chromium installed)
+	$(PY) -m pytest tests/playwright/ --maxfail=1 --disable-warnings -q
 
 
 test-security: ## security tests only
 	$(PY) -m pytest tests/security/ --maxfail=1 --disable-warnings -q
 
-ci: frontend-lint lint test ## frontend-lint + lint + tests
+test-mutation: ## mutation testing (nightly; install requirements-mutation.txt first)
+	@if ! $(PY) -c 'import mutmut' >/dev/null 2>&1; then \
+		echo "test-mutation: mutmut not installed. Run: $(PIP) install -r requirements-mutation.txt"; \
+		exit 1; \
+	fi
+	@if [ -z "$$SWARM_MUTATION_TARGETS" ]; then \
+		echo "test-mutation: SWARM_MUTATION_TARGETS env var is required (comma-separated paths)"; \
+		exit 1; \
+	fi
+	SWARM_MUTATION_TARGETS=$$SWARM_MUTATION_TARGETS \
+		$(PY) -m mutmut run --paths-to-mutate $$SWARM_MUTATION_TARGETS \
+		--tests-dir tests \
+		--runner "python -m pytest -x --timeout=$${SWARM_MUTATION_PER_MUTANT_SEC:-5}"
+	$(PY) -m mutmut results --json
+
+smoke-e2e: ## golden-path e2e smoke (REST roundtrip)
+	SWARM_SHARED_HISTORY_ENABLED=1 $(PY) scripts/e2e/smoke.py
+
+ci: frontend-lint lint test smoke-e2e ## frontend-lint + lint + tests + e2e smoke
 
 install-embeddings: _ensure-venv ## install sentence-transformers for smoke tests
 	@$(PY) -c 'import sentence_transformers' >/dev/null 2>&1 || \

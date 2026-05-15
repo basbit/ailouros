@@ -1,0 +1,20 @@
+{
+  "providers": {
+    "anthropic": {
+      "data_retention": "none",
+      "local": false
+    },
+    "openai": {
+      "data_retention": "none",
+      "local": false
+    },
+    "ollama": {
+      "data_retention": "local",
+      "local": true
+    },
+    "lmstudio": {
+      "data_retention": "local",
+      "local": true
+    }
+  }
+}

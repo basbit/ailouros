@@ -23,11 +23,11 @@ class BoardEntry:
     agent: str
     topic: str
     content: str
-    confidence: float     # 0.0 – 1.0
+    confidence: float
     timestamp: str
     refinements: list[dict[str, str]] = field(default_factory=list)
     resolved: bool = False
-    contradicted_by: list[str] = field(default_factory=list)  # entry IDs
+    contradicted_by: list[str] = field(default_factory=list)
 
 
 class Blackboard:

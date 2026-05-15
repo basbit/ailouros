@@ -69,6 +69,24 @@ def preview_scenario(body: ScenarioPreviewRequest) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@router.get("/v1/scenarios/{scenario_id}/estimate")
+def estimate_scenario(scenario_id: str) -> dict[str, Any]:
+    from backend.App.orchestration.domain.scenario_estimate import compute_scenario_estimate
+
+    try:
+        scenario = default_scenario_registry().get(scenario_id)
+    except ScenarioNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    payload: dict[str, Any] = {
+        "id": scenario.id,
+        "pipeline_steps": list(scenario.pipeline_steps),
+    }
+    if scenario.step_estimates:
+        payload["step_estimates"] = [dict(entry) for entry in scenario.step_estimates]
+    estimate = compute_scenario_estimate(payload)
+    return estimate.to_dict()
+
+
 @router.post("/v1/scenarios/validate")
 def validate_scenario(payload: dict[str, Any]) -> dict[str, Any]:
     from backend.App.orchestration.application.routing.step_registry import (

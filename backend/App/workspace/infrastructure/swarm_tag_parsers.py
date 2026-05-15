@@ -107,7 +107,6 @@ _PAT_BASH_FENCE = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 
-
 _INLINE_CODE_SPAN_RE = re.compile(r"`[^`\n]+`")
 
 

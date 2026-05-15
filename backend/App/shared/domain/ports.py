@@ -1,8 +1,3 @@
-"""Cross-cutting ports declared at the ``shared`` boundary.
-
-Only truly cross-cutting contracts live here. Domain-specific ports (e.g.
-``TaskStorePort``) belong inside their owning domain (``tasks/domain/ports``).
-"""
 
 from __future__ import annotations
 

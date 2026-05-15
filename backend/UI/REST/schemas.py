@@ -20,7 +20,6 @@ class ChatCompletionRequest(BaseModel):
     model: str = "swarm-orchestrator"
     messages: list[ChatMessage]
     stream: bool = False
-    temperature: Optional[float] = None
     agent_config: Optional[dict[str, dict[str, Any]]] = None
     pipeline_steps: Optional[list[str]] = None
     pipeline_stages: Optional[list[list[str]]] = None

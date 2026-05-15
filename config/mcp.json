@@ -1,0 +1,5 @@
+{
+  "init_timeout_sec": 60,
+  "rpc_wait_sec": 600,
+  "rpc_min_floor_sec": 5
+}

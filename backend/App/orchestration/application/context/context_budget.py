@@ -39,7 +39,6 @@ DEFAULT_BUDGET: ContextBudget = ContextBudget(
     reasoning_budget_tokens=4096,
 )
 
-
 _FIELD_SET: frozenset[str] = frozenset(f.name for f in fields(ContextBudget))
 
 _LEGACY_ENV_ALIASES: dict[str, tuple[str, ...]] = {

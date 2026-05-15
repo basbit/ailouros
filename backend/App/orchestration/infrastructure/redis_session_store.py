@@ -11,8 +11,8 @@ from backend.App.orchestration.domain.session import AgentSession, SessionCheckp
 
 logger = logging.getLogger(__name__)
 
-_SESSION_TTL = 604_800   # 7 days
-_CHECKPOINT_TTL = 86_400  # 24 h
+_SESSION_TTL = 604_800
+_CHECKPOINT_TTL = 86_400
 
 
 class RedisSessionStore(SessionStorePort):

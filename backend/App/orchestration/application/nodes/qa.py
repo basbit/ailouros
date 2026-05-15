@@ -284,11 +284,11 @@ def qa_node(state: PipelineState) -> dict[str, Any]:
             fut_to_idx = {executor.submit(_one_qa, i, task): i for i, task in enumerate(tasks)}
             for fut in as_completed(fut_to_idx):
                 i = fut_to_idx[fut]
-                _, qa_task_output, qa_model, qa_provider = fut.result()  # raises on thread error
+                _, qa_task_output, qa_model, qa_provider = fut.result()
                 results[i] = (i, qa_task_output, qa_model, qa_provider)
         for item in results:
             if item is None:
-                continue  # unreachable: all slots filled via as_completed above
+                continue
             _, qa_task_output, qa_model, qa_provider = item
             qa_task_outputs.append(qa_task_output)
     else:

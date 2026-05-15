@@ -95,7 +95,7 @@ class ApprovalPolicy:
                 reason=decision.reason,
                 audit=audit,
             )
-        logger.info(  # INV-1, INV-6
+        logger.info(
             "AutoApproval: step=%s approved=%s rule=%s reason=%s audit=%s",
             step.get("step_id", "unknown"),
             decision.approved,

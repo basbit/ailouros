@@ -9,7 +9,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _VERIFY_ENABLED: bool = False
-_VERIFY_MODEL: str = ""  # empty = use env SWARM_SELF_VERIFY_MODEL
+_VERIFY_MODEL: str = ""
 _VERIFY_MODEL_DEFAULT = os.getenv("SWARM_SELF_VERIFY_MODEL", "claude-haiku-4-5")
 
 
@@ -112,7 +112,7 @@ class SelfVerifier:
 
         passed = len(issues) == 0
         if not passed:
-            logger.info("SelfVerifier: issues found: %s", issues)  # INV-1
+            logger.info("SelfVerifier: issues found: %s", issues)
         return VerifyResult(passed=passed, issues=[str(i) for i in issues])
 
 
@@ -134,13 +134,13 @@ def run_with_self_verify(
         return output
 
     issues_text = "\n".join(f"- {i}" for i in result.issues)
-    logger.info("SelfVerifier: re-running agent due to issues:\n%s", issues_text)  # INV-1
+    logger.info("SelfVerifier: re-running agent due to issues:\n%s", issues_text)
 
     augmented_args = list(args)
     if not (augmented_args and isinstance(augmented_args[0], str)):
         logger.warning(
             "SelfVerifier: cannot inject issues (first arg is not str), returning original output"
-        )  # INV-1
+        )
         return output
 
     original_prompt = augmented_args[0]
@@ -173,5 +173,5 @@ def run_with_self_verify(
 
     rerun_output = agent_fn(*augmented_args, **kwargs)
 
-    logger.info("SelfVerifier: re-run complete, length=%d", len(rerun_output))  # INV-1
+    logger.info("SelfVerifier: re-run complete, length=%d", len(rerun_output))
     return rerun_output

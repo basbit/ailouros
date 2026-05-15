@@ -24,6 +24,7 @@ class Scenario:
     tags: tuple[str, ...]
     quality_checks: tuple[QualityCheckSpec, ...] = field(default_factory=tuple)
     inputs: tuple[InputSpec, ...] = field(default_factory=tuple)
+    step_estimates: tuple[dict[str, Any], ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         if not self.id or not self.id.strip():

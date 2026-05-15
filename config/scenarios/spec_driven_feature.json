@@ -1,0 +1,81 @@
+{
+  "id": "spec_driven_feature",
+  "title": "Spec-Driven Feature",
+  "category": "development",
+  "description": "Spec-first development flow: clarify intent, build a merged spec, generate code from it, then run verifiers before the human gate.",
+  "pipeline_steps": [
+    "clarify_input",
+    "pm",
+    "ba",
+    "architect",
+    "spec_merge",
+    "review_spec",
+    "docs_validator",
+    "dev",
+    "review_dev",
+    "code_validator",
+    "qa",
+    "human_qa"
+  ],
+  "step_estimates": [
+    {"step_id": "clarify_input", "estimated_duration_sec": 30, "essential": true},
+    {"step_id": "pm", "estimated_duration_sec": 60, "essential": true},
+    {"step_id": "ba", "estimated_duration_sec": 90, "essential": true},
+    {"step_id": "architect", "estimated_duration_sec": 120, "essential": true},
+    {"step_id": "spec_merge", "estimated_duration_sec": 60, "essential": true},
+    {"step_id": "review_spec", "estimated_duration_sec": 45, "essential": false},
+    {"step_id": "docs_validator", "estimated_duration_sec": 20, "essential": true},
+    {"step_id": "dev", "estimated_duration_sec": 240, "essential": true},
+    {"step_id": "review_dev", "estimated_duration_sec": 60, "essential": false},
+    {"step_id": "code_validator", "estimated_duration_sec": 30, "essential": false},
+    {"step_id": "qa", "estimated_duration_sec": 120, "essential": true},
+    {"step_id": "human_qa", "estimated_duration_sec": 30, "essential": true}
+  ],
+  "default_gates": ["human_qa"],
+  "expected_artifacts": [
+    "pipeline.json",
+    "agents/pm.txt",
+    "agents/architect.txt",
+    "agents/dev.txt",
+    "agents/qa.txt"
+  ],
+  "required_tools": ["workspace_write"],
+  "workspace_write_default": true,
+  "recommended_models": {
+    "planner": "strong",
+    "review": "fast",
+    "dev": "strong"
+  },
+  "agent_config_defaults": {},
+  "tags": ["development", "spec_driven", "writes_files", "flagship"],
+  "inputs": [
+    {
+      "key": "prompt",
+      "label": "Feature description",
+      "hint": "Describe what to build, the acceptance criteria, and constraints.",
+      "required": true
+    },
+    {
+      "key": "workspace_root",
+      "label": "Workspace path",
+      "hint": "Path to the target repository on this machine.",
+      "required": true
+    }
+  ],
+  "quality_checks": [
+    {
+      "id": "core_artifacts_present",
+      "type": "artifact_count",
+      "severity": "error",
+      "blocking": true,
+      "config": {"min": 4}
+    },
+    {
+      "id": "dev_output_substantive",
+      "type": "agent_output_min_chars",
+      "severity": "error",
+      "blocking": false,
+      "config": {"agent": "dev", "min_chars": 200}
+    }
+  ]
+}

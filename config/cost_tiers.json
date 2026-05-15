@@ -1,0 +1,23 @@
+{
+  "tiers": {
+    "cheap": ["claude-haiku-4-5-20251001", "gpt-4o-mini", "qwen2.5:0.5b-instruct-q4_K_M", "ollama/qwen2.5-coder:1.5b"],
+    "mid":   ["claude-sonnet-4-6", "gpt-4o", "ollama/qwen2.5-coder:14b"],
+    "flagship": ["claude-opus-4-7", "gpt-4-turbo"]
+  },
+  "role_policies": {
+    "clarify_input":  {"allowed_tiers": ["cheap", "mid"],       "preferred_tier": "cheap"},
+    "code_verifier":  {"allowed_tiers": ["cheap"],              "preferred_tier": "cheap"},
+    "drift_auditor":  {"allowed_tiers": ["cheap"],              "preferred_tier": "cheap"},
+    "spec_drafter":   {"allowed_tiers": ["mid", "flagship"],    "preferred_tier": "mid"},
+    "spec_reviewer":  {"allowed_tiers": ["flagship"],           "preferred_tier": "flagship"},
+    "codegen_agent":  {"allowed_tiers": ["mid", "flagship"],    "preferred_tier": "mid"},
+    "pm":             {"allowed_tiers": ["mid", "flagship"],    "preferred_tier": "mid"},
+    "ba":             {"allowed_tiers": ["mid", "flagship"],    "preferred_tier": "mid"},
+    "architect":      {"allowed_tiers": ["flagship"],           "preferred_tier": "flagship"},
+    "dev":            {"allowed_tiers": ["mid", "flagship"],    "preferred_tier": "mid"},
+    "qa":             {"allowed_tiers": ["cheap", "mid"],       "preferred_tier": "mid"},
+    "review_pm":      {"allowed_tiers": ["mid"],                "preferred_tier": "mid"},
+    "review_ba":      {"allowed_tiers": ["mid"],                "preferred_tier": "mid"},
+    "review_dev":     {"allowed_tiers": ["mid", "flagship"],    "preferred_tier": "mid"}
+  }
+}

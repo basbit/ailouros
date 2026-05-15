@@ -8,7 +8,7 @@ from typing import Any
 @dataclass(frozen=True)
 class NodeDef:
     name: str
-    fn: Any  # Callable[[state], dict] — typed as Any to avoid runtime import
+    fn: Any
 
 
 @dataclass(frozen=True)
@@ -20,8 +20,8 @@ class EdgeDef:
 @dataclass(frozen=True)
 class ConditionalEdgeDef:
     from_node: str
-    router: Any  # Callable[[state], str]
-    route_map: dict  # dict[str, str]
+    router: Any
+    route_map: dict
 
 
 @dataclass

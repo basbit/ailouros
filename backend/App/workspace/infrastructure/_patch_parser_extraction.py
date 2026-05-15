@@ -5,7 +5,6 @@ from typing import Any
 
 _PAT_BASH_FENCE = re.compile(r"```(?:bash|sh)\n(.*?)```", re.DOTALL)
 
-
 _SWARM_ACTION_MARKERS: tuple[str, ...] = (
     "<swarm_file",
     "<swarm_patch",

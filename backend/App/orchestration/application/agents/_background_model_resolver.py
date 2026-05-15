@@ -8,7 +8,6 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
-
 _LEGACY_ANTHROPIC_BACKGROUND_MODEL = "claude-haiku-4-5"
 _MODEL_IDS_CACHE_TTL_SEC = float(
     os.getenv("SWARM_BACKGROUND_AGENT_MODEL_CACHE_TTL_SEC", "60")

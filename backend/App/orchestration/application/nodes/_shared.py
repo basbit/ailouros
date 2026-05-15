@@ -126,10 +126,6 @@ __all__ = [
 def _repo_memory_facts(
     repo_evidence: Sequence[Mapping[str, Any]] | list[dict[str, Any]],
 ) -> list[str]:
-    """Extract verified-facts lines from repo-evidence artefacts for memory blocks.
-
-    Thin wrapper over :func:`shared.application.memory_artifacts.repo_evidence_verified_facts`.
-    """
     from backend.App.shared.application.memory_artifacts import (
         repo_evidence_verified_facts,
     )
@@ -140,11 +136,6 @@ def _repo_memory_facts(
 def _artifact_memory_lines(
     raw: str, *, max_items: int = 4, max_chars: int = 180
 ) -> list[str]:
-    """BA/Architect-style line compaction.
-
-    Skips empty lines, markdown fences, and JSON-looking lines. Delegates to
-    :class:`shared.application.memory_artifacts.MemoryArtifactBuilder`.
-    """
     from backend.App.shared.application.memory_artifacts import MemoryArtifactBuilder
 
     return MemoryArtifactBuilder(max_items=max_items, max_chars=max_chars).compact(raw)

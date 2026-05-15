@@ -201,7 +201,7 @@ def validate_tool_use(
     tools_policy: Optional[dict[str, Any]],
 ) -> None:
     if not tools_policy:
-        return  # No policy -> all allowed
+        return
 
     tools_enabled = tools_policy.get("tools_enabled", True)
     if not tools_enabled:

@@ -6,6 +6,7 @@ from typing import Any, Optional, cast
 
 from backend.App.orchestration.infrastructure.agents.base_agent import BaseAgent
 from backend.App.orchestration.domain.exceptions import PipelineCancelled
+from backend.App.shared.domain.exceptions import OperationCancelled
 from backend.App.orchestration.application.agents.agent_runner import (
     run_agent_with_boundary as _canonical_run_agent_with_boundary,
     validate_agent_boundary as _canonical_validate_agent_boundary,
@@ -64,6 +65,8 @@ def run_agent_with_optional_mcp(
             return output, used_model, used_provider
         except PipelineCancelled:
             raise
+        except OperationCancelled as exc:
+            raise PipelineCancelled(detail=str(exc)) from exc
         except Exception as exc:
             return _retry_or_fallback_after_mcp_error(
                 state=state,

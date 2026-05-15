@@ -85,7 +85,7 @@ class RetryPipelineFromFailedStepUseCase:
     def __init__(
         self,
         task_store: TaskStorePort,
-        pipeline_runner: Any,  # callable(partial_state, from_step, agent_config, ...) -> dict
+        pipeline_runner: Any,
     ) -> None:
         self._task_store = task_store
         self._pipeline_runner = pipeline_runner

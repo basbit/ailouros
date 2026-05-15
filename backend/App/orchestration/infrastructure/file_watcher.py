@@ -15,7 +15,7 @@ _POLL_INTERVAL = float(os.getenv("SWARM_BACKGROUND_AGENT_POLL_INTERVAL", "5.0"))
 
 @dataclass
 class FileEvent:
-    event_type: str  # "created" | "modified" | "deleted"
+    event_type: str
     path: str
     timestamp: float
 

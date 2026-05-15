@@ -28,7 +28,7 @@ class TraceEvent:
     task_id: str
     step: str
     event_type: EventType
-    timestamp: str                          # ISO-8601
+    timestamp: str
     data: dict[str, Any] = field(default_factory=dict)
     parent_event_id: str | None = None
 
@@ -38,5 +38,5 @@ class TraceSession:
     session_id: str
     task_id: str
     run_id: str
-    started_at: str                         # ISO-8601
+    started_at: str
     events: list[TraceEvent] = field(default_factory=list)

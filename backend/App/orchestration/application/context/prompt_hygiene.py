@@ -7,7 +7,6 @@ from typing import Pattern
 
 DEFAULT_MAX_HEAD_CHARS = 4096
 
-
 _VOLATILE_PATTERNS: tuple[tuple[str, Pattern[str]], ...] = (
     (
         "iso_datetime",
@@ -50,9 +49,9 @@ _VOLATILE_PATTERNS: tuple[tuple[str, Pattern[str]], ...] = (
 @dataclass(frozen=True)
 class VolatileMatch:
 
-    label: str  # stable rule name (e.g. ``iso_datetime``)
-    offset: int  # 0-based character index of the match inside the head slice
-    snippet: str  # up to 80 chars around the match, for humans
+    label: str
+    offset: int
+    snippet: str
 
 
 def detect_volatile_head(
@@ -91,7 +90,7 @@ def assert_prompt_head_stable(
         f"{context}: volatile content in first {max_head_chars} chars "
         f"(breaks local-loader slot cache). Move it below or strip it:",
     ]
-    for h in hits[:10]:  # cap output — massive lists aren't useful
+    for h in hits[:10]:
         lines.append(f"  - {h.label} @ offset {h.offset}: {h.snippet!r}")
     raise AssertionError("\n".join(lines))
 

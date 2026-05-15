@@ -11,7 +11,6 @@ from typing import Any, Iterable
 
 logger = logging.getLogger(__name__)
 
-
 _BACKUP_DIRNAME = ".swarm_backups"
 _MANIFEST_NAME = "changes_manifest.json"
 

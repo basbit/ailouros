@@ -11,7 +11,7 @@ from backend.App.orchestration.domain.trace import EventType, TraceEvent, TraceS
 
 logger = logging.getLogger(__name__)
 
-_TTL_SECONDS = 86_400  # 24 h
+_TTL_SECONDS = 86_400
 
 
 class RedisTraceCollector(TraceCollectorPort):

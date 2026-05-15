@@ -24,9 +24,9 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
-  # Qdrant: vector database
+  # Qdrant: vector database (pinned — see docs/operations/RUNBOOK.md before bumping)
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.12.4
     container_name: AIlourOS-qdrant
     restart: unless-stopped
     ports:

@@ -41,14 +41,6 @@ def count_tokens(text: str, model: str = "") -> int:
 
 
 def estimate_tokens_by_ratio(text: str, *, chars_per_token: int = 3) -> int:
-    """Cheap char-based token estimate — used where tiktoken is too slow / heavy.
-
-    ``count_tokens`` uses this with ``chars_per_token=3`` (pessimistic / strict,
-    so we don't overflow model context). Callers that want a *lenient* budget
-    (e.g. MCP preflight trims) pass ``chars_per_token=4`` instead. Keeping the
-    helper here means the ratio choice is documented in one place instead of
-    being sprinkled across the tool loop.
-    """
     return max(1, len(text) // max(1, chars_per_token))
 
 

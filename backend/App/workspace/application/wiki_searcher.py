@@ -244,9 +244,10 @@ def _build_index(wiki_root: Path, provider: EmbeddingProvider) -> _Index:
 
     vectors: Optional[list[list[float]]] = None
     if chunks and provider.name != "null":
+        from backend.App.integrations.infrastructure.embedding_service import EmbeddingError
         try:
             raw_vectors = provider.embed([_embed_text_for_chunk(chunk) for chunk in chunks])
-        except Exception as exc:
+        except EmbeddingError as exc:
             logger.warning("wiki_searcher: embed failed (%s) — using token fallback", exc)
             raw_vectors = []
         if raw_vectors and any(vec for vec in raw_vectors):

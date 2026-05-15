@@ -390,7 +390,7 @@ def test_run_step_with_stream_progress_basic():
         "backend.App.orchestration.infrastructure.step_stream_executor._pipeline_should_cancel",
         return_value=False,
     ), patch(
-        "backend.App.orchestration.infrastructure.step_stream_executor._step_heartbeat_interval_sec",
+        "backend.App.orchestration.infrastructure.step_stream_executor._step_heartbeat_initial_sec",
         return_value=100.0,
     ):
         list(_executor.run("pm", step_fn, state))
@@ -430,7 +430,7 @@ def test_run_step_with_stream_progress_cancel_raises():
         "backend.App.orchestration.infrastructure.step_stream_executor._pipeline_should_cancel",
         side_effect=should_cancel,
     ), patch(
-        "backend.App.orchestration.infrastructure.step_stream_executor._step_heartbeat_interval_sec",
+        "backend.App.orchestration.infrastructure.step_stream_executor._step_heartbeat_initial_sec",
         return_value=100.0,
     ):
         with pytest.raises(PipelineCancelled):

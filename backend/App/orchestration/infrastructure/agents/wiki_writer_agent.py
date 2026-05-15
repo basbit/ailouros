@@ -27,9 +27,7 @@ tags: ["<tag1>", "<tag2>"]
 links: []
 ---
 
-
 <2-5 sentence summary of what happened or what this article covers>
-
 
 - <bullet per significant change or finding>
 

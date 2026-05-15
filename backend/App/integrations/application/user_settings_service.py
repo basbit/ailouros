@@ -12,15 +12,12 @@ logger = logging.getLogger(__name__)
 
 _MASKED = "***"
 
-# Secret fields: masked on GET, stored as env vars; empty string on GET if unset.
 _SECRET_ENV_KEYS: dict[str, str] = {
     "tavily_api_key": "TAVILY_API_KEY",
     "exa_api_key": "EXA_API_KEY",
     "scrapingdog_api_key": "SCRAPINGDOG_API_KEY",
 }
 
-# Non-secret global automation & quality settings — persisted to disk so they
-# survive restarts and apply across all projects.
 _AUTOMATION_BOOL_FIELDS: tuple[str, ...] = (
     "swarm_self_verify",
     "swarm_auto_retry",
@@ -93,7 +90,6 @@ def _normalized_automation(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def masked_user_settings() -> dict[str, Any]:
-    """Return user settings for UI: secrets masked, automation values verbatim."""
     result: dict[str, Any] = {}
     for key, env_var in _SECRET_ENV_KEYS.items():
         result[key] = _MASKED if os.environ.get(env_var) else ""
@@ -105,14 +101,12 @@ def masked_user_settings() -> dict[str, Any]:
 def update_user_settings(data: dict[str, Any]) -> dict[str, Any]:
     updated: list[str] = []
 
-    # Secrets go to env (not persisted to disk to avoid plaintext on-disk).
     for key, env_var in _SECRET_ENV_KEYS.items():
         value = data.get(key, "")
         if isinstance(value, str) and value.strip() and value != _MASKED:
             os.environ[env_var] = value.strip()
             updated.append(key)
 
-    # Automation fields persist to disk so they survive restarts.
     persisted = _read_persisted()
     persisted_changed = False
     for key in _AUTOMATION_BOOL_FIELDS:
@@ -139,13 +133,8 @@ def update_user_settings(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def get_persisted_automation_settings() -> dict[str, Any]:
-    """Load persisted automation settings — used at run-time to merge into
-    the agent_config so the pipeline uses global values regardless of what
-    the per-project settings send."""
     return _normalized_automation(_read_persisted())
 
 
 def load_and_apply_user_settings() -> None:
-    """Called at app startup; nothing to eagerly apply — env secrets stay as-is
-    and automation settings are read lazily via `get_persisted_automation_settings`."""
     pass

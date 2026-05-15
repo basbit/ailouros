@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 class Message:
     id: str
     from_agent: str
-    to_agent: str         # "__broadcast__" for broadcasts
+    to_agent: str
     message: str
     msg_type: str
     timestamp: str

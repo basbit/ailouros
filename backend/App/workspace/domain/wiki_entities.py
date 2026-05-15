@@ -4,7 +4,6 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-
 _WORD_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9_-]{2,}")
 _HEADING_PATTERN = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*$", re.MULTILINE)
 

@@ -168,3 +168,108 @@ def run_pipeline_stream_resume(
         return ring_final
 
     return cast(PipelineState, state)
+
+
+def run_pipeline_stream_resume_clarification(
+    partial_state: PipelineState,
+    pipeline_steps: list[str],
+    paused_step: str,
+    human_answers: str,
+    cancel_event: Optional[threading.Event] = None,
+) -> Generator[dict[str, Any], None, PipelineState]:
+    from backend.App.orchestration.application.routing.pipeline_graph import (
+        _migrate_legacy_pm_tasks_state,
+        _pipeline_should_cancel,
+        _resolve_pipeline_step,
+        _state_snapshot,
+        validate_pipeline_steps,
+    )
+    from backend.App.orchestration.application.pipeline.pipeline_display import (
+        pipeline_step_in_progress_message,
+    )
+
+    resume_agent_config_raw = partial_state.get("agent_config")
+    resume_agent_config: dict[str, Any] = (
+        resume_agent_config_raw if isinstance(resume_agent_config_raw, dict) else {}
+    )
+    validate_pipeline_steps(pipeline_steps, resume_agent_config)
+
+    try:
+        step_index = pipeline_steps.index(paused_step)
+    except ValueError as exc:
+        raise ValueError(
+            f"Paused step {paused_step!r} not found in pipeline_steps"
+        ) from exc
+
+    state: dict[str, Any] = copy.deepcopy(cast(dict[str, Any], partial_state))
+    _migrate_legacy_pm_tasks_state(state)
+    machine = PipelineMachine.from_dict(state.get("pipeline_machine") or {})
+    if cancel_event is not None:
+        state["_pipeline_cancel_event"] = cancel_event
+    state["_pipeline_step_ids"] = list(pipeline_steps)
+    answers_map = dict(state.get("clarification_answers") or {})
+    answers_map[paused_step] = human_answers
+    state["clarification_answers"] = answers_map
+    sync_pipeline_machine(state, machine)
+
+    for step_id in pipeline_steps[step_index:]:
+        if _pipeline_should_cancel(state):
+            raise PipelineCancelled(
+                "pipeline cancelled (client disconnect or server shutdown)"
+            )
+        prepare_pipeline_machine_for_step(state, machine, step_id)
+        _, step_func = _resolve_pipeline_step(step_id, resume_agent_config)
+        yield {
+            "agent": step_id,
+            "status": "in_progress",
+            "message": pipeline_step_in_progress_message(step_id, state),
+        }
+        try:
+            yield from _step_executor.run(step_id, step_func, state)
+        except HumanApprovalRequired as exc:
+            from backend.App.orchestration.application.pipeline.pipeline_runtime_support import (
+                finalize_metrics_best_effort,
+            )
+            finalize_metrics_best_effort(cast(PipelineState, state))
+            exc.partial_state = _state_snapshot(state)
+            if not exc.resume_pipeline_step:
+                exc.resume_pipeline_step = step_id
+            raise
+        except PipelineCancelled:
+            raise
+        except Exception as exc:
+            from backend.App.orchestration.application.pipeline.pipeline_runtime_support import (
+                finalize_metrics_best_effort,
+            )
+            finalize_metrics_best_effort(cast(PipelineState, state))
+            setattr(exc, "_partial_state", _state_snapshot(state))
+            setattr(exc, "_failed_step", step_id)
+            raise
+        yield _step_extractor.emit_completed(step_id, state)
+        try:
+            yield from run_post_step_enforcement(
+                state,
+                machine,
+                step_id,
+                resume_agent_config,
+                _resolve_pipeline_step,
+                _step_executor.run,
+                _step_extractor.emit_completed,
+            )
+        except (HumanApprovalRequired, PipelineCancelled):
+            raise
+        except Exception as enforcement_exception:
+            from backend.App.orchestration.application.pipeline.pipeline_runtime_support import (
+                finalize_metrics_best_effort,
+            )
+            finalize_metrics_best_effort(cast(PipelineState, state))
+            setattr(enforcement_exception, "_partial_state", _state_snapshot(state))
+            setattr(enforcement_exception, "_failed_step", step_id)
+            raise
+
+    finalize_pipeline_machine(state, machine)
+    from backend.App.orchestration.application.pipeline.pipeline_runtime_support import (
+        finalize_pipeline_metrics,
+    )
+    finalize_pipeline_metrics(cast(PipelineState, state))
+    return cast(PipelineState, state)

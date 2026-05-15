@@ -69,6 +69,64 @@ def runtime_telemetry_payload(task_id: str, artifacts_root: Path) -> dict[str, A
     return build_runtime_telemetry(agent_config, workspace_meta)
 
 
+_RESUMABLE_TASK_STATUSES = frozenset({"failed", "cancelled", "awaiting_human"})
+
+
+def compute_resume_options(
+    task_id: str,
+    task_data: dict[str, Any],
+    artifacts_root: Path,
+) -> dict[str, Any]:
+    status = str(task_data.get("status") or "").strip().lower()
+    task_dir = artifacts_root / task_id
+    snapshot = _read_pipeline_snapshot(task_dir)
+    pipeline_path_exists = (task_dir / "pipeline.json").is_file()
+    base = {
+        "task_id": task_id,
+        "can_resume": False,
+        "resume_step": "",
+        "reason": "not_resumable",
+        "task_status": status,
+        "pipeline_snapshot_present": pipeline_path_exists,
+    }
+    if not snapshot:
+        return base
+    clarification = snapshot.get("clarification_pause")
+    if isinstance(clarification, dict):
+        step_id = str(clarification.get("step_id") or "")
+        if step_id:
+            base.update(
+                can_resume=True,
+                resume_step=step_id,
+                reason="clarification_pause",
+            )
+            return base
+    resume_step = str(snapshot.get("resume_from_step") or "").strip()
+    failed_step = str(snapshot.get("failed_step") or "").strip()
+    if resume_step:
+        partial = snapshot.get("partial_state")
+        base.update(
+            can_resume=isinstance(partial, dict) and bool(partial),
+            resume_step=resume_step,
+            reason="human_gate" if status == "awaiting_human" else "partial_state",
+        )
+        return base
+    if failed_step:
+        base.update(
+            can_resume=status in _RESUMABLE_TASK_STATUSES,
+            resume_step=failed_step,
+            reason="failed_step",
+        )
+        return base
+    if status in _RESUMABLE_TASK_STATUSES and snapshot.get("partial_state"):
+        return base | {
+            "can_resume": True,
+            "resume_step": "",
+            "reason": "partial_state_no_step",
+        }
+    return base
+
+
 def _read_pipeline_snapshot(task_dir: Path) -> dict[str, Any]:
     pipeline_path = task_dir / "pipeline.json"
     if not pipeline_path.is_file():

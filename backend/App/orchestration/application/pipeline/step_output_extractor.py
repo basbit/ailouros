@@ -9,7 +9,6 @@ from backend.App.orchestration.application.nodes.custom import _CROLE_PREFIX
 
 logger = logging.getLogger(__name__)
 
-
 _AGENT_STATE_KEYS: dict[str, tuple[str, str, str]] = {
     "clarify_input": ("clarify_input_output", "clarify_input_model", "clarify_input_provider"),
     "pm": ("pm_output", "pm_model", "pm_provider"),

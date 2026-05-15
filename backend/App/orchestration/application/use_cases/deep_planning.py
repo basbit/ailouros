@@ -56,8 +56,8 @@ def _deep_planning_default_llm_kwargs() -> dict[str, Any]:
 class RiskItem:
     id: str
     description: str
-    likelihood: str  # "low" | "medium" | "high"
-    impact: str      # "low" | "medium" | "high"
+    likelihood: str
+    impact: str
     mitigation: str
 
 
@@ -111,12 +111,12 @@ class DeepPlanner:
 
         plan = DeepPlan(task_id=task_id, task_goal=task_spec)
         _kw = dict(llm_kwargs or {})
-        logger.info("DeepPlanner: starting 5-stage analysis for task=%s", task_id)  # INV-1
+        logger.info("DeepPlanner: starting 5-stage analysis for task=%s", task_id)
 
         try:
             from backend.App.integrations.infrastructure.llm.client import chat_completion_text
 
-            logger.info("DeepPlanner: stage 1/5 — scan")  # INV-1
+            logger.info("DeepPlanner: stage 1/5 — scan")
             workspace_index = self._build_workspace_index(workspace_root)
             scan_prompt = (
                 f"You are analyzing a software project for task planning.\n"
@@ -129,7 +129,7 @@ class DeepPlanner:
             plan.scan_summary = self._call_llm(chat_completion_text, scan_prompt, _kw)
             plan.raw_responses["scan"] = plan.scan_summary
 
-            logger.info("DeepPlanner: stage 2/5 — risks")  # INV-1
+            logger.info("DeepPlanner: stage 2/5 — risks")
             risks_prompt = (
                 f"Task: {task_spec}\n"
                 f"Context: {plan.scan_summary[:1000]}\n\n"
@@ -142,7 +142,7 @@ class DeepPlanner:
             plan.raw_responses["risks"] = risks_raw
             plan.risks = self._parse_risks(risks_raw)
 
-            logger.info("DeepPlanner: stage 3/5 — alternatives")  # INV-1
+            logger.info("DeepPlanner: stage 3/5 — alternatives")
             alts_prompt = (
                 f"Task: {task_spec}\n"
                 f"Risks: {json.dumps([r.description for r in plan.risks[:3]])}\n\n"
@@ -154,7 +154,7 @@ class DeepPlanner:
             plan.raw_responses["alternatives"] = alts_raw
             plan.alternatives = self._parse_alternatives(alts_raw)
 
-            logger.info("DeepPlanner: stage 4/5 — milestones")  # INV-1
+            logger.info("DeepPlanner: stage 4/5 — milestones")
             plan_prompt = (
                 f"Task: {task_spec}\n"
                 f"Context: {plan.scan_summary[:800]}\n\n"
@@ -167,14 +167,14 @@ class DeepPlanner:
             plan.raw_responses["plan"] = plan_raw
             self._parse_plan(plan, plan_raw)
 
-            logger.info(  # INV-1, INV-4
+            logger.info(
                 "DeepPlanner: stage 5/5 — awaiting human gate for task=%s "
                 "(risks=%d alternatives=%d milestones=%d)",
                 task_id, len(plan.risks), len(plan.alternatives), len(plan.milestones),
             )
 
         except Exception as exc:
-            logger.error("DeepPlanner: analysis failed for task=%s: %s", task_id, exc)  # INV-1
+            logger.error("DeepPlanner: analysis failed for task=%s: %s", task_id, exc)
             plan.error = str(exc)
 
         return plan

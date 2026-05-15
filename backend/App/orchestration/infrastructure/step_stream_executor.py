@@ -21,16 +21,42 @@ from backend.App.orchestration.domain.exceptions import PipelineCancelled
 logger = logging.getLogger(__name__)
 
 
-def _step_heartbeat_interval_sec() -> float:
+def _observability_config() -> dict[str, Any]:
+    from backend.App.shared.infrastructure.app_config_load import load_app_config_json
+
+    return load_app_config_json("observability.json")
+
+
+def _step_heartbeat_initial_sec() -> float:
     raw = os.getenv("SWARM_STEP_HEARTBEAT_SEC", "").strip()
-    if not raw:
-        return 15.0
-    try:
-        val = float(raw)
-    except ValueError:
-        logger.warning("SWARM_STEP_HEARTBEAT_SEC=%r is not a number, using 15s", raw)
-        return 15.0
-    return max(0.0, val)
+    if raw:
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            logger.warning("SWARM_STEP_HEARTBEAT_SEC=%r is not a number", raw)
+    value = _observability_config().get("step_heartbeat_initial_sec", 30)
+    if not isinstance(value, (int, float)) or value < 0:
+        raise RuntimeError("observability.json: step_heartbeat_initial_sec must be >= 0")
+    return float(value)
+
+
+def _step_heartbeat_max_sec() -> float:
+    value = _observability_config().get("step_heartbeat_max_sec", 300)
+    if not isinstance(value, (int, float)) or value <= 0:
+        raise RuntimeError("observability.json: step_heartbeat_max_sec must be > 0")
+    return float(value)
+
+
+def _step_heartbeat_growth_factor() -> float:
+    value = _observability_config().get("step_heartbeat_growth_factor", 2.0)
+    if not isinstance(value, (int, float)) or value < 1.0:
+        raise RuntimeError("observability.json: step_heartbeat_growth_factor must be >= 1.0")
+    return float(value)
+
+
+def _next_heartbeat_interval(current: float) -> float:
+    grown = current * _step_heartbeat_growth_factor()
+    return min(grown, _step_heartbeat_max_sec())
 
 
 def _format_elapsed_wall(seconds: float) -> str:
@@ -66,9 +92,11 @@ class StepStreamExecutor:
 
             pool = ThreadPoolExecutor(max_workers=1)
             fut = pool.submit(work)
-            _heartbeat_sec = _step_heartbeat_interval_sec()
+            _heartbeat_sec = _step_heartbeat_initial_sec()
+            _heartbeat_max = _step_heartbeat_max_sec()
             _start_ts = time.monotonic()
             _last_event_ts = _start_ts
+            _last_heartbeat_ts = _start_ts
             while True:
                 any_event = False
                 while True:
@@ -92,7 +120,7 @@ class StepStreamExecutor:
                     _last_event_ts = time.monotonic()
                 if _heartbeat_sec > 0 and not fut.done():
                     _now = time.monotonic()
-                    if _now - _last_event_ts >= _heartbeat_sec:
+                    if _now - _last_heartbeat_ts >= _heartbeat_sec and _now - _last_event_ts >= _heartbeat_sec:
                         elapsed = _now - _start_ts
                         yield {
                             "agent": step_id,
@@ -102,8 +130,14 @@ class StepStreamExecutor:
                                 f"{_format_elapsed_wall(elapsed)})"
                             ),
                             "elapsed_sec": round(elapsed, 1),
+                            "next_check_in_sec": round(
+                                min(_heartbeat_max, _heartbeat_sec * _step_heartbeat_growth_factor()),
+                                1,
+                            ),
                         }
+                        _last_heartbeat_ts = _now
                         _last_event_ts = _now
+                        _heartbeat_sec = _next_heartbeat_interval(_heartbeat_sec)
                 if _pipeline_should_cancel(state):
                     pool.shutdown(wait=False, cancel_futures=True)
                     pool = None

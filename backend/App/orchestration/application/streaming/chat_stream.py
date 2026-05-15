@@ -36,10 +36,10 @@ def stream_chat_chunks(
     cancel_event: Optional[threading.Event] = None,
     resolved_scenario: Optional[ResolvedScenario] = None,
 ) -> Generator[str, None, None]:
-    from backend.App.integrations.infrastructure.observability.logging_config import set_task_id
     from backend.App.orchestration.application.use_cases.tasks import pipeline_workspace_parts_from_meta
+    from backend.App.shared.infrastructure.task_context import bind_active_task
 
-    set_task_id(task_id)
+    bind_active_task(task_id)
     now = int(time.time())
     task_dir = artifacts_root / task_id
     agents_dir = task_dir / "agents"

@@ -19,7 +19,7 @@ _REDIS_URL = (
     or os.getenv("REDIS_URL")
     or "redis://localhost:6379/0"
 ).strip()
-_TTL = 3600  # keys expire in 1 hour
+_TTL = 3600
 
 _redis_client: Any = None
 _redis_unavailable = False

@@ -112,11 +112,6 @@ class MCPToolLoop:
         )
         return handle_wiki_tool(name, args)
 
-    # chars/token ratios used for the preflight vs hard-budget trims. See
-    # ``integrations.infrastructure.llm.token_counter.estimate_tokens_by_ratio``
-    # for the canonical helper — the ratios are intentionally different
-    # (lenient preflight / strict hard-budget) so switching to count_tokens()
-    # outright would change trimming behaviour.
     _PREFLIGHT_CHARS_PER_TOKEN = 4
     _HARD_BUDGET_CHARS_PER_TOKEN = 3
 
@@ -248,9 +243,11 @@ class MCPToolLoop:
         model_context_size = _model_context_size_tokens()
         messages = self._preflight_trim_messages(messages, tools, model_context_size)
 
+        from backend.App.shared.domain.exceptions import OperationCancelled
+
         for _ in range(max_rounds):
             if cancel_event is not None and cancel_event.is_set():
-                raise RuntimeError("MCP: cancelled (pipeline cancel)")
+                raise OperationCancelled(source="mcp", detail="tool-loop")
             if history_compress_threshold > 0:
                 messages = _compress_tool_history(messages, history_compress_threshold)
             messages = _truncate_oldest_tool_results(messages, context_budget)

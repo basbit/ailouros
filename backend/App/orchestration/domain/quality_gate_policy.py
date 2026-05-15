@@ -17,7 +17,6 @@ VERDICT_APPROVED = "APPROVED"
 
 _invalid_response_shape_count: int = 0
 
-
 VERDICT_RE = re.compile(
     r"VERDICT\b[\s*_`]*:[\s*_`]*([A-Z_][A-Z0-9_]*)",
     re.IGNORECASE,

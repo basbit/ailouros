@@ -39,7 +39,7 @@ class ResumeAfterHumanApprovalUseCase:
     def __init__(
         self,
         task_store: TaskStorePort,
-        pipeline_runner: Any,  # callable(partial_state, resume_from_step, feedback, ...) -> dict
+        pipeline_runner: Any,
     ) -> None:
         self._task_store = task_store
         self._pipeline_runner = pipeline_runner

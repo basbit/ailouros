@@ -9,7 +9,6 @@ from typing import Any, Iterable
 
 logger = logging.getLogger(__name__)
 
-
 _MAX_PIPELINE_FILES = 200
 _MAX_BYTES_PER_FILE = 5_000_000
 

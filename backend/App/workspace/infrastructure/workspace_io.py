@@ -257,17 +257,10 @@ class _UdiffAction:
 
 _Action = Union[_FileWriteAction, _PatchAction, _ShellAction, _UdiffAction]
 
-
-# Backwards-compatible private aliases: canonical impls live in
-# backend.App.shared.domain.validators. External imports inside the workspace
-# domain still reference these names (e.g. patch_parser, project_settings), so
-# we keep the aliases until those call sites are updated.
 _is_under = is_under
 
 
 def _assert_under_workspace(path: Path, workspace_root: "Path | str") -> None:
-    # Thin workspace-specific wrapper over shared.assert_safe_path that keeps
-    # the "outside workspace" wording consumed by workspace-domain tests.
     resolved = path.resolve()
     root_resolved = Path(workspace_root).resolve()
     if not is_under(root_resolved, resolved):

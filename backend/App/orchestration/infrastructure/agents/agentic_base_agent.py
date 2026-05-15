@@ -146,7 +146,7 @@ class AgenticBaseAgent(BaseAgent):
 
         client = make_openai_client(base_url=cfg.base_url, api_key=cfg.api_key)
         final_text = ""
-        msg = None  # set each iteration; referenced in the `else` branch
+        msg = None
 
         for _round in range(max_rounds + 1):
             self.tool_rounds_used = _round
@@ -223,10 +223,6 @@ class AgenticBaseAgent(BaseAgent):
             messages.append(_assistant_msg)
             for tc in tool_calls:
                 tool_name = tc.function.name
-                # Canonical parser handles nested/double-encoded JSON arg values
-                # that Qwen/DeepSeek/Gemini sometimes emit. Failures silently
-                # collapse to ``{}`` just like before — the agent loop keeps
-                # moving and the tool receives an empty-args call.
                 tool_input = parse_tool_call_args(tc.function.arguments)
                 result_str = self._execute_tool(tool_name, tool_input, _progress_queue)
                 messages.append({

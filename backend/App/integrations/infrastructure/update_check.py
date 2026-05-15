@@ -144,7 +144,7 @@ def run_update_check_in_background() -> None:
     def _worker() -> None:
         try:
             check_for_updates(fetch=True)
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception as exc:
             logger.debug("update_check background worker raised: %s", exc)
 
     threading.Thread(target=_worker, daemon=True, name="swarm-update-check").start()

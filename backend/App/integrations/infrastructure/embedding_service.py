@@ -10,6 +10,10 @@ from backend.App.shared.infrastructure.cache import ThreadSafeLRUDict, hash_cach
 logger = logging.getLogger(__name__)
 
 
+class EmbeddingError(RuntimeError):
+    pass
+
+
 class EmbeddingProvider(Protocol):
     @property
     def name(self) -> str:
@@ -72,8 +76,8 @@ class LocalSentenceTransformersProvider:
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
+        self._ensure_loaded()
         try:
-            self._ensure_loaded()
             vectors = self._model.encode(
                 texts,
                 batch_size=_batch_size(),
@@ -81,14 +85,11 @@ class LocalSentenceTransformersProvider:
                 convert_to_numpy=True,
                 normalize_embeddings=True,
             )
-            return [list(map(float, v)) for v in vectors]
         except Exception as exc:
-            logger.warning(
-                "embedding_service: local provider embed failed (%s) — "
-                "returning empty vectors so callers fall back to keyword search",
-                exc,
-            )
-            return [[] for _ in texts]
+            raise EmbeddingError(
+                f"local sentence-transformers embed failed: {exc}"
+            ) from exc
+        return [list(map(float, v)) for v in vectors]
 
 
 class OpenAIEmbeddingsProvider:
@@ -141,13 +142,9 @@ class OpenAIEmbeddingsProvider:
                     input=chunk,
                 )
             except Exception as exc:
-                logger.warning(
-                    "embedding_service: openai /embeddings call failed (%s); "
-                    "returning empty vectors for this batch",
-                    exc,
-                )
-                out.extend([[] for _ in chunk])
-                continue
+                raise EmbeddingError(
+                    f"openai /embeddings call failed for batch starting at {i}: {exc}"
+                ) from exc
             for item in resp.data:
                 vec = list(map(float, item.embedding or []))
                 if vec and not self._dim:
@@ -174,7 +171,6 @@ class _CachedProvider:
 
     @staticmethod
     def _key(text: str) -> str:
-        # Full digest (64 chars) to stay compatible with the previous behaviour.
         return hash_cache_key("", text, digest_len=64)
 
     def embed(self, texts: list[str]) -> list[list[float]]:

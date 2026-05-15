@@ -92,6 +92,22 @@ def cancel_task(task_id: str, request: Request) -> JSONResponse:
     )
 
 
+@router.get("/v1/tasks/{task_id}/resume-options")
+def get_resume_options(task_id: str, request: Request) -> JSONResponse:
+    from backend.App.shared.infrastructure.rest.task_instance import ARTIFACTS_ROOT
+    from backend.App.orchestration.application.use_cases.task_queries import (
+        compute_resume_options,
+    )
+
+    store = _get_task_store(request)
+    try:
+        task_data = store.get_task(task_id)
+    except KeyError:
+        return JSONResponse({"can_resume": False, "reason": "task_not_found"}, status_code=404)
+    payload = compute_resume_options(task_id, task_data, ARTIFACTS_ROOT)
+    return JSONResponse(payload)
+
+
 @router.get("/v1/tasks/{task_id}/clarify-questions")
 def get_clarify_questions(task_id: str, request: Request) -> JSONResponse:
 

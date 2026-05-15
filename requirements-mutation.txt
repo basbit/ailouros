@@ -1,0 +1,2 @@
+mutmut>=2.5,<3
+pytest-timeout>=2.3,<3

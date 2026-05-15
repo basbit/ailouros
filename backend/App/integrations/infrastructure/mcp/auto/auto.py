@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from backend.App.integrations.infrastructure.mcp.stdio.session import coerce_mcp_config_dict
-from backend.App.shared.domain.validators import is_truthy_env
+from backend.App.shared.infrastructure.env_flags import is_truthy_env
 
 logger = logging.getLogger(__name__)
 

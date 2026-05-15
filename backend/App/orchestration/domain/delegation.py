@@ -15,10 +15,10 @@ class DelegationStatus(str, Enum):
 
 
 class MergePolicy(str, Enum):
-    FIRST_SUCCESS = "first_success"    # winner-takes-all parallel
-    ALL_REQUIRED = "all_required"      # join: all branches must complete
-    BEST_SCORE = "best_score"          # highest confidence wins
-    SUPERVISOR = "supervisor"          # supervisor agent picks winner
+    FIRST_SUCCESS = "first_success"
+    ALL_REQUIRED = "all_required"
+    BEST_SCORE = "best_score"
+    SUPERVISOR = "supervisor"
 
 
 @dataclass
@@ -26,10 +26,10 @@ class DelegationRequest:
     delegation_id: str
     parent_session_id: str
     parent_task_id: str
-    role: str                           # agent role to delegate to
+    role: str
     task_description: str
     context: dict[str, Any] = field(default_factory=dict)
-    constraints: dict[str, Any] = field(default_factory=dict)   # budget, timeout, scope
+    constraints: dict[str, Any] = field(default_factory=dict)
     merge_policy: MergePolicy = MergePolicy.ALL_REQUIRED
     created_at: str = ""
 

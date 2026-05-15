@@ -7,7 +7,6 @@ from backend.App.orchestration.application.pipeline.pipeline_state import Pipeli
 
 logger = logging.getLogger(__name__)
 
-
 _SPEC_FOR_BUILD_MAX_CHARS = int(
     os.getenv("SWARM_SPEC_FOR_BUILD_MAX_CHARS", "60000")
 )

@@ -373,7 +373,7 @@ def problem_spotter_node(state: PipelineState) -> dict[str, Any]:
             if spec_hint.strip()
             else ""
         )
-        doc_draft_block = ""  # model reads documentation via MCP tools
+        doc_draft_block = ""
         analyze_code_summary_block = (
             f"[Code analysis summary]\n{analyze_code_output}\n\n"
             if analyze_code_output

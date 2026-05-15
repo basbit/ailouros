@@ -31,7 +31,6 @@ from backend.App.orchestration.application.nodes._prompt_builders import (
 
 logger = logging.getLogger(__name__)
 
-
 _ASSET_MANIFEST_TAG_RE = re.compile(
     r"<asset_manifest>\s*(\{.*?\})\s*</asset_manifest>",
     re.DOTALL | re.IGNORECASE,

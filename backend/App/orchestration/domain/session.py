@@ -21,7 +21,7 @@ class SessionCheckpoint:
     session_id: str
     step_name: str
     state_snapshot: dict[str, Any]
-    created_at: str                         # ISO-8601
+    created_at: str
 
 
 @dataclass
@@ -29,7 +29,7 @@ class AgentSession:
     session_id: str
     task_id: str
     status: SessionStatus
-    created_at: str                         # ISO-8601
-    updated_at: str                         # ISO-8601
+    created_at: str
+    updated_at: str
     last_checkpoint_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)

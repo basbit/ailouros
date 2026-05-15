@@ -85,7 +85,6 @@ AnalyzerFn = Callable[[str, str], list[dict[str, Any]]]
 
 
 class AnalyzerRegistry:
-    """Thin wrapper over :class:`GenericRegistry` for per-language analyzers."""
 
     def __init__(self) -> None:
         from backend.App.shared.infrastructure.registry import GenericRegistry

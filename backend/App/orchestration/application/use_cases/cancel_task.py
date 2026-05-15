@@ -28,7 +28,7 @@ class CancelTaskUseCase:
     def __init__(
         self,
         task_store: TaskStorePort,
-        cancel_event_fn: Any,  # callable(task_id: str) -> bool
+        cancel_event_fn: Any,
     ) -> None:
         self._task_store = task_store
         self._cancel_event_fn = cancel_event_fn

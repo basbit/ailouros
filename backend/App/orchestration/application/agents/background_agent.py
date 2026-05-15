@@ -43,7 +43,7 @@ class Recommendation:
     event_type: str
     path: str
     message: str
-    severity: str  # "info" | "warning" | "error"
+    severity: str
     suggested_action: str
     timestamp: float = field(default_factory=time.time)
 
@@ -184,7 +184,7 @@ def _call_llm(
             event_type,
             path,
             parsed.get("severity"),
-        )  # INV-1
+        )
         return parsed
     except Exception as exc:
         logger.error(
@@ -230,7 +230,7 @@ class BackgroundAgent:
         self._worker_thread: threading.Thread | None = None
         self._event_queue: queue.Queue[Any] = queue.Queue()
         self._running = False
-        self._watcher: Any = None  # FileWatcher instance
+        self._watcher: Any = None
 
     def start(self) -> None:
         if not self._enabled:
@@ -254,7 +254,7 @@ class BackgroundAgent:
             self._model,
             self._environment,
             self._watch_paths,
-        )  # INV-1
+        )
 
     def stop(self) -> None:
         self._running = False
@@ -265,7 +265,7 @@ class BackgroundAgent:
         if self._worker_thread is not None:
             self._worker_thread.join(timeout=15)
             self._worker_thread = None
-        logger.info("BackgroundAgent: stopped")  # INV-1
+        logger.info("BackgroundAgent: stopped")
 
     def drain_recommendations(self) -> list[Recommendation]:
         results: list[Recommendation] = []
@@ -330,7 +330,7 @@ class BackgroundAgent:
 def _default_watch_paths() -> list[str]:
     raw = os.getenv("SWARM_BACKGROUND_AGENT_WATCH_PATHS", "").strip()
     if not raw:
-        raw = _WATCH_PATHS_ENV.strip()  # fallback for test patchability
+        raw = _WATCH_PATHS_ENV.strip()
     if raw:
         return [p.strip() for p in raw.split(",") if p.strip()]
     return []

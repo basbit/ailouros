@@ -3,14 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import math
 import os
 import re
 import time
 from collections.abc import Mapping
 from typing import Any, Optional
 
-from backend.App.shared.domain.validators import is_truthy_env
+from backend.App.shared.domain.validators import is_truthy_value
+from backend.App.shared.infrastructure.env_flags import is_truthy_env
 
 logger = logging.getLogger(__name__)
 
@@ -58,14 +58,6 @@ _GENERIC_MEMORY_PHRASES: tuple[str, ...] = (
 )
 
 
-def _is_truthy_value(value: Any) -> bool:
-    if value is True:
-        return True
-    if isinstance(value, str):
-        return value.strip().lower() in ("1", "true", "yes", "on")
-    return False
-
-
 def _swarm_block(state: Mapping[str, Any]) -> dict[str, Any]:
     agent_config = state.get("agent_config")
     if not isinstance(agent_config, dict):
@@ -83,10 +75,10 @@ def _memory_configuration(state: Mapping[str, Any]) -> dict[str, Any]:
 def cross_task_memory_enabled(state: Mapping[str, Any]) -> bool:
     env_value = os.getenv("SWARM_CROSS_TASK_MEMORY")
     if env_value is not None:
-        return _is_truthy_value(env_value)
+        return is_truthy_value(env_value)
     configuration_enabled = _memory_configuration(state).get("enabled")
     if configuration_enabled is not None:
-        return _is_truthy_value(configuration_enabled)
+        return is_truthy_value(configuration_enabled)
     return True
 
 
@@ -261,9 +253,10 @@ def _embed_episode_body(provider: Any, step_id: str, body: str) -> list[float]:
     text = f"{step_id}\n{body}".strip()
     if not text:
         return []
+    from backend.App.integrations.infrastructure.embedding_service import EmbeddingError
     try:
         vectors = provider.embed([text[:4000]])
-    except Exception as exc:
+    except EmbeddingError as exc:
         logger.warning("cross_task_memory: embed failed (%s); episode stored without vector", exc)
         return []
     return list(vectors[0]) if vectors else []
@@ -272,23 +265,16 @@ def _embed_episode_body(provider: Any, step_id: str, body: str) -> list[float]:
 def _embed_query(provider: Any, query: str) -> list[float]:
     if not query.strip():
         return []
+    from backend.App.integrations.infrastructure.embedding_service import EmbeddingError
     try:
         vectors = provider.embed([query[:4000]])
-    except Exception as exc:
+    except EmbeddingError as exc:
         logger.warning("cross_task_memory: query embed failed (%s)", exc)
         return []
     return list(vectors[0]) if vectors else []
 
 
-def _cosine(a: list[float], b: list[float]) -> float:
-    if not a or not b or len(a) != len(b):
-        return 0.0
-    norm_a = math.sqrt(sum(x * x for x in a))
-    norm_b = math.sqrt(sum(x * x for x in b))
-    if norm_a == 0.0 or norm_b == 0.0:
-        return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
-    return dot / (norm_a * norm_b)
+from backend.App.shared.domain.vector_math import cosine_dense as _cosine  # noqa: E402
 
 
 def _build_episode_payload(
@@ -297,6 +283,9 @@ def _build_episode_payload(
     body: str,
     task_id: str,
     artifact: Mapping[str, Any] | None = None,
+    agent: str = "",
+    spec_id: str = "",
+    spec_hash: str = "",
 ) -> dict[str, Any]:
     structured = normalize_memory_artifact(artifact)
     if not structured:
@@ -316,6 +305,12 @@ def _build_episode_payload(
         "dead_ends": list(structured.get("dead_ends") or []),
         "constraints": list(structured.get("constraints") or []),
         "structured": bool(structured.get("structured")),
+        "_provenance": {
+            "agent": str(agent),
+            "spec_id": str(spec_id),
+            "spec_hash": str(spec_hash),
+            "recorded_at": time.time(),
+        },
     }
     provider = _get_embedding_provider()
     if provider is not None:
@@ -332,6 +327,9 @@ def append_episode(
     body: str,
     task_id: str = "",
     artifact: Mapping[str, Any] | None = None,
+    agent: str = "",
+    spec_id: str = "",
+    spec_hash: str = "",
 ) -> None:
     if not cross_task_memory_enabled(state):
         return
@@ -340,7 +338,15 @@ def append_episode(
         return
     namespace = memory_namespace(state)
     max_items = _max_items(state)
-    episode = _build_episode_payload(step_id=step_id, body=text, task_id=task_id, artifact=artifact)
+    episode = _build_episode_payload(
+        step_id=step_id,
+        body=text,
+        task_id=task_id,
+        artifact=artifact,
+        agent=agent,
+        spec_id=spec_id,
+        spec_hash=spec_hash,
+    )
     payload = json.dumps(episode, ensure_ascii=False)
     redis_client = _redis()
     if redis_client:
@@ -351,6 +357,66 @@ def append_episode(
     bucket = _LOCAL_EPISODES.setdefault(namespace, [])
     bucket.insert(0, episode)
     del bucket[max_items:]
+
+
+def _episode_is_quarantined(
+    episode: Mapping[str, Any],
+    *,
+    current_spec_id: str,
+    current_spec_hash: str,
+) -> bool:
+    if not current_spec_id or not current_spec_hash:
+        return False
+    provenance = episode.get("_provenance") or {}
+    if not isinstance(provenance, dict):
+        return False
+    recorded_spec_id = str(provenance.get("spec_id") or "")
+    if not recorded_spec_id or recorded_spec_id != current_spec_id:
+        return False
+    recorded_hash = str(provenance.get("spec_hash") or "")
+    if not recorded_hash:
+        return False
+    return recorded_hash != current_spec_hash
+
+
+def list_quarantined_episodes(
+    state: Mapping[str, Any],
+    *,
+    current_spec_id: str,
+    current_spec_hash: str,
+) -> list[dict[str, Any]]:
+    if not current_spec_id or not current_spec_hash:
+        return []
+    if not cross_task_memory_enabled(state):
+        return []
+    namespace = memory_namespace(state)
+    redis_client = _redis()
+    raw_entries: list[str] = []
+    if redis_client:
+        key = _list_key(namespace)
+        raw_entries = [
+            payload.decode("utf-8") if isinstance(payload, (bytes, bytearray)) else str(payload)
+            for payload in redis_client.lrange(key, 0, -1)
+        ]
+    else:
+        for episode in _LOCAL_EPISODES.get(namespace, []):
+            raw_entries.append(json.dumps(episode, ensure_ascii=False))
+
+    quarantined: list[dict[str, Any]] = []
+    for entry in raw_entries:
+        try:
+            parsed = json.loads(entry)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        if _episode_is_quarantined(
+            parsed,
+            current_spec_id=current_spec_id,
+            current_spec_hash=current_spec_hash,
+        ):
+            quarantined.append(parsed)
+    return quarantined
 
 
 def persist_after_pipeline_step(
@@ -453,6 +519,8 @@ def search_episodes(
     query: str,
     *,
     limit: int = 8,
+    current_spec_id: str = "",
+    current_spec_hash: str = "",
 ) -> list[tuple[dict[str, Any], float]]:
     if not cross_task_memory_enabled(state):
         return []
@@ -468,6 +536,12 @@ def search_episodes(
 
     scored: list[tuple[dict[str, Any], float]] = []
     for episode in episodes:
+        if _episode_is_quarantined(
+            episode,
+            current_spec_id=current_spec_id,
+            current_spec_hash=current_spec_hash,
+        ):
+            continue
         body = str(episode.get("body") or "")
         token_part = _token_relevance(query, body)
         cosine_part = 0.0

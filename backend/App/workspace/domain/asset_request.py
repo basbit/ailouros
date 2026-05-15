@@ -5,7 +5,6 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-
 _ASSET_REQUEST_PATTERN = re.compile(
     r"<swarm_asset_request\b(?P<attributes>[^>]*)>(?P<body>.*?)</swarm_asset_request>"
     r"|<swarm_asset_request\b(?P<self_closing_attributes>[^>]*)/>",

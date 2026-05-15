@@ -7,8 +7,8 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _SUMMARIZE_ENABLED_DEFAULT = os.getenv("SWARM_STATE_SUMMARIZE", "0").strip()
-_SUMMARIZE_MAX_INPUT = 50_000  # don't send more than this to the summarizer
-_SUMMARIZE_TARGET = 2_000  # target output length
+_SUMMARIZE_MAX_INPUT = 50_000
+_SUMMARIZE_TARGET = 2_000
 
 
 def state_summarize_enabled() -> bool:

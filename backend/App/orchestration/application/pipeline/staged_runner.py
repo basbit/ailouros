@@ -18,7 +18,7 @@ from backend.App.orchestration.application.pipeline.ephemeral_state import (
 )
 from backend.App.orchestration.application.pipeline.pipeline_state import PipelineState
 from backend.App.orchestration.domain.exceptions import HumanApprovalRequired, PipelineCancelled
-from backend.App.orchestration.domain.pipeline_machine import PipelineMachine, PipelinePhase
+from backend.App.orchestration.domain.pipeline_machine import PipelinePhase
 from backend.App.orchestration.infrastructure.step_stream_executor import StepStreamExecutor
 from backend.App.orchestration.application.pipeline.step_output_extractor import StepOutputExtractor
 
@@ -52,7 +52,10 @@ def run_pipeline_stream_staged(
 
     base_agent_config = agent_config or {}
     all_step_ids = [step_id for stage in pipeline_stages for step_id in stage]
-    machine = PipelineMachine()
+    from backend.App.orchestration.application.pipeline.pipeline_machine_factory import (
+        make_pipeline_machine,
+    )
+    machine = make_pipeline_machine()
 
     state = _initial_pipeline_state(
         user_input,

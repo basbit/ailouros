@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
-
 _DEFAULT_WEIGHTS: dict[str, float] = {
     "artifacts": 0.4,
     "quality_checks": 0.5,

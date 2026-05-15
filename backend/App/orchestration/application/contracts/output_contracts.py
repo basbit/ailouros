@@ -27,31 +27,31 @@ def output_compression_enabled() -> bool:
 
 @dataclass
 class CompressedReviewerOutput:
-    verdict: str          # "OK" | "NEEDS_WORK"
-    defects: list         # top-5 structured defect dicts (full list in artifact)
-    defect_count: int     # total defect count (including those only in artifact)
-    summary: str          # first 300 chars of review prose
-    char_count: int       # original full text length
-    artifact_ref: str     # artifact:sha256:<hex> — resolves to full prose
+    verdict: str
+    defects: list
+    defect_count: int
+    summary: str
+    char_count: int
+    artifact_ref: str
 
 
 @dataclass
 class CompressedDevLeadOutput:
-    tasks: list               # parsed subtask list (dicts)
-    deliverables: dict        # normalized deliverables dict
+    tasks: list
+    deliverables: dict
     has_deliverables: bool
     has_complete_deliverables: bool
-    summary: str              # first 200 chars of raw LLM output
+    summary: str
     char_count: int
-    artifact_ref: str         # artifact:sha256:<hex> — resolves to raw output
+    artifact_ref: str
 
 
 @dataclass
 class CompressedQASummary:
-    verdict: str          # "OK" | "NEEDS_WORK"
-    summary: str          # first 400 chars of QA output
+    verdict: str
+    summary: str
     char_count: int
-    artifact_ref: str     # artifact:sha256:<hex> — resolves to full output
+    artifact_ref: str
 
 
 def compress_reviewer_output(text: str) -> CompressedReviewerOutput:

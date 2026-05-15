@@ -10,22 +10,22 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _OUTPUT_KEY_SUFFIX = "_output"
-_MIN_CONTENT_CHARS = 50  # ignore very short values
+_MIN_CONTENT_CHARS = 50
 _EXCERPT_MAX_CHARS = 500
 
 
 @dataclass
 class StateSearchResult:
-    key: str          # state key (e.g. "ba_output")
-    score: float      # TF-IDF cosine similarity [0, 1]
-    excerpt: str      # representative excerpt
+    key: str
+    score: float
+    excerpt: str
 
 
 class PipelineStateSearcher:
 
     def __init__(self) -> None:
-        self._docs: dict[str, str] = {}       # key → content
-        self._tf_idf: dict[str, dict[str, float]] = {}  # key → term → weight
+        self._docs: dict[str, str] = {}
+        self._tf_idf: dict[str, dict[str, float]] = {}
         self._idf: dict[str, float] = {}
 
     def index(self, state: Mapping[str, Any]) -> None:

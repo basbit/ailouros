@@ -17,10 +17,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _provider() -> str:
-    return os.getenv("AILOUROS_VOICE_PROVIDER", "local-whisper").strip() or "local-whisper"
-
-
 def _runtime_path() -> str:
     return os.getenv("AILOUROS_VOICE_RUNTIME_PATH", "").strip()
 
@@ -31,24 +27,6 @@ def _model_path() -> str:
 
 def _language() -> str:
     return os.getenv("AILOUROS_VOICE_LANGUAGE", "auto").strip() or "auto"
-
-
-@router.get("/v1/voice/status")
-def voice_status() -> JSONResponse:
-    runtime = _runtime_path()
-    model = _model_path()
-    runtime_ok = bool(runtime) and Path(runtime).is_file()
-    model_ok = bool(model) and Path(model).is_file()
-    ready = runtime_ok and model_ok
-    return JSONResponse(
-        content={
-            "ready": ready,
-            "provider": _provider(),
-            "runtime_present": runtime_ok,
-            "model_present": model_ok,
-            "language": _language(),
-        }
-    )
 
 
 @router.post("/v1/voice/transcribe")

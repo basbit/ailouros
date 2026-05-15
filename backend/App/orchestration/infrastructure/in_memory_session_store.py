@@ -10,7 +10,7 @@ from backend.App.orchestration.domain.session import AgentSession, SessionCheckp
 class InMemorySessionStore(SessionStorePort):
     def __init__(self) -> None:
         self._sessions: dict[str, AgentSession] = {}
-        self._checkpoints: dict[str, SessionCheckpoint] = {}  # session_id → latest
+        self._checkpoints: dict[str, SessionCheckpoint] = {}
         self._lock = threading.Lock()
 
     def save_session(self, session: AgentSession) -> None:

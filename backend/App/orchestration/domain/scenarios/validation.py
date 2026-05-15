@@ -137,6 +137,18 @@ def validate_scenario_payload(
     quality_checks = _parse_quality_checks(payload.get("quality_checks", []))
     inputs = _parse_inputs(payload.get("inputs", []))
 
+    step_estimates_raw = payload.get("step_estimates", [])
+    if not isinstance(step_estimates_raw, list):
+        raise ScenarioInvalid("step_estimates must be a list when provided")
+    step_estimates: list[dict[str, Any]] = []
+    for entry in step_estimates_raw:
+        if not isinstance(entry, dict):
+            raise ScenarioInvalid("step_estimates entry must be an object")
+        sid = entry.get("step_id") or entry.get("id")
+        if not isinstance(sid, str) or not sid.strip():
+            raise ScenarioInvalid("step_estimates entry must have non-empty step_id")
+        step_estimates.append(dict(entry))
+
     return Scenario(
         id=scenario_id.strip(),
         title=title.strip(),
@@ -152,6 +164,7 @@ def validate_scenario_payload(
         tags=tuple(tags),
         quality_checks=quality_checks,
         inputs=inputs,
+        step_estimates=tuple(step_estimates),
     )
 
 

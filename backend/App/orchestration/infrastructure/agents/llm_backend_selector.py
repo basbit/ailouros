@@ -18,11 +18,11 @@ class LLMBackendConfig:
     base_url: str
     api_key: str
     model: str
-    llm_route: str = ""  # "anthropic" | "openai" | ""
+    llm_route: str = ""
     anthropic_base_url: str = ""
     anthropic_api_key: str = ""
     max_tokens: int = 0
-    provider_label: str = ""  # e.g. "cloud:anthropic", "cloud:gemini", "local:ollama"
+    provider_label: str = ""
 
 
 def _effective_cloud_provider(

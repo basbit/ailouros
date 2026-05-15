@@ -1,7 +1,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 from dataclasses import dataclass, field
 from typing import Any, Optional, TypedDict
@@ -14,6 +13,8 @@ TRUSTED_VERIFICATION_COMMANDS: tuple[str, ...] = (
     "diff_risk_gate",
 )
 VERIFICATION_RULESET_VERSION = "2026-04-09.v1"
+
+DEFAULT_DIFF_DELETED_LINES_THRESHOLD = 50
 
 _STUB_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"\bTODO\b", re.IGNORECASE),
@@ -30,8 +31,6 @@ _STUB_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"pass\s*$", re.MULTILINE),
     re.compile(r"raise\s+NotImplementedError"),
 ]
-
-_DIFF_DELETED_LINES_THRESHOLD = int(os.getenv("SWARM_DIFF_DELETED_LINES_THRESHOLD", "50"))
 
 
 class GateIssue(TypedDict, total=False):
@@ -273,7 +272,7 @@ def evaluate_diff_risk_gate(
     has_test_command: bool = False,
     has_deletion_justification: bool = False,
     rewrite_justifications: Optional[list[str]] = None,
-    deletion_threshold: int = _DIFF_DELETED_LINES_THRESHOLD,
+    deletion_threshold: int = DEFAULT_DIFF_DELETED_LINES_THRESHOLD,
 ) -> GateResult:
     out_errors = list(errors or [])
     out_warnings = list(warnings or [])

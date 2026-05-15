@@ -47,7 +47,7 @@ _SOURCE_RESEARCH_PATTERNS: tuple[re.Pattern[str], ...] = (
 
 
 def extract_research_signals(text: str) -> dict[str, list[str]]:
-    urls = list(dict.fromkeys(_URL_PATTERN.findall(text)))  # deduplicated, order-preserved
+    urls = list(dict.fromkeys(_URL_PATTERN.findall(text)))
     phrases = [p for p in _RESEARCH_PHRASES if p in text.lower()]
     return {"urls": urls, "phrases": phrases}
 
@@ -64,7 +64,7 @@ def build_research_advisory(text: str) -> str:
     lines = ["<research_advisory>"]
     if signals["urls"]:
         lines.append(f"  External URLs detected ({len(signals['urls'])}):")
-        for url in signals["urls"][:10]:  # cap at 10
+        for url in signals["urls"][:10]:
             lines.append(f"    - {url}")
         lines.append("  NOTE: These URLs have NOT been fetched. Dev Lead must mark tasks")
         lines.append("  that depend on these sources with research_required=true and")

@@ -30,6 +30,8 @@ async def handle_ws_ui(websocket: WebSocket, task_store: Any) -> None:
                     subscribed["task_id"] = msg.get("task_id")
         except WebSocketDisconnect:
             pass
+        except asyncio.CancelledError:
+            pass
         finally:
             stop.set()
 
@@ -43,10 +45,20 @@ async def handle_ws_ui(websocket: WebSocket, task_store: Any) -> None:
             except WebSocketDisconnect:
                 stop.set()
                 return
+            except asyncio.CancelledError:
+                stop.set()
+                return
             except Exception as exc:
                 logger.warning("ws/ui pump_loop error: %s", exc)
                 stop.set()
                 return
-            await asyncio.sleep(1.0)
+            try:
+                await asyncio.sleep(1.0)
+            except asyncio.CancelledError:
+                stop.set()
+                return
 
-    await asyncio.gather(recv_loop(), pump_loop())
+    try:
+        await asyncio.gather(recv_loop(), pump_loop())
+    except asyncio.CancelledError:
+        stop.set()

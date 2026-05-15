@@ -2,24 +2,16 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import os
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Optional
 
-from backend.App.shared.domain.validators import is_truthy_env
+from backend.App.shared.domain.validators import is_truthy_value
+from backend.App.shared.infrastructure.env_flags import is_truthy_env
 from backend.App.shared.infrastructure.json_file_io import read_json_file, write_json_file
 
 logger = logging.getLogger(__name__)
-
-
-def _is_truthy_value(value: Any) -> bool:
-    if value is True:
-        return True
-    if isinstance(value, str):
-        return value.strip().lower() in ("1", "true", "yes", "on")
-    return False
 
 
 def _semantic_enabled() -> bool:
@@ -38,12 +30,12 @@ def _semantic_weight() -> float:
 def pattern_memory_enabled(state: Mapping[str, Any]) -> bool:
     env_val = os.getenv("SWARM_PATTERN_MEMORY")
     if env_val is not None:
-        return _is_truthy_value(env_val)
+        return is_truthy_value(env_val)
     agent_config = state.get("agent_config")
     if isinstance(agent_config, dict):
         swarm_config = agent_config.get("swarm")
         if isinstance(swarm_config, dict) and "pattern_memory" in swarm_config:
-            return _is_truthy_value(swarm_config.get("pattern_memory"))
+            return is_truthy_value(swarm_config.get("pattern_memory"))
     return True
 
 
@@ -82,15 +74,7 @@ def _token_score(query: str, hay: str) -> float:
     return score
 
 
-def _cosine(a: list[float], b: list[float]) -> float:
-    if not a or not b or len(a) != len(b):
-        return 0.0
-    norm_a = math.sqrt(sum(x * x for x in a))
-    norm_b = math.sqrt(sum(x * x for x in b))
-    if norm_a == 0.0 or norm_b == 0.0:
-        return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
-    return dot / (norm_a * norm_b)
+from backend.App.shared.domain.vector_math import cosine_dense as _cosine  # noqa: E402
 
 
 def _get_provider() -> Optional[Any]:
@@ -112,9 +96,10 @@ def _embed_pattern(provider: Any, key: str, value: str) -> list[float]:
     text = f"{key}\n{value}".strip()
     if not text:
         return []
+    from backend.App.integrations.infrastructure.embedding_service import EmbeddingError
     try:
         vectors = provider.embed([text])
-    except Exception as exc:
+    except EmbeddingError as exc:
         logger.warning("pattern_memory: embed failed (%s); storing without vector", exc)
         return []
     return list(vectors[0]) if vectors else []
@@ -123,9 +108,10 @@ def _embed_pattern(provider: Any, key: str, value: str) -> list[float]:
 def _embed_query(provider: Any, query: str) -> list[float]:
     if not query.strip():
         return []
+    from backend.App.integrations.infrastructure.embedding_service import EmbeddingError
     try:
         vectors = provider.embed([query])
-    except Exception as exc:
+    except EmbeddingError as exc:
         logger.warning("pattern_memory: query embed failed (%s)", exc)
         return []
     return list(vectors[0]) if vectors else []
@@ -169,6 +155,8 @@ def search_patterns(
     *,
     namespace: str = "default",
     limit: int = 5,
+    current_spec_id: str = "",
+    current_spec_hash: str = "",
 ) -> list[tuple[str, str, float]]:
     if not pattern_memory_enabled(state):
         return []
@@ -177,7 +165,8 @@ def search_patterns(
     ns_map = data.get("namespaces") or {}
     if not isinstance(ns_map, dict):
         return []
-    bucket = ns_map.get(namespace) or ns_map.get("default") or {}
+    bucket_namespace = namespace if namespace in ns_map else "default"
+    bucket = ns_map.get(bucket_namespace) or {}
     if not isinstance(bucket, dict) or not bucket:
         return []
 
@@ -191,6 +180,13 @@ def search_patterns(
     scored: list[tuple[str, str, float]] = []
     for key, val in bucket.items():
         if not isinstance(key, str) or not isinstance(val, str):
+            continue
+        provenance = _provenance_for(data, bucket_namespace, key)
+        if _is_quarantined(
+            provenance,
+            current_spec_id=current_spec_id,
+            current_spec_hash=current_spec_hash,
+        ):
             continue
         token_part = _token_score(query, key + "\n" + val)
         cosine_part = 0.0
@@ -238,7 +234,12 @@ def store_pattern(
     value: str,
     *,
     merge: bool = True,
+    agent: str = "",
+    spec_id: str = "",
+    spec_hash: str = "",
 ) -> None:
+    import time as _time
+
     key = key.strip()
     if not key or not value.strip():
         raise ValueError("key and value required")
@@ -252,6 +253,17 @@ def store_pattern(
     else:
         bucket[key] = value.strip()
 
+    provenance_block = data.setdefault("provenance", {})
+    assert isinstance(provenance_block, dict)
+    provenance_ns = provenance_block.setdefault(namespace, {})
+    assert isinstance(provenance_ns, dict)
+    provenance_ns[key] = {
+        "agent": str(agent),
+        "spec_id": str(spec_id),
+        "spec_hash": str(spec_hash),
+        "recorded_at": _time.time(),
+    }
+
     _save_store(path, data)
     provider = _get_provider()
     if provider is None:
@@ -262,6 +274,75 @@ def store_pattern(
         vector_bucket[key] = vec
         data["version"] = 2
         _save_store(path, data)
+
+
+def _provenance_for(data: dict[str, Any], namespace: str, key: str) -> dict[str, Any]:
+    provenance_block = data.get("provenance") or {}
+    if not isinstance(provenance_block, dict):
+        return {}
+    ns_block = provenance_block.get(namespace) or {}
+    if not isinstance(ns_block, dict):
+        return {}
+    entry = ns_block.get(key) or {}
+    return entry if isinstance(entry, dict) else {}
+
+
+def _is_quarantined(
+    entry_provenance: dict[str, Any],
+    *,
+    current_spec_id: str,
+    current_spec_hash: str,
+) -> bool:
+    if not current_spec_id or not current_spec_hash:
+        return False
+    recorded_spec_id = str(entry_provenance.get("spec_id") or "")
+    if not recorded_spec_id or recorded_spec_id != current_spec_id:
+        return False
+    recorded_hash = str(entry_provenance.get("spec_hash") or "")
+    if not recorded_hash:
+        return False
+    return recorded_hash != current_spec_hash
+
+
+def list_quarantined_patterns(
+    path: Path,
+    *,
+    current_spec_id: str,
+    current_spec_hash: str,
+) -> list[dict[str, Any]]:
+    if not current_spec_id or not current_spec_hash:
+        return []
+    if not path.is_file():
+        return []
+    data = _load_store(path)
+    quarantined: list[dict[str, Any]] = []
+    provenance_block = data.get("provenance") or {}
+    if not isinstance(provenance_block, dict):
+        return []
+    namespaces_block = data.get("namespaces") or {}
+    if not isinstance(namespaces_block, dict):
+        return []
+    for namespace, entries in provenance_block.items():
+        if not isinstance(entries, dict):
+            continue
+        ns_bucket = namespaces_block.get(namespace) or {}
+        for key, prov in entries.items():
+            if not isinstance(prov, dict):
+                continue
+            if _is_quarantined(
+                prov,
+                current_spec_id=current_spec_id,
+                current_spec_hash=current_spec_hash,
+            ):
+                quarantined.append(
+                    {
+                        "namespace": namespace,
+                        "key": key,
+                        "value": ns_bucket.get(key, "") if isinstance(ns_bucket, dict) else "",
+                        "provenance": dict(prov),
+                    }
+                )
+    return quarantined
 
 
 def store_consolidated_pattern(

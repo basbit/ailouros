@@ -41,7 +41,14 @@ from backend.App.orchestration.application.pipeline.step_output_extractor import
 from backend.App.orchestration.application.pipeline.step_quality_checks import run_all_post_step_quality_checks
 from backend.App.orchestration.application.pipeline.task_class_router import auto_select_pipeline_steps
 from backend.App.orchestration.domain.exceptions import HumanApprovalRequired, PipelineCancelled
-from backend.App.orchestration.domain.pipeline_machine import get_pipeline_machine, reset_pipeline_machine
+from backend.App.orchestration.application.pipeline.pipeline_machine_factory import (
+    make_pipeline_machine,
+)
+from backend.App.orchestration.domain.pipeline_machine import (
+    get_pipeline_machine,
+    install_pipeline_machine,
+    reset_pipeline_machine,
+)
 from backend.App.orchestration.infrastructure.step_stream_executor import StepStreamExecutor
 from backend.App.shared.application.trace_emitter import emit_trace_event
 
@@ -114,6 +121,7 @@ def run_pipeline_stream(
     )
     validate_pipeline_steps(selected_steps, base_agent_config)
     reset_pipeline_machine()
+    install_pipeline_machine(make_pipeline_machine())
     machine = get_pipeline_machine()
 
     if task_id:
@@ -208,7 +216,11 @@ def run_pipeline_stream(
         set_ephemeral(state, "_session_id", session_id)
         emit_trace_event(trace_collector, task_id, session_id, "pipeline", "run_start", {"steps": list(selected_steps)})
     except Exception as session_init_error:
-        _logger.debug("Session/trace init skipped: %s", session_init_error)
+        _logger.warning(
+            "pipeline_runners: session/trace init failed for task=%s — pipeline will run "
+            "without audit trail: %s",
+            task_id, session_init_error,
+        )
 
     try:
         for step_id in selected_steps:
@@ -240,7 +252,7 @@ def run_pipeline_stream(
                         from backend.App.orchestration.domain.session import SessionStatus
                         session_manager._update_status(session_id, SessionStatus.PAUSED)
                     except Exception as session_pause_error:
-                        _logger.debug(
+                        _logger.warning(
                             "pipeline_runners: session_manager pause failed during "
                             "human-approval cleanup for step=%s: %s",
                             step_id, session_pause_error,
@@ -280,7 +292,7 @@ def run_pipeline_stream(
                     try:
                         session_manager.fail_session(session_id, reason=str(exc)[:500])
                     except Exception as session_fail_error:
-                        _logger.debug(
+                        _logger.warning(
                             "pipeline_runners: session_manager.fail_session failed during "
                             "step-exception cleanup for step=%s: %s",
                             step_id, session_fail_error,

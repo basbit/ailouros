@@ -7,7 +7,6 @@ import re
 from pathlib import Path
 from typing import Any
 
-
 _EXCLUDE_DIRS = {"test", "tests", "vendor", "node_modules", ".venv", "__pycache__", ".git"}
 
 

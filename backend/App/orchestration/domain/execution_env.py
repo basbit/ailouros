@@ -13,20 +13,20 @@ class ExecutionTarget(str, Enum):
 
 
 class SandboxProfile(str, Enum):
-    READ_ONLY = "read_only"           # analysis only, no writes
-    CODE_EDIT = "code_edit"           # workspace read/write
-    VERIFICATION = "verification"     # trusted commands only
-    INTERNET = "internet"             # internet-enabled research
-    FULL = "full"                     # all permissions (dev use only)
+    READ_ONLY = "read_only"
+    CODE_EDIT = "code_edit"
+    VERIFICATION = "verification"
+    INTERNET = "internet"
+    FULL = "full"
 
 
 @dataclass
 class EnvironmentManifest:
     target: ExecutionTarget = ExecutionTarget.LOCAL
     profile: SandboxProfile = SandboxProfile.CODE_EDIT
-    tools: list[str] = field(default_factory=list)       # available tool names
-    runtimes: list[str] = field(default_factory=list)    # e.g. ["python3.11", "node18"]
-    resource_limits: dict[str, Any] = field(default_factory=dict)  # cpu, mem, timeout
+    tools: list[str] = field(default_factory=list)
+    runtimes: list[str] = field(default_factory=list)
+    resource_limits: dict[str, Any] = field(default_factory=dict)
     workspace_root: str | None = None
     network_allowed: bool = False
     ttl_seconds: int = 3600

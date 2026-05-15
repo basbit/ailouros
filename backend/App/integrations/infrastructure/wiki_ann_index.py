@@ -11,7 +11,6 @@ from typing import Any, Iterable
 
 logger = logging.getLogger(__name__)
 
-
 _TOKEN_PATTERN = re.compile(r"[A-Za-z0-9]+")
 
 
@@ -60,18 +59,7 @@ def _scaled(vector: dict[str, float], idf: dict[str, float]) -> dict[str, float]
     return scaled
 
 
-def _cosine(left: dict[str, float], right: dict[str, float]) -> float:
-    if not left or not right:
-        return 0.0
-    dot = 0.0
-    for term, weight in left.items():
-        if term in right:
-            dot += weight * right[term]
-    norm_left = math.sqrt(sum(value * value for value in left.values()))
-    norm_right = math.sqrt(sum(value * value for value in right.values()))
-    if norm_left == 0 or norm_right == 0:
-        return 0.0
-    return dot / (norm_left * norm_right)
+from backend.App.shared.domain.vector_math import cosine_sparse as _cosine  # noqa: E402
 
 
 def collect_documents(wiki_root: Path) -> list[WikiDocument]:

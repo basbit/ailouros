@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any, Optional
 
 from backend.App.orchestration.domain.gates import (
-    _DIFF_DELETED_LINES_THRESHOLD,
+    DEFAULT_DIFF_DELETED_LINES_THRESHOLD,
     _STUB_PATTERNS,
     DevManifest,
     GateResult,
@@ -30,6 +31,13 @@ from backend.App.orchestration.infrastructure.verification_workspace import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _diff_deleted_lines_threshold() -> int:
+    raw = os.getenv("SWARM_DIFF_DELETED_LINES_THRESHOLD")
+    if raw is None:
+        return DEFAULT_DIFF_DELETED_LINES_THRESHOLD
+    return int(raw)
 
 
 def run_build_gate(
@@ -227,11 +235,12 @@ def run_diff_risk_gate(
             deletions_raw = match.group(2)
             filename = match.group(3).strip()
             deletions = int(deletions_raw) if deletions_raw.isdigit() else 0
-            if deletions > _DIFF_DELETED_LINES_THRESHOLD:
+            threshold = _diff_deleted_lines_threshold()
+            if deletions > threshold:
                 warnings.append({
                     "file": filename,
                     "deletions": deletions,
-                    "threshold": _DIFF_DELETED_LINES_THRESHOLD,
+                    "threshold": threshold,
                     "warning": "LARGE_DELETION",
                     "requires": "test or explicit justification",
                 })
@@ -292,7 +301,7 @@ def run_diff_risk_gate(
         has_test_command=has_test_command,
         has_deletion_justification=has_deletion_justification,
         rewrite_justifications=sorted(rewrite_justifications),
-        deletion_threshold=_DIFF_DELETED_LINES_THRESHOLD,
+        deletion_threshold=_diff_deleted_lines_threshold(),
     )
 
 

@@ -1,0 +1,5 @@
+{
+  "service_name": "ailouros-orchestrator",
+  "exporter": "console",
+  "console_max_body_chars": 200
+}

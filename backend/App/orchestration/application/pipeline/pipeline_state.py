@@ -397,7 +397,6 @@ ARTIFACT_AGENT_OUTPUT_KEYS: tuple[tuple[str, str], ...] = (
     ("e2e", "e2e_output"),
 )
 
-
 _all_state_keys: frozenset[str] = frozenset(PipelineState.__annotations__)
 _missing_artifact_keys = [
     key
@@ -425,6 +424,9 @@ del _all_state_keys, _missing_artifact_keys, _missing_string_keys
 def pipeline_workspace_parts_from_meta(meta_ws: dict[str, Any]) -> dict[str, Any]:
     from backend.App.workspace.domain.ports import WORKSPACE_CONTEXT_MODE_DEFAULT
 
+    resolved = str(meta_ws.get("workspace_root_resolved") or "").strip()
+    raw_root = str(meta_ws.get("workspace_root") or "").strip()
+    canonical_root = raw_root or resolved
     return {
         "user_task": str(meta_ws.get("user_task") or ""),
         "raw_user_task": str(meta_ws.get("raw_user_task") or ""),
@@ -433,7 +435,8 @@ def pipeline_workspace_parts_from_meta(meta_ws: dict[str, Any]) -> dict[str, Any
         "security_rewrite_provider": str(meta_ws.get("security_rewrite_provider") or ""),
         "project_manifest": str(meta_ws.get("project_manifest") or ""),
         "workspace_snapshot": str(meta_ws.get("workspace_snapshot") or ""),
-        "workspace_root_resolved": str(meta_ws.get("workspace_root_resolved") or ""),
+        "workspace_root": canonical_root,
+        "workspace_root_resolved": resolved or canonical_root,
         "workspace_context_mode": str(
             meta_ws.get("workspace_context_mode") or WORKSPACE_CONTEXT_MODE_DEFAULT
         ),

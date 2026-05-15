@@ -13,7 +13,6 @@ from backend.App.orchestration.application.enforcement.enforcement_policy import
 
 logger = logging.getLogger(__name__)
 
-
 _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("openai_secret_key", re.compile(r"sk-[A-Za-z0-9]{20,}")),
     ("anthropic_key", re.compile(r"sk-ant-[A-Za-z0-9_-]{20,}")),

@@ -264,7 +264,6 @@ __all__ = [
     "_extract_verdict",
 ]
 
-
 _GRAPH_STEP_IDS: frozenset[str] = frozenset({
     "pm", "review_pm", "human_pm",
     "ba", "review_ba", "human_ba",

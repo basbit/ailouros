@@ -127,7 +127,18 @@ def _ask_litellm(
     if base_url:
         call_kwargs["base_url"] = base_url
 
-    response = litellm.completion(**call_kwargs)
+    import time as _time
+
+    request_started = _time.monotonic()
+    try:
+        response = litellm.completion(**call_kwargs)
+    except Exception as exc:
+        elapsed = round(_time.monotonic() - request_started, 2)
+        endpoint = base_url or "(provider default)"
+        raise type(exc)(
+            f"LLM call failed after {elapsed}s — model={model!r}, endpoint={endpoint!r}, "
+            f"underlying error: {exc}"
+        ) from exc
     if not response.choices:
         raise ValueError(f"LLM returned empty choices list (model={model})")
     text = (response.choices[0].message.content or "").strip()

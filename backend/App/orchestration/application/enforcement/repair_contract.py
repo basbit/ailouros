@@ -7,7 +7,6 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-
 _DEFECT_BLOCK = re.compile(
     r"<defect>\s*(.*?)\s*</defect>",
     re.DOTALL | re.IGNORECASE,

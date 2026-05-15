@@ -67,10 +67,6 @@ def effective_cloud_provider(
     environment: str,
     model_for_infer: str,
 ) -> str:
-    """Thin shim over :func:`shared.infrastructure.model_routing.detect_provider`.
-
-    Preserves the legacy positional signature used across orchestration.
-    """
     return detect_provider(
         model_for_infer,
         remote_provider=remote_provider,
@@ -222,9 +218,21 @@ def resolve_agent_model(role: str, role_default_model: str = "") -> str:
             role, role_key, role_default_model,
         )
         return role_default_model
+    inspected_keys = (
+        f"SWARM_MODEL_{role_key}",
+        "SWARM_MODEL",
+        f"SWARM_ROUTE_{role_key}",
+        "SWARM_ROUTE_DEFAULT",
+        "SWARM_MODEL_BUILD",
+        "SWARM_MODEL_PLANNING",
+    )
+    inspected_values = ", ".join(
+        f"{key}={os.getenv(key, '<unset>')!r}" for key in inspected_keys
+    )
     raise ValueError(
         f"No model configured for role {role!r}. "
-        f"Set SWARM_MODEL or SWARM_MODEL_{role_key} in your environment."
+        f"Set SWARM_MODEL or SWARM_MODEL_{role_key} in your environment. "
+        f"Resolver inspected: {inspected_values}."
     )
 
 
@@ -270,7 +278,7 @@ class BaseAgent:
     environment: str = ""
     used_model: str = ""
     used_provider: str = ""
-    remote_provider: Optional[str] = None  # см. remote_presets / UI
+    remote_provider: Optional[str] = None
     remote_api_key: Optional[str] = None
     remote_base_url: Optional[str] = None
     max_tokens: int = 0

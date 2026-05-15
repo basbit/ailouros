@@ -1,17 +1,3 @@
-"""A minimal generic registry primitive.
-
-Multiple domains had their own one-off ``register()`` / ``get()`` /
-``keys()`` dictionaries (``AnalyzerRegistry`` in workspace, ``RoleRegistry`` in
-orchestration, ``PipelineStepRegistry`` in orchestration). Most of that
-boilerplate is identical — a dict backing + sorted key listing + small
-validation. This module provides the common primitive so future registries
-don't grow yet another bespoke class.
-
-The existing ``RoleRegistry`` and ``PipelineStepRegistry`` keep their own APIs
-because they carry richer domain semantics (builtin-vs-custom flags,
-pre-populated module-level mappings). ``AnalyzerRegistry`` has been migrated
-to use ``GenericRegistry`` directly.
-"""
 
 from __future__ import annotations
 
@@ -24,12 +10,6 @@ V = TypeVar("V")
 
 
 class GenericRegistry(Generic[K, V]):
-    """Small typed key→value registry with deterministic ordering.
-
-    Not thread-safe. Intended for process-lifetime registrations done at
-    import time (language analyzers, pipeline steps, tool handlers, …). If
-    you need concurrent registration, wrap with your own lock.
-    """
 
     def __init__(self, *, name: str = "") -> None:
         self._name = name
@@ -72,7 +52,6 @@ class GenericRegistry(Generic[K, V]):
         try:
             return sorted(self._items.keys())  # type: ignore[type-var]
         except TypeError:
-            # Fallback for non-orderable keys — preserve insertion order.
             return list(self._items.keys())
 
     def items(self) -> Iterable[tuple[K, V]]:

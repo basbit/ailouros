@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from backend.App.shared.domain.validators import is_truthy_env as _truthy_env
+from backend.App.shared.infrastructure.env_flags import is_truthy_env as _truthy_env
 from backend.App.integrations.infrastructure.mcp.auto.auto import (
     _ensure_mcp_filesystem_bin,
     _load_mcp_config_file,

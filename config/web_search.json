@@ -1,0 +1,16 @@
+{
+  "free_tier_limit": 1000,
+  "invalid_key_ttl_sec": 300,
+  "request_timeout_sec": 15,
+  "providers_order": ["tavily", "exa", "scrapingdog"],
+  "env_keys": {
+    "tavily": "SWARM_TAVILY_API_KEY",
+    "exa": "SWARM_EXA_API_KEY",
+    "scrapingdog": "SWARM_SCRAPINGDOG_API_KEY"
+  },
+  "secret_names": {
+    "tavily": "web_search.tavily",
+    "exa": "web_search.exa",
+    "scrapingdog": "web_search.scrapingdog"
+  }
+}

@@ -84,7 +84,7 @@ def build_context(
     if not non_empty:
         return ""
 
-    ranked = non_empty  # default: positional order
+    ranked = non_empty
 
     if smart_context_enabled():
         provider = _get_provider()

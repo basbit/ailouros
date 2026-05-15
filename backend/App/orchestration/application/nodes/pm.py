@@ -53,11 +53,6 @@ _log = logging.getLogger(__name__)
 
 
 def _compact_memory_lines(raw: str, *, max_items: int = 6, max_chars: int = 180) -> list[str]:
-    """PM-style memory-line compaction (strips numeric list prefixes).
-
-    Delegates to :class:`shared.application.memory_artifacts.MemoryArtifactBuilder`
-    with PM-specific presets (``1. foo`` → ``foo``, keep code fences).
-    """
     from backend.App.shared.application.memory_artifacts import MemoryArtifactBuilder
 
     return MemoryArtifactBuilder(
