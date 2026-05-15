@@ -47,6 +47,7 @@ from backend.UI.REST.controllers.plugins import router as _router_plugins
 from backend.UI.REST.controllers.spec import router as _router_spec
 from backend.UI.REST.controllers.secrets import router as _router_secrets
 from backend.UI.REST.controllers.activity import router as _router_activity
+from backend.UI.REST.controllers.desktop_info import router as _router_desktop_info
 from backend.App.shared.infrastructure.rest.task_instance import (
     ARTIFACTS_ROOT,
     task_store as _task_store_instance,
@@ -122,3 +123,4 @@ app.include_router(_router_plugins)
 app.include_router(_router_feedback)
 app.include_router(_router_secrets)
 app.include_router(_router_activity)
+app.include_router(_router_desktop_info)

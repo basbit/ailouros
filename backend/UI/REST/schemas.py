@@ -197,6 +197,10 @@ class ProjectSettingsRequest(BaseModel):
     settings: dict[str, Any]
 
 
+class DesktopProjectInitRequest(BaseModel):
+    project_id: str
+
+
 class BackgroundAgentRequest(BaseModel):
     workspace_root: str = ""
     enabled: bool = False
